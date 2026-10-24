@@ -36,9 +36,11 @@ export interface ListFilesInput {
 
 export interface CreateDocumentInput {
   /**
-   * Unique per workspace and parent, compared trimmed and case-insensitively.
-   * If a file with the same name exists there, throw NAME_EXISTS with its
-   * file_id, name, and current version.
+   * Stored trimmed. Unique per workspace and parent, compared by `nameKey`
+   * (src/names.ts): Unicode NFKC, strip zero-width characters (U+200B-U+200D,
+   * U+2060, U+FEFF), trim, collapse internal whitespace to one space, lowercase.
+   * If the key is empty, throw INVALID_INPUT. If a file with the same key exists
+   * there, throw NAME_EXISTS with its file_id, name, and current_version.
    */
   name: string;
   content: string;
@@ -63,15 +65,28 @@ export interface UpdateDocumentInput {
  * When `workspace_id` is omitted, use the actor's default workspace.
  */
 export interface TandemBackend {
+  /** Which implementation this is, e.g. "mock". Dev-only features check it. */
+  readonly kind: string;
   listFiles(actor: Actor, input: ListFilesInput): Promise<FileMetadata[]>;
   readFile(actor: Actor, fileId: string): Promise<FileWithContent>;
+  /**
+   * The name check and the insert must happen atomically, in one transaction.
+   * In Convex that means one mutation, shared by the dashboard and MCP, that
+   * looks up a stored normalized `name_key` through an index on
+   * (workspace_id, parent_id, name_key) and inserts in the same mutation;
+   * Convex has no unique indexes, so OCC on that index read is what prevents
+   * duplicates. Renames and moves must run the same check.
+   */
   createDocument(
     actor: Actor,
     input: CreateDocumentInput,
   ): Promise<FileMetadata>;
   /**
    * Atomically writes version N+1 only if `expected_version` equals the current version N.
-   * Throws VERSION_CONFLICT when it is lower than N, and INVALID_INPUT when it is higher.
+   * Throws INVALID_INPUT when `expected_version` is not a safe integer >= 1 (this
+   * layer can't rely on the MCP schema: the dashboard calls it directly), then
+   * VERSION_CONFLICT when it is lower than N and INVALID_INPUT when it is higher.
+   * Any value that isn't exactly N must fail; never write on a failed comparison.
    */
   updateDocument(
     actor: Actor,

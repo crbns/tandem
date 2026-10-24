@@ -1,4 +1,4 @@
-import type { Actor } from "./backend/types.js";
+import type { Actor, TandemBackend } from "./backend/types.js";
 
 /**
  * Turns an API key into a verified identity. The dev resolver below will be
@@ -19,8 +19,18 @@ export class DevTokenResolver implements IdentityResolver {
   constructor(spec: string) {
     this.tokens = new Map();
     for (const entry of spec.split(",")) {
-      const [token, userId] = entry.trim().split(":");
-      if (token && userId) this.tokens.set(token, userId);
+      if (!entry.trim()) continue;
+      // Split on the first ":" only, so user ids may contain ":".
+      const sep = entry.indexOf(":");
+      const token = sep === -1 ? "" : entry.slice(0, sep).trim();
+      const userId = sep === -1 ? "" : entry.slice(sep + 1).trim();
+      if (token && userId) {
+        this.tokens.set(token, userId);
+      } else {
+        console.warn(
+          `TANDEM_DEV_TOKENS: ignoring malformed entry ${JSON.stringify(entry.trim())}; expected key:user_id.`,
+        );
+      }
     }
   }
 
@@ -51,19 +61,23 @@ export class DevAnonResolver implements IdentityResolver {
   }
 }
 
-/** Wraps `inner` in DevAnonResolver when TANDEM_DEV_ANON_USER is set; refuses outside mock dev. */
+const DEV_ANON_NODE_ENVS = new Set(["development", "test"]);
+
+/**
+ * Wraps `inner` in DevAnonResolver when TANDEM_DEV_ANON_USER is set. Fails closed:
+ * refuses unless the backend actually constructed is the mock and NODE_ENV is
+ * exactly "development" or "test".
+ */
 export function withDevAnon(
   inner: IdentityResolver,
   env: NodeJS.ProcessEnv,
+  backend: Pick<TandemBackend, "kind">,
 ): IdentityResolver {
   const userId = env.TANDEM_DEV_ANON_USER?.trim();
   if (!userId) return inner;
-  if (
-    env.NODE_ENV === "production" ||
-    (env.TANDEM_BACKEND ?? "mock") !== "mock"
-  ) {
+  if (backend.kind !== "mock" || !DEV_ANON_NODE_ENVS.has(env.NODE_ENV ?? "")) {
     throw new Error(
-      "TANDEM_DEV_ANON_USER is only allowed with TANDEM_BACKEND=mock outside NODE_ENV=production. Unset it.",
+      "TANDEM_DEV_ANON_USER is only allowed with the mock backend and NODE_ENV=development or test. Unset it.",
     );
   }
   return new DevAnonResolver(inner, userId);
@@ -71,8 +85,8 @@ export function withDevAnon(
 
 /**
  * Resolves the `api-key` header value (`req.headers["api-key"]`). Only a missing
- * header counts as anonymous; an empty or repeated header is rejected like an
- * unknown key.
+ * header counts as anonymous; an empty, comma-containing, or non-string value is
+ * rejected like an unknown key.
  */
 export async function authenticate(
   identity: IdentityResolver,
@@ -87,5 +101,8 @@ export function apiKeyFromHeader(
   header: string | string[] | undefined,
 ): string | null {
   if (typeof header !== "string") return null;
+  // node:http joins a repeated api-key header into one "a, b" string. Keys
+  // never contain ",", so reject it here rather than rely on the resolver.
+  if (header.includes(",")) return null;
   return header.trim() || null;
 }

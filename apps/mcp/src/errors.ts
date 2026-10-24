@@ -73,12 +73,14 @@ export function versionAhead(
 export function nameExists(
   fileId: string,
   name: string,
-  version: number,
+  currentVersion: number,
 ): TandemError {
+  // The name is untrusted workspace data, so quote it rather than splicing it into the sentence.
   return new TandemError(
     "NAME_EXISTS",
-    `A file named ${name} already exists (file_id ${fileId}, version ${version}). ` +
-      `Read it with read_file and update it with update_document, or choose a different name.`,
-    { file_id: fileId, name, version },
+    `A file named ${JSON.stringify(name)} already exists (file_id ${fileId}, version ${currentVersion}). ` +
+      `Read it with read_file. If it is the same document, merge your changes into it with update_document; ` +
+      `otherwise choose a different name.`,
+    { file_id: fileId, name, current_version: currentVersion },
   );
 }

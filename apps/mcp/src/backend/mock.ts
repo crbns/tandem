@@ -7,6 +7,7 @@ import {
   versionAhead,
   versionConflict,
 } from "../errors.js";
+import { nameKey } from "../names.js";
 import type {
   Actor,
   Attribution,
@@ -41,6 +42,7 @@ Goal: ship the Tandem demo for Cal Hacks.
 
 /** In-memory backend for local development and tests. State is lost on restart. */
 export class MockBackend implements TandemBackend {
+  readonly kind = "mock";
   private readonly members = new Map<string, Set<string>>([
     ["ws_demo", new Set(["user_alex", "user_sam"])],
     ["ws_other", new Set(["user_jordan"])],
@@ -110,7 +112,16 @@ export class MockBackend implements TandemBackend {
         { parent_id: input.parent_id },
       );
     }
-    const key = nameKey(input.name);
+    const name = input.name.trim();
+    const key = nameKey(name);
+    if (!key) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "name must contain at least one visible character.",
+        { name: input.name },
+      );
+    }
+    // No await between the check and the insert, so this is atomic in Node.
     const existing = [...this.files.values()].find(
       (f) =>
         f.workspace_id === workspaceId &&
@@ -124,7 +135,7 @@ export class MockBackend implements TandemBackend {
       id: `file_${randomUUID()}`,
       workspace_id: workspaceId,
       parent_id: null,
-      name: input.name,
+      name,
       mime_type: input.mime_type,
       revisions: [newRevision(actor, 1, input.content)],
     };
@@ -138,11 +149,19 @@ export class MockBackend implements TandemBackend {
   ): Promise<FileMetadata> {
     const file = this.getFile(actor, input.file_id);
     const current = head(file).version;
-    if (input.expected_version > current) {
-      throw versionAhead(file.id, current, input.expected_version);
+    const expected = input.expected_version;
+    if (!Number.isSafeInteger(expected) || expected < 1) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "expected_version must be a positive integer: the file.version returned by read_file.",
+        { file_id: file.id, expected_version: expected },
+      );
     }
-    if (input.expected_version < current) {
-      throw versionConflict(file.id, current, input.expected_version);
+    // Fail closed: anything other than an exact match is rejected.
+    if (expected !== current) {
+      throw expected > current
+        ? versionAhead(file.id, current, expected)
+        : versionConflict(file.id, current, expected);
     }
     file.revisions.push(newRevision(actor, current + 1, input.content));
     return toMetadata(file);
@@ -176,10 +195,6 @@ export class MockBackend implements TandemBackend {
       throw fileNotFound(fileId);
     return file;
   }
-}
-
-function nameKey(name: string): string {
-  return name.trim().toLowerCase();
 }
 
 function head(file: StoredFile): Revision {
