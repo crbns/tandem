@@ -67,7 +67,7 @@ export function createMcpServer(
         name: z
           .string()
           .trim()
-          .min(1)
+          .min(1, "name must contain a visible character")
           .max(255)
           .describe('File name including extension, e.g. "notes.md".'),
         content: z.string().describe("Full text content of the document."),

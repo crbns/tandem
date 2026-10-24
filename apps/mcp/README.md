@@ -9,10 +9,12 @@ Tools: `list_files`, `read_file`, `create_document`, `update_document` (optimist
 ```sh
 pnpm install
 export ALEX_KEY=$(openssl rand -hex 24) SAM_KEY=$(openssl rand -hex 24)
-TANDEM_DEV_TOKENS=$ALEX_KEY:user_alex,$SAM_KEY:user_sam pnpm --filter mcp dev
+TANDEM_DEV_TOKENS=${ALEX_KEY}:user_alex,${SAM_KEY}:user_sam pnpm --filter mcp dev
 ```
 
-Generate dev keys with `openssl rand -hex 24` rather than reusing guessable ones; anyone who can reach the server and knows a key acts as that user.
+Generate dev keys with `openssl rand -hex 24` rather than reusing guessable ones; anyone who can reach the server and knows a key acts as that user. Keep the braces in `${ALEX_KEY}:user_alex`: zsh reads an unbraced `$ALEX_KEY:u` as a modifier and drops the colon, which leaves every key unusable.
+
+The keys are exported only in the terminal running the server. Before using `$ALEX_KEY` anywhere else (curl, Claude Code, MCP Inspector), run `echo $ALEX_KEY` in the server terminal and copy the value, or export the same value in the other terminal.
 
 - MCP endpoint: `POST http://localhost:8787/mcp` (GET/DELETE return 405 because the server is stateless)
 - Health check: `GET http://localhost:8787/healthz` returns `{"ok":true}`
@@ -52,7 +54,7 @@ claude.ai custom connectors can't send a static `api-key` header, so until Conve
 1. Start the server in anon mode:
 
    ```sh
-   TANDEM_DEV_ANON_USER=user_alex TANDEM_DEV_TOKENS=$ALEX_KEY:user_alex,$SAM_KEY:user_sam pnpm --filter mcp dev
+   TANDEM_DEV_ANON_USER=user_alex TANDEM_DEV_TOKENS=${ALEX_KEY}:user_alex,${SAM_KEY}:user_sam pnpm --filter mcp dev
    ```
 
 2. Expose it with a quick tunnel (in another terminal):
@@ -78,7 +80,7 @@ Caveats:
 | `PORT`                   | `8787`      | HTTP port                                                                                                                                              |
 | `HOST`                   | `127.0.0.1` | Interface to bind. Use `0.0.0.0` only inside a container.                                                                                              |
 | `NODE_ENV`               | unset       | Must be exactly `development` or `test` for dev anon mode. The `dev` script sets `development`.                                                        |
-| `TANDEM_ALLOWED_ORIGINS` | empty       | Comma-separated browser origins allowed to call `/mcp`. Any other `Origin` gets `403`; requests without `Origin` are unaffected.                       |
+| `TANDEM_ALLOWED_ORIGINS` | empty       | Comma-separated browser origins allowed to call `/mcp`. Any other `Origin` gets `403`; requests without `Origin` are unaffected. Trailing `/` is OK.   |
 | `TANDEM_BACKEND`         | `mock`      | Storage backend. `mock` is in-memory and seeded with workspace `ws_demo` (members `user_alex`, `user_sam`) containing `brief.md` v1.                   |
 | `TANDEM_DEV_TOKENS`      | empty       | Comma-separated `key:user_id` pairs (split on the first `:`); clients send the key in the `api-key` header. Generate keys with `openssl rand -hex 24`. |
 | `TANDEM_DEV_ANON_USER`   | unset       | TEMPORARY. Requests with no `api-key` header act as this user. Mock backend and `NODE_ENV=development`/`test` only (see above).                        |

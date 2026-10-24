@@ -1,14 +1,13 @@
 import { DevAnonResolver, DevTokenResolver, withDevAnon } from "./auth.js";
 import { createBackend } from "./backend/index.js";
-import { createApp } from "./server.js";
+import { createApp, parseAllowedOrigins } from "./server.js";
 
 const port = Number(process.env.PORT ?? 8787);
 // Localhost only by default; set HOST=0.0.0.0 inside a container.
 const host = process.env.HOST ?? "127.0.0.1";
-const allowedOrigins = (process.env.TANDEM_ALLOWED_ORIGINS ?? "")
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const allowedOrigins = parseAllowedOrigins(
+  process.env.TANDEM_ALLOWED_ORIGINS ?? "",
+);
 const backend = createBackend(process.env.TANDEM_BACKEND ?? "mock");
 const tokens = new DevTokenResolver(process.env.TANDEM_DEV_TOKENS ?? "");
 const identity = withDevAnon(tokens, process.env, backend);

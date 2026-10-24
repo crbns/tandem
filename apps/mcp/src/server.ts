@@ -15,6 +15,35 @@ export interface AppOptions {
   allowedOrigins?: readonly string[];
 }
 
+/**
+ * Parses TANDEM_ALLOWED_ORIGINS (comma-separated). Each entry is reduced to its
+ * origin (`http://localhost:6274/` becomes `http://localhost:6274`) so it
+ * matches what browsers send; entries that aren't URLs are dropped with a warning.
+ */
+export function parseAllowedOrigins(spec: string): string[] {
+  const origins: string[] = [];
+  for (const entry of spec.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    // Unparseable entries and opaque URLs (e.g. "localhost:6274", parsed as
+    // scheme "localhost:") both end up as "null".
+    let origin = "null";
+    try {
+      origin = new URL(trimmed).origin;
+    } catch {
+      // Fall through to the warning.
+    }
+    if (origin !== "null") {
+      origins.push(origin);
+    } else {
+      console.warn(
+        `TANDEM_ALLOWED_ORIGINS: ignoring invalid entry ${JSON.stringify(trimmed)}; expected an origin like http://localhost:6274.`,
+      );
+    }
+  }
+  return origins;
+}
+
 export function createApp({
   backend,
   identity,

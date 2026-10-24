@@ -13,8 +13,8 @@ import {
 import { MockBackend } from "../src/backend/mock.js";
 import type { Actor } from "../src/backend/types.js";
 import { TandemError } from "../src/errors.js";
-import { nameKey } from "../src/names.js";
-import { createApp } from "../src/server.js";
+import { nameKey, storedName } from "../src/names.js";
+import { createApp, parseAllowedOrigins } from "../src/server.js";
 
 const DEV_TOKENS =
   "alex-token:user_alex,sam-token:user_sam,jordan-token:user_jordan";
@@ -474,6 +474,23 @@ describe("Tandem MCP server", () => {
       expect(result.isError).toBe(true);
       expect(text(result)).toMatch(/Input validation error/);
     }
+    const blank = await call(client, "create_document", {
+      name: "   ",
+      content: "x",
+    });
+    expect(text(blank)).toMatch(/name must contain a visible character/);
+    await client.close();
+  });
+
+  it("stores names NFC-normalized without zero-width characters", async () => {
+    const client = await connect("alex-token");
+    const created = await call(client, "create_document", {
+      name: "\u200Bcafe\u0301\u2060 notes.md\uFEFF",
+      content: "x",
+    });
+    expect(created.structuredContent).toMatchObject({
+      name: "caf\u00e9 notes.md",
+    });
     await client.close();
   });
 
@@ -484,6 +501,7 @@ describe("Tandem MCP server", () => {
       ["zw.md", "zw.md\u200B"], // trailing zero-width space
       ["my notes.md", "my  notes.md"], // double internal space
       ["\ufb01le.md", "file.md"], // NFKC ligature
+      ["Stra\u00dfe.md", "STRASSE.md"], // sharp s case-folds to "ss"
     ]) {
       const created = await call(client, "create_document", {
         name: first,
@@ -575,6 +593,46 @@ describe("Origin allowlist", () => {
       await client.close();
     }
   });
+
+  it("normalizes configured origins and warns about invalid ones", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(
+        parseAllowedOrigins(
+          " http://localhost:6274/ ,HTTP://Example.com:443/path,,not a url,localhost:6274",
+        ),
+      ).toEqual(["http://localhost:6274", "http://example.com:443"]);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+
+    // A trailing slash in the config no longer blocks the browser's origin.
+    const slashServer = createApp({
+      backend: new MockBackend(),
+      identity: new DevTokenResolver(DEV_TOKENS),
+      allowedOrigins: parseAllowedOrigins("http://localhost:6274/"),
+    });
+    try {
+      const url = new URL("/mcp", await listen(slashServer));
+      const client = new Client({ name: "test", version: "0.0.0" });
+      await client.connect(
+        new StreamableHTTPClientTransport(url, {
+          requestInit: {
+            headers: {
+              "api-key": "alex-token",
+              Origin: "http://localhost:6274",
+            },
+          },
+        }),
+      );
+      const { tools } = await client.listTools();
+      expect(tools.length).toBe(4);
+      await client.close();
+    } finally {
+      await stop(slashServer);
+    }
+  });
 });
 
 describe("MockBackend", () => {
@@ -619,6 +677,11 @@ describe("MockBackend", () => {
   it("normalizes name keys", () => {
     expect(nameKey("  My\u00A0 Caf\u00e9.MD\u200B ")).toBe("my caf\u00e9.md");
     expect(nameKey("cafe\u0301.md")).toBe(nameKey("caf\u00e9.md"));
+    expect(nameKey("Stra\u00dfe.md")).toBe(nameKey("STRASSE.md"));
+  });
+
+  it("stores the display form of a name", () => {
+    expect(storedName(" \u200bcafe\u0301.MD\ufeff ")).toBe("caf\u00e9.MD");
   });
 });
 

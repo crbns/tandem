@@ -80,7 +80,7 @@ export function nameExists(
     "NAME_EXISTS",
     `A file named ${JSON.stringify(name)} already exists (file_id ${fileId}, version ${currentVersion}). ` +
       `Read it with read_file. If it is the same document, merge your changes into it with update_document; ` +
-      `otherwise choose a different name.`,
+      `otherwise choose a different name or ask the user.`,
     { file_id: fileId, name, current_version: currentVersion },
   );
 }

@@ -36,9 +36,11 @@ export interface ListFilesInput {
 
 export interface CreateDocumentInput {
   /**
-   * Stored trimmed. Unique per workspace and parent, compared by `nameKey`
+   * Stored as `storedName` (src/names.ts): Unicode NFC, zero-width characters
+   * removed, trimmed. Unique per workspace and parent, compared by `nameKey`
    * (src/names.ts): Unicode NFKC, strip zero-width characters (U+200B-U+200D,
-   * U+2060, U+FEFF), trim, collapse internal whitespace to one space, lowercase.
+   * U+2060, U+FEFF), trim, collapse internal whitespace to one space, case-fold
+   * with uppercase then lowercase (so "Straße" and "STRASSE" collide).
    * If the key is empty, throw INVALID_INPUT. If a file with the same key exists
    * there, throw NAME_EXISTS with its file_id, name, and current_version.
    */

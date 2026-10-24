@@ -7,7 +7,7 @@ import {
   versionAhead,
   versionConflict,
 } from "../errors.js";
-import { nameKey } from "../names.js";
+import { nameKey, storedName } from "../names.js";
 import type {
   Actor,
   Attribution,
@@ -112,7 +112,7 @@ export class MockBackend implements TandemBackend {
         { parent_id: input.parent_id },
       );
     }
-    const name = input.name.trim();
+    const name = storedName(input.name);
     const key = nameKey(name);
     if (!key) {
       throw new TandemError(
