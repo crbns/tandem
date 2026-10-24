@@ -76,7 +76,7 @@ export function FileTable({ workspaceId, files, selectedId, onSelect }: FileTabl
                 </Link>
                 {/* On narrow screens the hidden columns collapse into this line. */}
                 <span className="mt-1 flex items-center gap-3 text-xs md:hidden">
-                  <span className="label-caps sm:hidden">v{file.version}</span>
+                  <span className="sm:hidden"><CustodyStrip file={file} /></span>
                   <ActorBadge actor={file.updatedBy} />
                 </span>
               </TableCell>

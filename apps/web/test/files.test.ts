@@ -11,7 +11,7 @@ const file = (name: string, updatedAt: number): FileSummary => ({
   mimeType: "text/markdown",
   version: 1,
   updatedAt,
-  updatedBy: { actorType: "human", actorId: "u" },
+  updatedBy: { actorType: "human", userId: "u" },
 });
 
 describe("filterAndSortFiles", () => {

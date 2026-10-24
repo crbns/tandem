@@ -4,10 +4,20 @@
 
 export type ActorType = "human" | "agent";
 
+/**
+ * Who made a change: always a person, plus the assistant when an agent wrote it
+ * (AGENTS.md: attribution names both person and agent). Mirrors MCP's
+ * `Attribution { actor_type, user_id, client }` in camelCase.
+ */
 export interface Actor {
   actorType: ActorType;
-  actorId: string;
-  actorName?: string;
+  /** The human who saved, or whose assistant saved. */
+  userId: string;
+  userName?: string;
+  /** Agent writes only: the assistant client id (e.g. "claude", "chatgpt"). */
+  agentClient?: string;
+  /** Agent writes only: display name for the assistant (e.g. "Claude"). */
+  agentName?: string;
 }
 
 export interface Workspace {
@@ -44,7 +54,22 @@ export interface Revision extends Actor {
 export interface CreateFileInput {
   name: string;
   mimeType: string;
-  content?: string;
+  /** Required by the shared contract (MCP's createDocument requires it too). */
+  content: string;
+}
+
+/**
+ * The approved project context: changes to it need a human's approval, so the
+ * dashboard only ever shows the approved version (read-only in P0).
+ */
+export interface ProjectContext {
+  goal: string;
+  scope: string;
+  constraints: string[];
+  decisions: string[];
+  version: number;
+  approvedBy: Actor;
+  approvedAt: number;
 }
 
 export interface FileUpdate {

@@ -1,0 +1,5 @@
+# Impeccable scratch: review captures, decision mocks, question-round state
+review/
+mocks/
+questions/
+config.local.json

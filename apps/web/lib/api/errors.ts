@@ -49,14 +49,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function asActor(value: unknown): Actor | undefined {
   const v = asRecord(value);
   if (!v) return undefined;
-  if ((v.actorType === "human" || v.actorType === "agent") && typeof v.actorId === "string") {
-    return {
-      actorType: v.actorType,
-      actorId: v.actorId,
-      ...(typeof v.actorName === "string" ? { actorName: v.actorName } : {}),
-    };
-  }
-  return undefined;
+  // Canonical camelCase, or MCP's snake_case Attribution { actor_type, user_id, client }.
+  const actorType = v.actorType ?? v.actor_type;
+  const userId = v.userId ?? v.user_id;
+  if ((actorType !== "human" && actorType !== "agent") || typeof userId !== "string") return undefined;
+  const str = (x: unknown) => (typeof x === "string" ? x : undefined);
+  const userName = str(v.userName ?? v.user_name);
+  const agentClient = str(v.agentClient ?? v.client);
+  const agentName = str(v.agentName ?? v.agent_name);
+  return {
+    actorType,
+    userId,
+    ...(userName ? { userName } : {}),
+    ...(agentClient ? { agentClient } : {}),
+    ...(agentName ? { agentName } : {}),
+  };
 }
 
 function fromConvexError(err: ConvexError<Value>): TandemApiError {
@@ -67,9 +74,13 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
   const code = record && isApiErrorCode(record.code) ? record.code : "UNKNOWN";
   const details: ApiErrorDetails = {};
   if (record) {
-    if (typeof record.currentVersion === "number") details.currentVersion = record.currentVersion;
-    if (typeof record.currentContent === "string") details.currentContent = record.currentContent;
-    const updatedBy = asActor(record.updatedBy);
+    // Canonical keys are camelCase (CONTRACT_NOTES); snake_case is accepted so a
+    // backend that reuses MCP's versionConflict() helper still reports who saved.
+    const currentVersion = record.currentVersion ?? record.current_version;
+    const currentContent = record.currentContent ?? record.current_content;
+    if (typeof currentVersion === "number") details.currentVersion = currentVersion;
+    if (typeof currentContent === "string") details.currentContent = currentContent;
+    const updatedBy = asActor(record.updatedBy ?? record.updated_by);
     if (updatedBy) details.updatedBy = updatedBy;
   }
   if (code === "UNKNOWN") details.cause = JSON.stringify(data);
@@ -78,6 +89,9 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
 
 // Errors Convex raises itself (not via ConvexError) only carry a message, so
 // this is the one place we match on text. Keep the patterns narrow.
+// Dev-only safety net: production Convex redacts non-ConvexError messages to
+// "Server Error", so the backend must throw ConvexError({ code }) for every
+// business error (CONTRACT_NOTES.md). Client-side NETWORK errors still match.
 const MESSAGE_PATTERNS: ReadonlyArray<[RegExp, ApiErrorCode]> = [
   [/Could not find public function/i, "NOT_IMPLEMENTED"],
   [/\b(Unauthenticated|Not authenticated|Not signed in)\b/i, "UNAUTHENTICATED"],

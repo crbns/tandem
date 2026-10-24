@@ -44,6 +44,15 @@ In the Inspector UI choose transport **Streamable HTTP**, URL `http://localhost:
 
 The caller's identity always comes from the bearer token, never from tool arguments.
 
+## Backend contract (shared with the web dashboard)
+
+The dashboard calls the same Convex functions directly, so both callers must agree on one shape. The full contract is in [`apps/web/CONTRACT_NOTES.md`](../web/CONTRACT_NOTES.md). In short:
+
+- **Convex speaks camelCase with numeric (epoch ms) timestamps.** The snake_case keys and ISO strings in `src/backend/types.ts` are this server's *tool* format. Convert at the tool boundary when a Convex-backed `TandemBackend` replaces the mock; never store or return them from Convex.
+- **One set of function names**: `files:read` / `files:create` / `files:update` back `readFile` / `createDocument` / `updateDocument`, so there's a single write path and a single optimistic-lock check.
+- **Attribution names person and agent.** `Attribution { actor_type, user_id, client }` maps to the shared `Actor { actorType, userId, agentClient }`.
+- **Business errors are `ConvexError({ code })`.** Production Convex redacts other errors' messages, so codes like `VERSION_CONFLICT` and `UNAUTHENTICATED` must travel in `data.code`.
+
 ## Tests
 
 `pnpm --filter mcp test` starts the server on an ephemeral port and drives it with the SDK client.

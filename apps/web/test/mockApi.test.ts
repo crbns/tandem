@@ -3,8 +3,8 @@ import { createMockApi, MOCK_WORKSPACE_ID, type MockTandemApi } from "@/lib/api/
 import { TandemApiError } from "@/lib/api/errors";
 import type { Actor } from "@/lib/api/types";
 
-const human: Actor = { actorType: "human", actorId: "user_demo", actorName: "Demo Human" };
-const claude: Actor = { actorType: "agent", actorId: "agent_claude", actorName: "Claude" };
+const human: Actor = { actorType: "human", userId: "user_demo", userName: "Demo Human" };
+const claude: Actor = { actorType: "agent", userId: "agent_claude", agentName: "Claude" };
 
 async function expectApiError(promise: Promise<unknown>) {
   const err = await promise.then(
@@ -28,7 +28,7 @@ describe("mock TandemApi", () => {
     expect(byName["proposal.md"]?.version).toBe(1);
     expect(byName["proposal.md"]?.updatedBy.actorType).toBe("agent");
     expect(byName["brief.md"]?.version).toBe(2);
-    expect(byName["brief.md"]?.updatedBy.actorName).toBe("Alex");
+    expect(byName["brief.md"]?.updatedBy.userName).toBe("Alex");
     expect(byName["notes.txt"]?.version).toBe(1);
     expect(byName["notes.txt"]?.mimeType).toBe("text/plain");
   });
@@ -46,14 +46,14 @@ describe("mock TandemApi", () => {
   });
 
   it("bumps the version when expectedVersion matches", async () => {
-    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown" });
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown", content: "" });
     const result = await api.updateFileContent(id, { expectedVersion: 1, content: "v2 text" });
     expect(result.version).toBe(2);
     expect((await api.readFile(id)).content).toBe("v2 text");
   });
 
   it("rejects a stale write with VERSION_CONFLICT and keeps the newer content", async () => {
-    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown" });
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown", content: "" });
     await api.updateFileContent(id, { expectedVersion: 1, content: "v2 text" });
 
     const err = await expectApiError(api.updateFileContent(id, { expectedVersion: 1, content: "stale" }));
@@ -70,7 +70,7 @@ describe("mock TandemApi", () => {
     const files = await api.listFiles(MOCK_WORKSPACE_ID);
     const brief = files.find((f) => f.name === "brief.md");
     const revisions = await api.listRevisions(brief!.id);
-    expect(revisions.map((r) => [r.version, r.actorType, r.actorName])).toEqual([
+    expect(revisions.map((r) => [r.version, r.actorType, r.actorType === "agent" ? r.agentName : r.userName])).toEqual([
       [2, "human", "Alex"],
       [1, "agent", "Claude"],
     ]);
@@ -93,7 +93,7 @@ describe("mock TandemApi", () => {
   });
 
   it("simulates an external agent edit that makes the dashboard's base stale", async () => {
-    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown" });
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown", content: "" });
     api.__simulateExternalEdit(id, "agent text", claude);
 
     const err = await expectApiError(api.updateFileContent(id, { expectedVersion: 1, content: "mine" }));

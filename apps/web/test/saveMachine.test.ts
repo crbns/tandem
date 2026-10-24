@@ -16,7 +16,7 @@ const run = (state: SaveState, ...events: SaveEvent[]) => events.reduce(saveRedu
 const theirs: Theirs = {
   version: 3,
   content: "their text",
-  updatedBy: { actorType: "agent", actorId: "agent_claude", actorName: "Claude" },
+  updatedBy: { actorType: "agent", userId: "agent_claude", agentName: "Claude" },
 };
 
 describe("saveReducer", () => {
@@ -160,18 +160,18 @@ describe("draftToStash", () => {
 });
 
 describe("performSave", () => {
-  const human: Actor = { actorType: "human", actorId: "u", actorName: "Demo Human" };
-  const claude: Actor = { actorType: "agent", actorId: "agent_claude", actorName: "Claude" };
+  const human: Actor = { actorType: "human", userId: "u", userName: "Demo Human" };
+  const claude: Actor = { actorType: "agent", userId: "agent_claude", agentName: "Claude" };
 
   it("returns SAVE_OK with the new version", async () => {
     const api = createMockApi({ latencyMs: [0, 0], getActor: () => human });
-    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown" });
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown", content: "" });
     expect(await performSave(api, id, 1, "new")).toEqual({ type: "SAVE_OK", version: 2, content: "new" });
   });
 
   it("returns SAVE_CONFLICT carrying the latest version, content, and author", async () => {
     const api = createMockApi({ latencyMs: [0, 0], getActor: () => human });
-    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown" });
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown", content: "" });
     api.__simulateExternalEdit(id, "agent text", claude);
     expect(await performSave(api, id, 1, "mine")).toEqual({
       type: "SAVE_CONFLICT",
@@ -181,7 +181,7 @@ describe("performSave", () => {
 
   it("refetches the latest version when the conflict error has no content", async () => {
     const api = createMockApi({ latencyMs: [0, 0], getActor: () => human });
-    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown" });
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown", content: "" });
     api.__simulateExternalEdit(id, "agent text", claude);
     const { TandemApiError } = await import("@/lib/api/errors");
     const bare = {

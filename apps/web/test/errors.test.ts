@@ -16,14 +16,15 @@ describe("normalizeError", () => {
         code: "VERSION_CONFLICT",
         currentVersion: 4,
         currentContent: "# theirs",
-        updatedBy: { actorType: "agent", actorId: "claude", actorName: "Claude" },
+        updatedBy: { actorType: "agent", userId: "user_alex", agentClient: "claude", agentName: "Claude" },
       }),
     );
     expect(err.details.currentContent).toBe("# theirs");
     expect(err.details.updatedBy).toEqual({
       actorType: "agent",
-      actorId: "claude",
-      actorName: "Claude",
+      userId: "user_alex",
+      agentClient: "claude",
+      agentName: "Claude",
     });
   });
 

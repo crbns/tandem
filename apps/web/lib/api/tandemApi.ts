@@ -3,6 +3,7 @@ import type {
   FileDetail,
   FileSummary,
   FileUpdate,
+  ProjectContext,
   Revision,
   Workspace,
 } from "./types";
@@ -22,4 +23,6 @@ export interface TandemApi {
   updateFileContent(fileId: string, update: FileUpdate): Promise<{ version: number }>;
   /** Newest first. */
   listRevisions(fileId: string): Promise<Revision[]>;
+  /** The approved project context, or null when nothing has been approved yet. */
+  getContext(workspaceId: string): Promise<ProjectContext | null>;
 }

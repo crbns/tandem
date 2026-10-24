@@ -2,7 +2,7 @@ import type { ConvexReactClient } from "convex/react";
 import { makeFunctionReference } from "convex/server";
 import { normalizeError, TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
-import type { FileDetail, FileSummary, Revision, Workspace } from "./types";
+import type { FileDetail, FileSummary, ProjectContext, Revision, Workspace } from "./types";
 
 // `convex/_generated/api` doesn't exist yet (backend has only an empty schema),
 // so we reference functions by their agreed "module:export" names. When Person 2
@@ -16,16 +16,17 @@ const fns = {
   createFile: makeFunctionReference<
     "mutation",
     // Spelled out: Convex arg types need an index signature, which interfaces lack.
-    { workspaceId: string; name: string; mimeType: string; content?: string },
+    { workspaceId: string; name: string; mimeType: string; content: string },
     { id: string; version: number }
   >("files:create"),
-  readFile: makeFunctionReference<"query", { fileId: string }, FileDetail>("files:get"),
+  readFile: makeFunctionReference<"query", { fileId: string }, FileDetail>("files:read"),
   updateFileContent: makeFunctionReference<
     "mutation",
     { fileId: string; expectedVersion: number; content: string },
     { version: number }
-  >("files:updateContent"),
+  >("files:update"),
   listRevisions: makeFunctionReference<"query", { fileId: string }, Revision[]>("revisions:list"),
+  getContext: makeFunctionReference<"query", { workspaceId: string }, ProjectContext | null>("context:get"),
 };
 
 // The Convex client never rejects while disconnected: queries wait for the
@@ -59,5 +60,6 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
     updateFileContent: (fileId, update) =>
       call(() => convex.mutation(fns.updateFileContent, { fileId, ...update })),
     listRevisions: (fileId) => call(() => convex.query(fns.listRevisions, { fileId })),
+    getContext: (workspaceId) => call(() => convex.query(fns.getContext, { workspaceId })),
   };
 }

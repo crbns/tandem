@@ -24,11 +24,16 @@ export function CustodyPanel({ workspaceId, file }: { workspaceId: string; file:
   const href = fileHref(workspaceId, file.id);
 
   return (
-    <aside aria-label={`Custody record for ${file.name}`} className="rounded-md border bg-card p-5" aria-live="polite">
-      <p className="label-caps text-muted-foreground">
-        {displayId(file.id)} · {file.name}
+    <aside
+      aria-label={`Custody record for ${file.name}`}
+      className="animate-custody-in rounded-md border bg-card p-5"
+      aria-live="polite"
+    >
+      <h2 className="text-base font-bold leading-6">Custody record</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        <span className="font-medium text-foreground">{file.name}</span>
+        <span className="label-caps ml-2">{displayId(file.id)}</span>
       </p>
-      <h2 className="mt-1 text-base font-bold leading-6">Custody record</h2>
 
       {resource.status === "loading" && (
         <div className="mt-4 flex flex-col gap-3">
@@ -46,11 +51,13 @@ export function CustodyPanel({ workspaceId, file }: { workspaceId: string; file:
               <CustodyMark kind={rev.actorType} size="lg" className="absolute -left-[7px] top-1" />
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className="label-caps">v{rev.version}</span>
-                {i === 0 && <span className="label-caps text-primary">Current</span>}
+                {i === 0 && <span className="label-caps text-archive">Current</span>}
                 <ActorBadge actor={rev} />
               </div>
               <p className="mt-0.5 text-xs text-muted-foreground" title={formatAbsolute(rev.createdAt)}>
-                Saved {formatRelative(rev.createdAt, now)}
+                {/* Agents only write through MCP; people only through the dashboard. */}
+                Saved {rev.actorType === "agent" ? "via MCP" : "in the dashboard"} ·{" "}
+                {formatRelative(rev.createdAt, now)}
               </p>
             </li>
           ))}

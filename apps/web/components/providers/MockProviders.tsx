@@ -32,8 +32,8 @@ function parseUser(raw: string | null): SessionUser | null {
 
 function actorFor(user: SessionUser | null): Actor {
   return user
-    ? { actorType: "human", actorId: humanActorId(user.email), actorName: user.name }
-    : { actorType: "human", actorId: "user_anonymous", actorName: "Unknown" };
+    ? { actorType: "human", userId: humanActorId(user.email), userName: user.name }
+    : { actorType: "human", userId: "user_anonymous", userName: "Unknown" };
 }
 
 export function MockProviders({ children }: { children: ReactNode }) {

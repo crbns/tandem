@@ -19,8 +19,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const STATE_LABEL: Record<SavePhase["kind"], { label: string; className: string; Icon: typeof CheckIcon }> = {
-  clean: { label: "Saved", className: "text-emerald-700", Icon: CheckIcon },
-  dirty: { label: "Unsaved changes", className: "text-amber-700", Icon: CircleDotIcon },
+  clean: { label: "Saved", className: "text-muted-foreground", Icon: CheckIcon },
+  dirty: { label: "Unsaved changes", className: "text-warn", Icon: CircleDotIcon },
   saving: { label: "Saving…", className: "text-muted-foreground", Icon: Loader2Icon },
   conflict: { label: "Conflict", className: "text-destructive", Icon: CircleAlertIcon },
   error: { label: "Not saved", className: "text-destructive", Icon: CircleAlertIcon },

@@ -1,6 +1,6 @@
 import { TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
-import type { Actor, FileDetail, FileSummary, Revision, Workspace } from "./types";
+import type { Actor, FileDetail, FileSummary, ProjectContext, Revision, Workspace } from "./types";
 
 export const MOCK_WORKSPACE_ID = "ws_demo";
 
@@ -22,9 +22,16 @@ interface StoredFile {
   revisions: Revision[]; // oldest first; append-only
 }
 
-const CLAUDE: Actor = { actorType: "agent", actorId: "agent_claude", actorName: "Claude" };
-const ALEX: Actor = { actorType: "human", actorId: "user_alex", actorName: "Alex" };
-const DEMO: Actor = { actorType: "human", actorId: "user_demo", actorName: "Demo Human" };
+// Alex's assistant: a teammate's Claude, so attribution has to say whose.
+const CLAUDE: Actor = {
+  actorType: "agent",
+  userId: "user_alex",
+  userName: "Alex",
+  agentClient: "claude",
+  agentName: "Claude",
+};
+const ALEX: Actor = { actorType: "human", userId: "user_alex", userName: "Alex" };
+const DEMO: Actor = { actorType: "human", userId: "user_demo", userName: "Demo Human" };
 
 const MINUTE = 60_000;
 
@@ -93,6 +100,16 @@ function seed(now: number): Map<string, StoredFile> {
 export function createMockApi({ latencyMs = [150, 400], getActor }: MockOptions): MockTandemApi {
   const files = seed(Date.now());
   const workspaces: Workspace[] = [{ id: MOCK_WORKSPACE_ID, name: "Cal Hacks Team" }];
+  // Mock approved context, taken from the seeded proposal so it tells one story.
+  const context: ProjectContext = {
+    goal: "Ship the Tandem P0 demo by Saturday night.",
+    scope: "One workspace, two members, a shared text file edited from the dashboard and through MCP.",
+    constraints: ["Every write carries expectedVersion", "No agent-to-agent messaging"],
+    decisions: ["Claude is the primary demo client", "Optimistic versioning on every write"],
+    version: 2,
+    approvedBy: ALEX,
+    approvedAt: Date.now() - 50 * MINUTE,
+  };
   let nextId = 1;
 
   const delay = () => {
@@ -133,7 +150,7 @@ export function createMockApi({ latencyMs = [150, 400], getActor }: MockOptions)
         .map((f) => ({ ...cloneSummary(f.summary), custody: f.revisions.map((r) => r.actorType) }));
     },
 
-    async createFile(workspaceId, { name, mimeType, content = "" }) {
+    async createFile(workspaceId, { name, mimeType, content }) {
       await delay();
       if (!workspaces.some((w) => w.id === workspaceId)) throw new TandemApiError("FORBIDDEN");
       const id = `file_new_${nextId++}`;
@@ -185,6 +202,12 @@ export function createMockApi({ latencyMs = [150, 400], getActor }: MockOptions)
       return getFile(fileId)
         .revisions.map((r) => ({ ...r }))
         .reverse();
+    },
+
+    async getContext(workspaceId) {
+      await delay();
+      if (!workspaces.some((w) => w.id === workspaceId)) throw new TandemApiError("FORBIDDEN");
+      return { ...context, approvedBy: { ...context.approvedBy } };
     },
 
     __simulateExternalEdit(fileId, content, actor) {

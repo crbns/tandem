@@ -36,7 +36,7 @@ export function RevisionList({ revisions, headVersion, selected, onSelect }: Rev
             >
               <span className="flex w-full items-center gap-2">
                 <span className="label-caps">v{rev.version}</span>
-                {rev.version === headVersion && <span className="label-caps text-primary">Current</span>}
+                {rev.version === headVersion && <span className="label-caps text-archive">Current</span>}
                 <span className="ml-auto text-xs text-muted-foreground" title={formatAbsolute(rev.createdAt)}>
                   {formatRelative(rev.createdAt, now)}
                 </span>

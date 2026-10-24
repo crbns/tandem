@@ -33,6 +33,8 @@ import { cn } from "@/lib/utils";
 interface AppShellProps {
   workspaceId: string;
   workspaceName: string;
+  /** Files in the workspace; null while unknown. */
+  fileCount?: number | null;
   children: ReactNode;
 }
 
@@ -42,7 +44,7 @@ function crumbFor(pathname: string, filesHref: string): string {
   return "Files";
 }
 
-export function AppShell({ workspaceId, workspaceName, children }: AppShellProps) {
+export function AppShell({ workspaceId, workspaceName, fileCount = null, children }: AppShellProps) {
   const { user, signOut } = useSession();
   const router = useRouter();
   const pathname = usePathname();
@@ -73,6 +75,9 @@ export function AppShell({ workspaceId, workspaceName, children }: AppShellProps
           >
             <FileTextIcon className="size-4" />
             Files
+            {fileCount !== null && (
+              <span className="label-caps ml-auto font-normal text-muted-foreground">{fileCount}</span>
+            )}
           </Link>
         </nav>
         <div className="mt-auto border-t px-4 py-4 text-xs leading-[1.125rem] text-muted-foreground">

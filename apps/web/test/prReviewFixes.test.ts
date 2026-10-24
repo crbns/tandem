@@ -16,7 +16,7 @@ import { call } from "@/lib/api/convex";
 const head: Theirs = {
   version: 4,
   content: "v4 from Claude",
-  updatedBy: { actorType: "agent", actorId: "agent_claude", actorName: "Claude" },
+  updatedBy: { actorType: "agent", userId: "agent_claude", agentName: "Claude" },
 };
 
 describe("restoreSaveState", () => {

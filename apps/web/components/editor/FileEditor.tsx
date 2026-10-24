@@ -2,7 +2,7 @@
 
 import { useEffect, useEffectEvent, useReducer, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { BotIcon, XIcon } from "lucide-react";
+import { BotIcon, ChevronRightIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useMockControls, useTandemApi, type Actor, type FileDetail } from "@/lib/api";
 import { ERROR_COPY } from "@/lib/api/errorCopy";
@@ -27,7 +27,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-const SIMULATED_AGENT: Actor = { actorType: "agent", actorId: "agent_claude", actorName: "Claude" };
+const SIMULATED_AGENT: Actor = {
+  actorType: "agent",
+  userId: "user_alex",
+  userName: "Alex",
+  agentClient: "claude",
+  agentName: "Claude",
+};
 
 interface FileEditorProps {
   file: FileDetail;
@@ -105,8 +111,8 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
       setLastEdited({
         actor: {
           actorType: "human",
-          actorId: humanActorId(user?.email ?? "unknown"),
-          actorName: user?.name ?? "You",
+          userId: humanActorId(user?.email ?? "unknown"),
+          userName: user?.name ?? "You",
         },
         at: Date.now(),
       });
@@ -224,8 +230,11 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
           <AlertTitle>Unsaved text from before your access changed</AlertTitle>
           <AlertDescription>
             <p>You can no longer edit this file, so it shows the current version. Copy anything you need from your text below.</p>
-            <details className="mt-2 w-full">
-              <summary className="cursor-pointer">Show your text</summary>
+            <details className="group mt-2 w-full">
+              <summary className="flex w-fit cursor-pointer list-none items-center gap-1 [&::-webkit-details-marker]:hidden">
+                <ChevronRightIcon className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
+                Show your text
+              </summary>
               <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border bg-background px-3 py-2 font-mono text-xs">
                 {orphanedDraft}
               </pre>
@@ -260,10 +269,11 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
 
       {/* Only while there's something to save; edited back to match, nothing gets replaced. */}
       {replacing && phase.kind !== "conflict" && state.draft !== state.base && (
-        <details className="rounded-md border border-amber-300 bg-amber-50 text-sm" open>
+        <details className="group rounded-md border border-warn-rule bg-warn-tint text-sm" open>
           {/* One span per phrase: bare JSX text beside {expressions} loses its
               spaces inside a flex row ("version 2by"). The gap spaces them. */}
-          <summary className="flex cursor-pointer flex-wrap items-center gap-x-1.5 gap-y-1 px-3 py-2 text-amber-900">
+          <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-1.5 gap-y-1 px-3 py-2 text-warn [&::-webkit-details-marker]:hidden">
+            <ChevronRightIcon className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
             <span className="font-medium">Saving will replace version {replacing.version}</span>
             {replacing.updatedBy && (
               <>
@@ -271,9 +281,9 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
                 <ActorBadge actor={replacing.updatedBy} />
               </>
             )}
-            <span className="text-amber-900/80">· Copy anything you want to keep from it below.</span>
+            <span className="text-warn/80">· Copy anything you want to keep from it below.</span>
           </summary>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap border-t border-amber-200 bg-background px-3 py-2 font-mono text-xs">
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap border-t border-warn-rule bg-background px-3 py-2 font-mono text-xs">
             {replacing.content}
           </pre>
         </details>

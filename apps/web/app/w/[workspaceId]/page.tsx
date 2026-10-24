@@ -11,6 +11,8 @@ import { CustodyPanel } from "@/components/files/CustodyPanel";
 import { NewFileDialog } from "@/components/files/NewFileDialog";
 import { ErrorState } from "@/components/common/ErrorState";
 import { TandemMark } from "@/components/common/TandemMark";
+import { CustodyMark } from "@/components/common/CustodyMark";
+import { ApprovedGoal } from "@/components/files/ApprovedGoal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -50,7 +52,19 @@ export default function FilesPage() {
         </div>
       </div>
 
-      <div className="relative w-full max-w-xs">
+      <ApprovedGoal workspaceId={workspaceId} />
+
+      {/* The rail carries the mark legend on wide screens; small screens get it here. */}
+      <p className="flex items-center gap-3 text-xs text-muted-foreground md:hidden">
+        <span className="inline-flex items-center gap-1.5">
+          <CustodyMark kind="agent" /> Agent (assistant via MCP)
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <CustodyMark kind="human" /> Human
+        </span>
+      </p>
+
+      <div className="relative w-full sm:max-w-xs">
         <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           placeholder="Filter by name"

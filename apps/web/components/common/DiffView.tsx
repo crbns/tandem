@@ -51,8 +51,8 @@ export function DiffView({ left, right }: { left: Side; right: Side }) {
   return (
     <div className="flex flex-col gap-2">
       <div className="grid gap-4 lg:grid-cols-2">
-        <Column title={left.title} lines={diff.mine} marker="−" srLabel="Only on the left" highlight="bg-amber-100" />
-        <Column title={right.title} lines={diff.theirs} marker="+" srLabel="Only on the right" highlight="bg-sky-100" />
+        <Column title={left.title} lines={diff.mine} marker="−" srLabel="Only on the left" highlight="bg-diff-left" />
+        <Column title={right.title} lines={diff.theirs} marker="+" srLabel="Only on the right" highlight="bg-diff-right" />
       </div>
       <p className="text-xs text-muted-foreground">
         Lines marked <span className="font-mono">−</span> exist only on the left,{" "}

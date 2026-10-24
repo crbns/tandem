@@ -3,7 +3,7 @@ import { custodyMarks, displayId } from "@/lib/files";
 import { createMockApi, MOCK_WORKSPACE_ID } from "@/lib/api/mock";
 import type { Actor, FileSummary } from "@/lib/api/types";
 
-const human: Actor = { actorType: "human", actorId: "u", actorName: "Demo Human" };
+const human: Actor = { actorType: "human", userId: "u", userName: "Demo Human" };
 
 describe("displayId", () => {
   it("is a stable TDM-XXXX code derived from the file id", () => {
@@ -22,7 +22,7 @@ describe("custodyMarks", () => {
     mimeType: "text/markdown",
     version: 3,
     updatedAt: 0,
-    updatedBy: { actorType: "agent", actorId: "c" },
+    updatedBy: { actorType: "agent", userId: "c" },
   };
 
   it("uses the backend's custody list when present, head last", () => {
