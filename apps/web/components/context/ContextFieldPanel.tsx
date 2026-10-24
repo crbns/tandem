@@ -219,17 +219,33 @@ export function ContextFieldPanel({
               ? "Area of responsibility"
               : FIELD_LABELS[field]}
           </Label>
-          <Input
-            id={`value-${field}`}
-            value={draft.text}
-            onChange={(event) =>
-              setDraft({ ...draft, text: event.target.value })
-            }
-            required
-            maxLength={field === "ownership" ? 200 : 10000}
-            disabled={busy}
-            autoFocus
-          />
+          {field === "ownership" ? (
+            <Input
+              id={`value-${field}`}
+              value={draft.text}
+              onChange={(event) =>
+                setDraft({ ...draft, text: event.target.value })
+              }
+              required
+              maxLength={200}
+              disabled={busy}
+              autoFocus
+            />
+          ) : (
+            <textarea
+              id={`value-${field}`}
+              className="flex min-h-24 w-full min-w-0 resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive"
+              value={draft.text}
+              onChange={(event) =>
+                setDraft({ ...draft, text: event.target.value })
+              }
+              rows={3}
+              required
+              maxLength={10000}
+              disabled={busy}
+              autoFocus
+            />
+          )}
           {field === "ownership" && (
             <>
               <Label htmlFor="context-owner">Owner</Label>
