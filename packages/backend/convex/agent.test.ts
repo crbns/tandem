@@ -2242,7 +2242,7 @@ describe("sync brief and server instructions", () => {
   it("returns a compact payload for detail brief whose cursor continues incrementally", async () => {
     const { t, alex, tool, doc, workspaceId } = await seeded();
     const compact = await tool("sync_workspace", { detail: "brief" });
-    expect(Object.keys(compact)).toEqual(["brief", "workspace", "context_version", "changed_files", "files_truncated",
+    expect(Object.keys(compact)).toEqual(["brief", "workspace", "context_version", "changed_files", "deleted_file_ids", "files_truncated",
       "recent_work", "work_truncated", "events_truncated", "cursor"]);
     expect(compact).not.toHaveProperty("context");
     expect(compact).not.toHaveProperty("events");
@@ -2279,5 +2279,67 @@ describe("sync brief and server instructions", () => {
       protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" },
     });
     expect(init.body.result.instructions).toBe(MCP_INSTRUCTIONS);
+    const listed = await mcpRequest(t, apiKey, "tools/list");
+    const syncTool = listed.body.result.tools.find((entry: { name: string }) => entry.name === "sync_workspace");
+    expect(syncTool.inputSchema.properties.detail.enum).toEqual(["brief", "full"]);
+  });
+
+  it("preserves deletion tombstones outside the ten newest changes before advancing the brief cursor", async () => {
+    const { alex, tool, doc } = await seeded();
+    const before = await tool("sync_workspace", { detail: "brief" });
+    await alex.mutation(api.files.deleteFile, { fileId: doc.id, expectedVersion: 1 });
+    for (let i = 0; i < 11; i++)
+      await tool("create_document", { name: `later-${i}.md`, content: "Later work" });
+    const page = await tool("sync_workspace", { since: before.cursor, detail: "brief" });
+    expect(page.brief.recent_changes).toHaveLength(10);
+    expect(page.brief.recent_changes.some((event: { type: string }) => event.type === "file.deleted")).toBe(false);
+    expect(page.deleted_file_ids).toEqual([doc.id]);
+    expect(page.changed_files.some((file: { id: string }) => file.id === doc.id)).toBe(false);
+    expect(page).not.toHaveProperty("events");
+    const next = await tool("sync_workspace", { since: page.cursor, detail: "brief" });
+    expect(next.deleted_file_ids).toEqual([]);
+    expect(next.brief.recent_changes).toEqual([]);
+  });
+
+  it("caps each brief list after active filtering and flags exactly when a list exceeds ten", async () => {
+    const { t, alex, workspaceId } = await seeded();
+    const { token } = await connect(alex, { workspaceId, client: "chatgpt" });
+    const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    const { toSyncResult } = await import("./lib/mcpContract");
+    const decision = raw.context.decisions.find((entry) => entry.status === "active")!;
+    const question = raw.context.openQuestions.find((entry) => entry.status === "active")!;
+    const entry = (base: typeof decision, index: number) => ({ ...base, id: String(index) });
+    const base = {
+      ...raw,
+      context: { ...raw.context, decisions: [], openQuestions: [] },
+      pendingProposals: [], events: [],
+    };
+    for (const count of [10, 11]) {
+      const decisions = Array.from({ length: count }, (_, i) => entry(decision, i));
+      const questions = Array.from({ length: count }, (_, i) => entry(question, i));
+      const pendingProposals = Array.from({ length: count }, (_, i) => ({ ...raw.pendingProposals[0]!, id: String(i) }));
+      const events = Array.from({ length: count }, (_, i) => ({ ...raw.events[0]!, seq: i, createdAt: i }));
+      for (const input of [
+        { ...base, context: { ...base.context, decisions } },
+        { ...base, context: { ...base.context, openQuestions: questions } },
+        { ...base, pendingProposals },
+        { ...base, events },
+      ]) expect(toSyncResult(input).brief.truncated).toBe(count > 10);
+      const brief = toSyncResult({ ...base, context: { ...base.context, decisions, openQuestions: questions }, pendingProposals, events }).brief;
+      expect(brief.active_decisions.map((item) => item.id)).toEqual(decisions.slice(-10).map((item) => item.id));
+      expect(brief.blockers.open_questions).toHaveLength(10);
+      expect(brief.blockers.pending_approvals).toHaveLength(10);
+      expect(brief.recent_changes.map((item) => item.at)).toEqual(events.slice(-10).reverse().map((event) => new Date(event.createdAt).toISOString()));
+    }
+    const inactive = toSyncResult({
+      ...base,
+      context: { ...base.context,
+        decisions: Array.from({ length: 11 }, (_, i) => ({ ...entry(decision, i), status: "superseded" as const })),
+        openQuestions: Array.from({ length: 11 }, (_, i) => ({ ...entry(question, i), status: "resolved" as const })),
+      },
+    }).brief;
+    expect(inactive.active_decisions).toEqual([]);
+    expect(inactive.blockers.open_questions).toEqual([]);
+    expect(inactive.truncated).toBe(false);
   });
 });

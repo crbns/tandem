@@ -43,6 +43,8 @@ not.
   questions and pending approvals) and the newest changes. To orient cheaply,
   pass `detail: "brief"`: you get the brief, the `cursor` and compact file and
   work lists, without `context`, `pending_proposals` or `events`.
+  Remove files in `deleted_file_ids` from local context: brief mode retains
+  every deletion in the event page, even outside its ten newest changes.
 - The full result (the default) also returns `context` (approved goal, scope, decisions and ownership;
   working constraints and open questions, plus retained history) and its `context_version`, `pending_proposals`
   (summaries, not yet in effect), `changed_files` (metadata only), recent

@@ -433,6 +433,9 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
       workspace: r.workspace,
       context_version: r.context.revision,
       changed_files: r.changedFiles.map((f) => ({ id: f.id, name: f.name, version: f.version })),
+      // The cursor acknowledges the whole event page, not just recent_changes.
+      // Preserve every tombstone even when the brief's ten-event list is capped.
+      deleted_file_ids: r.events.filter((e) => e.kind === "file.deleted").map((e) => e.entityId),
       files_truncated: r.filesTruncated,
       recent_work: r.recentWork.map((w) => ({ id: w.id, kind: w.kind, title: w.title })),
       work_truncated: r.workTruncated,

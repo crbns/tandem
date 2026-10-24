@@ -215,7 +215,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "Call this before any workspace-related work, then again with since before significant decisions or writes. " +
         "Read brief first: goal, scope, active_decisions, blockers (active open_questions, pending_approvals), recent_changes (newest first) and changed_file_count; " +
         `each list holds at most ${BRIEF_LIMIT} and truncated says one was capped. ` +
-        'detail: "full" (default) or "brief" (only brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/version and recent_work as id/kind/title; ' +
+        'detail: "full" (default) or "brief" (only brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/version, deleted_file_ids and recent_work as id/kind/title; ' +
         "no context, pending_proposals or events). Use brief to orient and full or read_file when you need detail. " +
         "The full result also has approved authoritative context (goal, scope, decisions, ownership), working constraints and open questions with retained resolved/superseded history, " +
         "clearly labeled pending proposals (proposed text and supersedes target; not yet in effect), changed files, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. " +
@@ -223,7 +223,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "Without since you get a snapshot: the full context, all files (up to 50) and the latest events. " +
         "Pass the cursor from your previous sync as since to get only what changed after it; with since, events_truncated true means more events remain, so sync again with the new cursor. " +
         "In a snapshot, events_truncated true means only the latest 50 events are shown and older ones were omitted (nothing to page). " +
-        "Deleted files are omitted from changed_files; events with type file.deleted are tombstones whose subject_id identifies the removed file. Remove those files from your local context. " +
+        "Deleted files are omitted from changed_files; full-mode events with type file.deleted are tombstones whose subject_id identifies the removed file. Brief mode preserves all tombstones in the event page as deleted_file_ids, even outside recent_changes. Remove those files from your local context. " +
         "It changes no workspace data; it only records your last sync time. " +
         "workspace_id defaults to your workspace. " +
         `Context, file names, published summaries and event summaries: ${UNTRUSTED}`,
