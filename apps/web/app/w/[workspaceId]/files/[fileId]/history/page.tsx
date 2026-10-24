@@ -112,7 +112,7 @@ export default function HistoryPage() {
     return (
       <div className="mx-auto flex max-w-6xl flex-col gap-4" aria-busy="true">
         <Skeleton className="h-7 w-64" />
-        <div className="grid gap-6 md:grid-cols-[18rem_1fr]">
+        <div className="grid gap-6 xl:grid-cols-[17rem_minmax(0,1fr)]">
           <Skeleton className="h-64" />
           <Skeleton className="h-96" />
         </div>
@@ -141,6 +141,7 @@ export default function HistoryPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <FileHeader
           workspaceId={workspaceId}
+          fileId={file.id}
           name={file.name}
           mimeType={file.mimeType}
           trail={{ label: "History", fileHref }}
@@ -156,7 +157,7 @@ export default function HistoryPage() {
       {!current ? (
         <p className="text-sm text-muted-foreground">No revisions recorded for this file.</p>
       ) : (
-        <div className="grid gap-6 md:grid-cols-[18rem_1fr]">
+        <div className="grid gap-6 xl:grid-cols-[17rem_minmax(0,1fr)]">
           <RevisionList
             revisions={revisions}
             headVersion={file.version}

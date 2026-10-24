@@ -32,6 +32,8 @@ Revision    Actor & { version, createdAt: number, content?: string }
 
 **Authorization (please confirm):** functions that take only a `fileId` (`files:get`, `files:updateContent`, `revisions:list`) must check membership through the **file's own `workspaceId`**, never a workspace passed by the client. The dashboard also refuses to show a file whose `workspaceId` doesn't match the URL (it renders "File not found"), but that's cosmetic: Convex is the enforcement point.
 
+**Requested: `custody` on `FileSummary` (optional).** This is the actor type of each recent version, oldest first and head last, e.g. `["agent", "human", "agent"]`; the last 8 versions are plenty. The file register draws one custody mark per version from it. Without it, the dashboard shows earlier versions as neutral "unknown" marks and only the head mark carries an actor, so nothing is guessed.
+
 **Requested: "on behalf of" for agent actors.** Every teammate brings their own assistant, so "Agent · Claude" alone doesn't say whose Claude edited. Please add an optional `onBehalfOfName` (the human who connected that assistant) to `Actor` for agent writes; the badge will render "Claude (for Alex)".
 
 If your functions return raw `Doc<"files">` (`_id`, `_creationTime`, …) or a different actor shape, either return the shapes above or tell Person 3, who will map them in `lib/api/convex.ts` only. Components won't change.

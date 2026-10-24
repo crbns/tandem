@@ -8,6 +8,7 @@ import { USE_MOCKS } from "@/lib/config";
 import { MOCK_USERS } from "@/lib/auth/mockUsers";
 import { safeNext } from "@/lib/safeNext";
 import { endSignOut } from "@/lib/auth/signOutIntent";
+import { TandemMark } from "@/components/common/TandemMark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -47,9 +48,9 @@ function SignInForm() {
   }
 
   return (
-    <Card className="w-full max-w-sm">
+    <Card className="w-full max-w-sm rounded-md shadow-none">
       <CardHeader>
-        <CardTitle className="text-xl">Sign in to Tandem</CardTitle>
+        <CardTitle className="text-lg">Sign in</CardTitle>
         <CardDescription>Use the account your workspace admin gave you.</CardDescription>
       </CardHeader>
       <CardContent>
@@ -100,7 +101,14 @@ function SignInForm() {
 
 export default function SignInPage() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-sidebar px-4">
+    <main className="flex min-h-screen flex-col items-center justify-center gap-8 bg-background px-4 py-12">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <TandemMark className="size-10" />
+        <p className="text-2xl font-bold tracking-[-0.01em]">Tandem</p>
+        <p className="max-w-xs text-sm text-muted-foreground">
+          Shared files for people. Shared understanding for their AI assistants.
+        </p>
+      </div>
       <Suspense>
         <SignInForm />
       </Suspense>

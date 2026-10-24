@@ -130,7 +130,7 @@ export function createMockApi({ latencyMs = [150, 400], getActor }: MockOptions)
       if (!workspaces.some((w) => w.id === workspaceId)) throw new TandemApiError("FORBIDDEN");
       return [...files.values()]
         .filter((f) => f.summary.workspaceId === workspaceId)
-        .map((f) => cloneSummary(f.summary));
+        .map((f) => ({ ...cloneSummary(f.summary), custody: f.revisions.map((r) => r.actorType) }));
     },
 
     async createFile(workspaceId, { name, mimeType, content = "" }) {

@@ -47,7 +47,7 @@ export default function FilePage() {
   const file = resource.data;
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4">
-      <FileHeader workspaceId={workspaceId} name={file.name} mimeType={file.mimeType} />
+      <FileHeader workspaceId={workspaceId} fileId={file.id} name={file.name} mimeType={file.mimeType} />
       {isTextMimeType(file.mimeType) && file.content !== null ? (
         // Keyed by id so a different file always starts a fresh save machine.
         <FileEditor key={file.id} file={file} historyHref={`${fileHref}/history`} />

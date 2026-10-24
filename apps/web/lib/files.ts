@@ -1,4 +1,38 @@
-import type { FileSummary } from "./api/types";
+import type { ActorType, FileSummary } from "./api/types";
+
+/**
+ * Short, stable catalogue code for a file ("TDM-7F3A"). Derived from the file
+ * id (FNV-1a), so it is an identifier, not a claim about creation order.
+ */
+export function displayId(fileId: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < fileId.length; i++) {
+    h ^= fileId.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `TDM-${((h >>> 0) & 0xffff).toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
+export interface CustodyMark {
+  kind: ActorType | "unknown";
+  head: boolean;
+}
+
+const MAX_MARKS = 8;
+
+/**
+ * One mark per recent version, head last. When the backend doesn't say who
+ * saved earlier versions, they render as neutral marks rather than guesses.
+ */
+export function custodyMarks(file: Pick<FileSummary, "version" | "updatedBy" | "custody">): CustodyMark[] {
+  const kinds: Array<ActorType | "unknown"> = file.custody?.length
+    ? file.custody.slice(-MAX_MARKS)
+    : [
+        ...Array.from({ length: Math.min(file.version, MAX_MARKS) - 1 }, () => "unknown" as const),
+        file.updatedBy.actorType,
+      ];
+  return kinds.map((kind, i) => ({ kind, head: i === kinds.length - 1 }));
+}
 
 /** Newest first, filtered by a case-insensitive name substring. Pure. */
 export function filterAndSortFiles(files: readonly FileSummary[], query: string): FileSummary[] {

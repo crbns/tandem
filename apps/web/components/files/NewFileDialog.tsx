@@ -90,7 +90,7 @@ export function NewFileDialog({ workspaceId }: { workspaceId: string }) {
             <Input
               id="new-file-name"
               autoFocus
-              placeholder="proposal.md"
+              placeholder="meeting-notes.md"
               value={name}
               onChange={(e) => setName(e.target.value)}
               aria-invalid={error ? true : undefined}

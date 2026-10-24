@@ -54,9 +54,11 @@ export function SaveBar({
   const state = STATE_LABEL[phase];
 
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border bg-sidebar px-3 py-2 text-sm">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border bg-card px-3 py-2 text-sm">
       {/* While there are unsaved edits, the number is the version they're based on, not the head. */}
-      <span className="font-medium tabular-nums">{phase === "clean" ? `Version ${version}` : `Editing from v${version}`}</span>
+      <span className="label-caps rounded-sm bg-archive-tint px-2 py-1 text-archive">
+        {phase === "clean" ? `Version ${version}` : `Editing from v${version}`}
+      </span>
       <span className={cn("inline-flex items-center gap-1.5", state.className)} aria-live="polite">
         <state.Icon className={cn("size-4", phase === "saving" && "animate-spin")} aria-hidden />
         {state.label}

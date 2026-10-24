@@ -9,7 +9,7 @@ const alertVariants = cva(
       variant: {
         default: "bg-card text-card-foreground",
         destructive: "border-destructive/30 bg-destructive/5 text-destructive",
-        warning: "border-amber-300 bg-amber-50 text-amber-900",
+        warning: "border-warn-rule bg-warn-tint text-warn",
       },
     },
     defaultVariants: { variant: "default" },

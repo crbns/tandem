@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { FileTextIcon, RotateCwIcon, SearchIcon } from "lucide-react";
-import { useTandemApi } from "@/lib/api";
+import { RotateCwIcon, SearchIcon, XIcon } from "lucide-react";
+import { useTandemApi, type FileSummary } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
 import { filterAndSortFiles } from "@/lib/files";
 import { FileTable, FileTableSkeleton } from "@/components/files/FileTable";
+import { CustodyPanel } from "@/components/files/CustodyPanel";
 import { NewFileDialog } from "@/components/files/NewFileDialog";
 import { ErrorState } from "@/components/common/ErrorState";
+import { TandemMark } from "@/components/common/TandemMark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -17,6 +19,7 @@ export default function FilesPage() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const api = useTandemApi();
   const [query, setQuery] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const load = useCallback(() => api.listFiles(workspaceId), [api, workspaceId]);
   const { resource, refreshing, reload } = useResource(load);
@@ -27,18 +30,19 @@ export default function FilesPage() {
     return () => window.removeEventListener("focus", reload);
   }, [reload]);
 
+  const count = resource.status === "ready" ? resource.data.length : null;
+
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Files</h1>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={reload}
-            disabled={refreshing}
-            aria-label="Refresh file list"
-          >
+    <div className="mx-auto flex max-w-6xl flex-col gap-5">
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
+        <h1 className="text-2xl font-bold leading-8 tracking-[-0.01em]">Files</h1>
+        {count !== null && (
+          <span className="pb-1 text-sm text-muted-foreground">
+            {count === 1 ? "1 record" : `${count} records`} · every version kept
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={reload} disabled={refreshing} aria-label="Refresh file list">
             <RotateCwIcon className={cn(refreshing && "animate-spin")} />
             Refresh
           </Button>
@@ -46,65 +50,94 @@ export default function FilesPage() {
         </div>
       </div>
 
-      <div className="relative max-w-xs">
+      <div className="relative w-full max-w-xs">
         <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           placeholder="Filter by name"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="pl-8"
+          className="bg-card pl-8 pr-8"
           aria-label="Filter files by name"
         />
-      </div>
-
-      <div className="rounded-lg border">
-        {resource.status === "loading" && <FileTableSkeleton />}
-
-        {resource.status === "error" && (
-          <div className="p-4">
-            <ErrorState error={resource.error} onRetry={reload} retrying={refreshing} />
-          </div>
-        )}
-
-        {resource.status === "ready" && resource.data.length === 0 && (
-          <div className="flex flex-col items-center gap-2 px-6 py-16 text-center">
-            <FileTextIcon className="size-8 text-muted-foreground" />
-            <p className="font-medium">No files yet</p>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              Create one, or ask your assistant to create one through Tandem.
-            </p>
-            <p className="max-w-sm text-xs text-muted-foreground">
-              Assistants connected to this workspace through Tandem&apos;s MCP server save here directly. Their
-              files appear in this list marked <span className="font-medium">Agent</span>; press Refresh if one
-              doesn&apos;t show up yet.
-            </p>
-          </div>
-        )}
-
-        {resource.status === "ready" && resource.data.length > 0 && (
-          <FilteredFiles workspaceId={workspaceId} files={resource.data} query={query} />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            aria-label="Clear filter"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <XIcon className="size-3.5" />
+          </button>
         )}
       </div>
+
+      {resource.status === "loading" && (
+        <div className="rounded-md border bg-card">
+          <FileTableSkeleton />
+        </div>
+      )}
+
+      {resource.status === "error" && <ErrorState error={resource.error} onRetry={reload} retrying={refreshing} />}
+
+      {resource.status === "ready" && resource.data.length === 0 && (
+        <div className="flex flex-col items-center gap-3 rounded-md border bg-card px-6 py-16 text-center">
+          <TandemMark className="size-9" />
+          <p className="text-base font-semibold">No files yet</p>
+          <p className="max-w-sm text-sm text-muted-foreground">
+            Create one, or ask your assistant to create one through Tandem. Files an assistant saves appear here
+            marked Agent; press Refresh if one doesn&apos;t show up yet.
+          </p>
+        </div>
+      )}
+
+      {resource.status === "ready" && resource.data.length > 0 && (
+        <Register
+          workspaceId={workspaceId}
+          files={resource.data}
+          query={query}
+          onClear={() => setQuery("")}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+        />
+      )}
     </div>
   );
 }
 
-function FilteredFiles({
-  workspaceId,
-  files,
-  query,
-}: {
+interface RegisterProps {
   workspaceId: string;
-  files: Parameters<typeof filterAndSortFiles>[0];
+  files: FileSummary[];
   query: string;
-}) {
+  onClear: () => void;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}
+
+function Register({ workspaceId, files, query, onClear, selectedId, onSelect }: RegisterProps) {
   const visible = filterAndSortFiles(files, query);
-  if (visible.length === 0) {
+  // Default to the most recently changed file so the record panel is never empty.
+  const selected = visible.find((f) => f.id === selectedId) ?? visible[0];
+
+  if (!selected) {
     return (
-      <p className="px-6 py-10 text-center text-sm text-muted-foreground">
+      <div className="flex flex-col items-center gap-2 rounded-md border bg-card px-6 py-10 text-center text-sm text-muted-foreground">
         No files match &ldquo;{query.trim()}&rdquo;.
-      </p>
+        <Button variant="outline" size="sm" onClick={onClear}>
+          Clear filter
+        </Button>
+      </div>
     );
   }
-  return <FileTable workspaceId={workspaceId} files={visible} />;
+
+  return (
+    <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="overflow-hidden rounded-md border bg-card">
+        <FileTable workspaceId={workspaceId} files={visible} selectedId={selected.id} onSelect={onSelect} />
+      </div>
+      {/* The record panel needs room beside a readable register: wide screens only. */}
+      <div className="hidden xl:block">
+        <CustodyPanel key={selected.id} workspaceId={workspaceId} file={selected} />
+      </div>
+    </div>
+  );
 }

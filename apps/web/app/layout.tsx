@@ -1,15 +1,19 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
 import { ConvexAuthNextjsServerProvider } from "@convex-dev/auth/nextjs/server";
+// Self-hosted from npm (OFL): no build-time fetch from Google, which breaks
+// Turbopack production builds and offline Docker builds.
+import "@fontsource/public-sans/400.css";
+import "@fontsource/public-sans/500.css";
+import "@fontsource/public-sans/600.css";
+import "@fontsource/public-sans/700.css";
+import "@fontsource/archivo-narrow/500.css";
+import "@fontsource/archivo-narrow/600.css";
 import "./globals.css";
 import { Providers } from "./providers";
 import { Toaster } from "@/components/ui/sonner";
 import { USE_MOCKS } from "@/lib/config";
 
-const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
-});
 const geistMono = localFont({
   src: "./fonts/GeistMonoVF.woff",
   variable: "--font-geist-mono",
@@ -27,7 +31,7 @@ export default function RootLayout({
 }>) {
   const document = (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} font-sans`}>
+      <body className={`${geistMono.variable} font-sans`}>
         <Providers>{children}</Providers>
         <Toaster position="bottom-right" />
       </body>

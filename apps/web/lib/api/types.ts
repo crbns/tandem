@@ -24,6 +24,8 @@ export interface FileSummary {
   version: number;
   updatedAt: number;
   updatedBy: Actor;
+  /** Optional: actor type of each recent version, oldest first, head last. */
+  custody?: ActorType[];
 }
 
 export interface FileDetail extends FileSummary {
