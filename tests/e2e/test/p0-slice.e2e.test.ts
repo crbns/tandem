@@ -38,6 +38,7 @@ const TOOL_SURFACE = [
   "get_approvals",
   "get_file_versions",
   "get_workspace_info",
+  "manage_task",
 ];
 
 const INITIAL_GOAL = `Ship the Tandem P0 slice (${run})`;

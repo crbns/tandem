@@ -10,6 +10,7 @@ import {
   type ContextDetails,
   type ContextEntry,
   type PublishedWork,
+  type Task,
   type Actor,
   type AgentConnection,
   type ContextApproval,
@@ -175,6 +176,28 @@ export function createMockApi({
     summary: "Keep a recorded fallback ready for venue Wi-Fi.", fileIds: ["file_proposal"],
     createdBy: { ...CLAUDE }, createdAt: Date.now() - 3 * MINUTE,
   }];
+  const now = Date.now();
+  const SAM: Actor = { actorType: "human", userId: "user_sam", userName: "Sam" };
+  const tasks: Array<Task & { workspaceId: string }> = [
+    {
+      id: "task_seed_open", workspaceId: MOCK_WORKSPACE_ID, title: "Record the demo fallback video",
+      description: "Two minutes, covering the MCP save and the version conflict.", status: "open",
+      ownerId: null, ownerName: null, version: 1, createdBy: { ...CLAUDE }, updatedBy: { ...CLAUDE },
+      createdAt: now - 20 * MINUTE, updatedAt: now - 20 * MINUTE, completedAt: null,
+    },
+    {
+      id: "task_seed_claimed", workspaceId: MOCK_WORKSPACE_ID, title: "Draft the judging pitch",
+      description: "", status: "in_progress", ownerId: ALEX.userId, ownerName: "Alex", version: 2,
+      createdBy: { ...DEMO }, updatedBy: { ...CLAUDE },
+      createdAt: now - 40 * MINUTE, updatedAt: now - 5 * MINUTE, completedAt: null,
+    },
+    {
+      id: "task_seed_done", workspaceId: MOCK_WORKSPACE_ID, title: "Connect a second assistant",
+      description: "ChatGPT through the OAuth consent page.", status: "done", ownerId: SAM.userId, ownerName: "Sam",
+      version: 3, createdBy: { ...CLAUDE }, updatedBy: { ...SAM },
+      createdAt: now - 90 * MINUTE, updatedAt: now - 30 * MINUTE, completedAt: now - 30 * MINUTE,
+    },
+  ];
   let nextId = 1;
   const invites = new Map<string, WorkspaceInvite & { token: string }>();
   const memberships = new Map<string, Map<string, "owner" | "admin" | "member">>();
@@ -676,6 +699,16 @@ export function createMockApi({
       const rows = publishedWork.filter((work) => work.workspaceId === workspaceId).slice().reverse();
       const end = offset + pageSize;
       return { page: structuredClone(rows.slice(offset, end)), isDone: end >= rows.length, continueCursor: String(end) };
+    },
+
+    async listTasks(workspaceId) {
+      await delay();
+      requireMember(workspaceId);
+      return tasks
+        .filter((task) => task.workspaceId === workspaceId)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 100)
+        .map(({ workspaceId: _workspaceId, ...task }) => structuredClone(task));
     },
 
     async getContextApproval(workspaceId) {

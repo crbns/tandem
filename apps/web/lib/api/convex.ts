@@ -17,6 +17,7 @@ import type {
   FileSummary,
   ProjectContext,
   Revision,
+  Task,
 } from "./types";
 
 type BackendActor = Doc<"files">["updatedBy"];
@@ -88,6 +89,14 @@ export function toAgentConnection(connection: BackendAgentConnection): AgentConn
     ...optional("lastMcpActionAt", connection.lastMcpActionAt),
     ...optional("lastSyncAt", connection.lastSyncAt),
     ...optional("revokedAt", connection.revokedAt),
+  };
+}
+
+export function toTask(task: FunctionReturnType<typeof api.tasks.listTasks>[number]): Task {
+  return {
+    ...task,
+    createdBy: toActor(task.createdBy),
+    updatedBy: toActor(task.updatedBy),
   };
 }
 
@@ -358,6 +367,10 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         workspaceId: workspaceId as Id<"workspaces">, paginationOpts: { cursor, numItems: pageSize },
       });
       return { ...result, page: result.page.map((work) => ({ ...work, createdBy: toActor(work.createdBy) })) };
+    }),
+    listTasks: (workspaceId) => call(async () => {
+      const tasks = await convex.query(api.tasks.listTasks, { workspaceId: workspaceId as Id<"workspaces"> });
+      return tasks.map(toTask);
     }),
     getContextApproval: (workspaceId) => call(async () => {
       const info = await convex.query(api.workspaces.getWorkspaceInfo, { workspaceId: workspaceId as Id<"workspaces"> });

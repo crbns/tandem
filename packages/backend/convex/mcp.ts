@@ -31,6 +31,7 @@ import {
   toProposal,
   toPublished,
   toSyncResult,
+  toTask,
   toToolError,
   type ErrorHint,
 } from "./lib/mcpContract";
@@ -217,18 +218,19 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "Call this before any workspace-related work, then again with since before significant decisions or writes. " +
         "Read brief first: goal, scope, active_decisions, blockers (active open_questions, pending_approvals), recent_changes (newest first) and changed_file_count; " +
         `each list holds at most ${BRIEF_LIMIT} and truncated says one was capped. ` +
-        'detail: "full" (default) or "brief" (only brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/version, deleted_file_ids and full recent_work; ' +
+        'detail: "full" (default) or "brief" (only brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/version, deleted_file_ids, full recent_work and tasks;' +
         "no context, pending_proposals or events). Use brief to orient; before decisions or writes that may depend on constraints or ownership, use full, and read_file before editing. " +
         "The full result also has approved authoritative context (goal, scope, decisions, ownership), working constraints and open questions with retained resolved/superseded history, " +
-        "clearly labeled pending proposals (proposed text and supersedes target; not yet in effect), changed files, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. " +
+        "clearly labeled pending proposals (proposed text and supersedes target; not yet in effect), changed files, tasks, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. " +
         "Read recent_work before starting; a snapshot contains the newest 20 publications. With since, it contains the newest 20 publications within this event page; later work arrives when you continue syncing. work_truncated means older matching work within that page (or snapshot) was omitted. " +
-        "Without since you get a snapshot: the full context, all files (up to 50) and the latest events. " +
+        "Without since you get a snapshot: the full context, all files (up to 50), active tasks (open and in_progress, up to 50; tasks_truncated if more) and the latest events. " +
+        "With since, tasks holds every task changed in this event page, including ones just completed (status done). " +
         "Pass the cursor from your previous sync as since to get only what changed after it; with since, events_truncated true means more events remain, so sync again with the new cursor. " +
         "In a snapshot, events_truncated true means only the latest 50 events are shown and older ones were omitted (nothing to page). " +
         "Deleted files are omitted from changed_files; full-mode events with type file.deleted are tombstones whose subject_id identifies the removed file. Brief mode preserves all tombstones in the event page as deleted_file_ids, even outside recent_changes. Remove those files from your local context. " +
         "It changes no workspace data; it only records your last sync time. " +
         "workspace_id defaults to your workspace. " +
-        `Context, file names, published summaries and event summaries: ${UNTRUSTED}`,
+        `Context, file names, task titles and descriptions, published summaries and event summaries: ${UNTRUSTED}`,
       args: {
         workspace_id: v.optional(v.string()),
         since: v.optional(v.string()),
@@ -509,6 +511,91 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
           });
           return { proposals: rows.map((r) => toProposal(r.proposal, r.contextRevision)) };
         }, { workspaceId: args.workspace_id }),
+    }),
+
+    manage_task: tool({
+      title: "Manage tasks",
+      description:
+        "Coordinate work with teammates' assistants through shared workspace tasks. operation: " +
+        '"list" (optional status "open", "in_progress" or "done"; omit for all; limit 1–100, default 50; newest first), ' +
+        '"create" (title 1–200 characters, optional description up to 4000), ' +
+        '"claim" (task_id, expected_version), "update" (task_id, expected_version, and any of title, description, ' +
+        'status "open" to release your claim or "in_progress"), and "complete" (task_id, expected_version). ' +
+        "Claim a task before working on it, and pass the version you last read as expected_version; re-claiming your own task is a no-op. " +
+        "If a claim fails with TASK_ALREADY_CLAIMED or VERSION_CONFLICT, someone else got there first: list again and pick another open task. " +
+        "Only the person who claimed a task (through any of their assistants) can update or complete it (else TASK_NOT_OWNER); done tasks are final (TASK_DONE). " +
+        "Complete the task when the work is done. Claiming a task is not context ownership: for goal, scope, decisions or ownership use propose_context_change. " +
+        "workspace_id defaults to your workspace. Listing needs read access; the other operations need write access. " +
+        `Task titles and descriptions: ${UNTRUSTED}`,
+      args: {
+        operation: v.union(
+          v.literal("list"),
+          v.literal("create"),
+          v.literal("claim"),
+          v.literal("update"),
+          v.literal("complete"),
+        ),
+        workspace_id: v.optional(v.string()),
+        task_id: v.optional(v.string()),
+        title: v.optional(v.string()),
+        description: v.optional(v.string()),
+        status: v.optional(v.union(v.literal("open"), v.literal("in_progress"), v.literal("done"))),
+        expected_version: v.optional(v.number()),
+        limit: v.optional(v.number()),
+      },
+      annotations: write(false),
+      // Read scope so read-only connections can list; mcpTools.manageTask
+      // requires write scope for every other operation.
+      scope: READ,
+      handler: (ctx, args, user) =>
+        run(ctx, user, async () => {
+          const { operation } = args;
+          const description = (value: string | undefined) => {
+            if (value !== undefined && value.trim().length > 4000)
+              throw invalidInput("description must be at most 4000 characters.", { field: "description" });
+            return value;
+          };
+          let fields: {
+            taskId?: string;
+            expectedVersion?: number;
+            title?: string;
+            description?: string;
+            status?: "open" | "in_progress" | "done";
+            limit?: number;
+          };
+          if (operation === "list") {
+            fields = { status: args.status, limit: int(args.limit, "limit", 50, 1, 100) };
+          } else if (operation === "create") {
+            fields = {
+              title: text(args.title ?? "", "title", 200),
+              description: description(args.description) ?? "",
+            };
+          } else {
+            const taskId = id(args.task_id ?? "", "task_id");
+            if (!Number.isInteger(args.expected_version) || args.expected_version! < 1)
+              throw invalidInput("expected_version must be a positive integer.", { field: "expected_version" });
+            fields = { taskId, expectedVersion: args.expected_version };
+            if (operation === "update") {
+              if (args.status === "done")
+                throw invalidInput('Use operation "complete" to mark a task done.', { field: "status" });
+              if (args.title === undefined && args.description === undefined && args.status === undefined)
+                throw invalidInput("update needs at least one of title, description or status.");
+              fields = {
+                ...fields,
+                title: args.title === undefined ? undefined : text(args.title, "title", 200),
+                description: description(args.description),
+                status: args.status,
+              };
+            }
+          }
+          const r = await ctx.runMutation(internal.mcpTools.manageTask, {
+            principal: p(user),
+            workspaceId: args.workspace_id,
+            operation,
+            ...fields,
+          });
+          return r.task ? { task: toTask(r.task) } : { tasks: (r.tasks ?? []).map(toTask) };
+        }, { workspaceId: args.workspace_id, taskId: args.task_id, expectedVersion: args.expected_version }),
     }),
 
     publish_work: tool({

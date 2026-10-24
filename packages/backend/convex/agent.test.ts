@@ -164,7 +164,7 @@ describe("agent connections", () => {
     expect(stored?.tokenHash).toBeUndefined();
     expect(JSON.stringify(stored)).not.toContain(created.apiKey);
 
-    // The key works against the real endpoint and sees all 11 tools.
+    // The key works against the real endpoint and sees all 12 tools.
     const list = await mcpRequest(t, created.apiKey, "tools/list");
     expect(list.status).toBe(200);
     expect(list.body.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
@@ -173,6 +173,7 @@ describe("agent connections", () => {
       "get_file_versions",
       "get_workspace_info",
       "list_files",
+      "manage_task",
       "propose_context_change",
       "publish_work",
       "read_file",
@@ -2302,7 +2303,7 @@ describe("sync brief and server instructions", () => {
     // Everything after the brief is the pre-brief contract, key for key and value for value.
     const { brief, ...rest } = sync;
     expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "pending_proposals", "changed_files", "files_truncated",
-      "recent_work", "work_truncated", "events", "events_truncated", "cursor"]);
+      "recent_work", "work_truncated", "tasks", "tasks_truncated", "events", "events_truncated", "cursor"]);
     const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
     expect(rest.workspace).toEqual({ id: workspaceId, name: "Demo" });
     expect(rest.context_version).toBe(raw.context.revision);
@@ -2352,12 +2353,13 @@ describe("sync brief and server instructions", () => {
     const compact = await tool("sync_workspace", { detail: "brief" });
     const full = await tool("sync_workspace");
     expect(Object.keys(compact)).toEqual(["brief", "workspace", "context_version", "changed_files", "deleted_file_ids", "files_truncated",
-      "recent_work", "work_truncated", "events_truncated", "cursor"]);
+      "recent_work", "work_truncated", "tasks", "tasks_truncated", "events_truncated", "cursor"]);
     expect(compact).not.toHaveProperty("context");
     expect(compact).not.toHaveProperty("events");
     expect(compact).not.toHaveProperty("pending_proposals");
     expect(compact.changed_files).toEqual([{ id: doc.id, name: "plan.md", version: 1 }]);
     expect(compact.recent_work).toEqual(full.recent_work);
+    expect(compact.tasks).toEqual(full.tasks);
     expect(compact.brief.blockers.pending_approvals).toHaveLength(1);
     expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(full).length / 2);
 
@@ -2405,6 +2407,17 @@ describe("sync brief and server instructions", () => {
     expect(page.recent_work[0]).toMatchObject({ file_ids: [doc.id], published_by: published.published_by, created_at: expect.any(String) });
     // Nothing is left to recover later: the next page no longer carries it.
     expect((await tool("sync_workspace", { since: page.cursor })).recent_work).toEqual([]);
+  });
+
+  it("carries tasks changed in the page in brief since syncs, whose cursor acknowledges them", async () => {
+    const { tool } = await seeded();
+    const before = await tool("sync_workspace", { detail: "brief" });
+    const { task } = await tool("manage_task", { operation: "create", title: "Draft welcome email" });
+    const { task: claimed } = await tool("manage_task", { operation: "claim", task_id: task.id, expected_version: task.version });
+    const page = await tool("sync_workspace", { since: before.cursor, detail: "brief" });
+    expect(page.tasks).toEqual([claimed]);
+    expect(page.tasks[0]).toMatchObject({ status: "in_progress", owner: { user_id: expect.any(String) } });
+    expect((await tool("sync_workspace", { since: page.cursor, detail: "brief" })).tasks).toEqual([]);
   });
 
   it("preserves deletion tombstones outside the ten newest changes before advancing the brief cursor", async () => {
