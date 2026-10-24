@@ -7,6 +7,8 @@ import type { Doc, Id } from "@repo/backend/convex/_generated/dataModel.js";
 import { normalizeError, TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
 import type {
+  ContextDetails,
+  ContextEntry,
   Actor,
   AgentConnection,
   ContextProposal,
@@ -94,6 +96,20 @@ function toFileSummary(file: BackendFileMetadata): FileSummary {
     version: file.version,
     updatedAt: file.updatedAt,
     updatedBy: toActor(file.updatedBy),
+  };
+}
+
+/** Keep this mapping separate from the compact approved-goal summary. */
+export function toContextDetails(context: FunctionReturnType<typeof api.context.getDetails>): ContextDetails {
+  const entry = (value: NonNullable<typeof context.goal>): ContextEntry => ({
+    ...value, sourceFileIds: [...value.sourceFileIds], updatedBy: toActor(value.updatedBy),
+  });
+  return {
+    goal: context.goal ? entry(context.goal) : null,
+    scope: context.scope ? entry(context.scope) : null,
+    constraints: context.constraints.map(entry), decisions: context.decisions.map(entry),
+    ownership: context.ownership.map(entry), openQuestions: context.openQuestions.map(entry),
+    version: context.revision,
   };
 }
 
@@ -244,6 +260,29 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
           approvedAt: context.goal.updatedAt,
         } satisfies ProjectContext;
       }),
+    getContextDetails: (workspaceId) => call(async () => toContextDetails(await convex.query(api.context.getDetails, {
+      workspaceId: workspaceId as Id<"workspaces">,
+    }))),
+    listWorkspaceMembers: (workspaceId) => call(async () => {
+      const info = await convex.query(api.workspaces.getWorkspaceInfo, { workspaceId: workspaceId as Id<"workspaces"> });
+      return info.members.map((m) => ({ userId: m.userId, name: m.name ?? "Workspace member" }));
+    }),
+    updateContextField: (workspaceId, { ownerUserId, ...input }) => call(() => convex.mutation(api.context.updateContextField, {
+      ...input, workspaceId: workspaceId as Id<"workspaces">,
+      sourceFileIds: input.sourceFileIds as Id<"files">[],
+      ...(ownerUserId !== undefined ? { ownerUserId: ownerUserId as Id<"users"> } : {}),
+    })),
+    proposeContextChange: (workspaceId, { ownerUserId, ...input }) => call(() => convex.mutation(api.context.proposeContextChange, {
+      ...input, workspaceId: workspaceId as Id<"workspaces">,
+      sourceFileIds: input.sourceFileIds as Id<"files">[],
+      ...(ownerUserId !== undefined ? { ownerUserId: ownerUserId as Id<"users"> } : {}),
+    })),
+    listPublishedWork: (workspaceId, cursor = null, pageSize = 20) => call(async () => {
+      const result = await convex.query(api.context.listPublishedWork, {
+        workspaceId: workspaceId as Id<"workspaces">, paginationOpts: { cursor, numItems: pageSize },
+      });
+      return { ...result, page: result.page.map((work) => ({ ...work, createdBy: toActor(work.createdBy) })) };
+    }),
     listProposals: (workspaceId, status) =>
       call(async () => {
         const proposals = await convex.query(api.context.getApprovals, {

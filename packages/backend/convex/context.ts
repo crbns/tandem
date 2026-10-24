@@ -1,3 +1,7 @@
+import {
+  paginationOptsValidator,
+  paginationResultValidator,
+} from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
@@ -12,6 +16,8 @@ import { nameKey } from "./lib/names";
 import {
   checkSourceFiles,
   listProposals,
+  loadContext,
+  toPublishedWork,
   proposeContextChangeCore,
   ownershipText,
   requireOwnerMember,
@@ -21,7 +27,132 @@ import {
   contextFieldValidator as fieldValidator,
   proposalStatusValidator,
   proposalValidator,
+  contextValidator,
+  publishedWorkValidator,
 } from "./lib/validators";
+
+/** Full context, including per-entry attribution and ownership metadata. */
+export const getDetails = query({
+  args: { workspaceId: v.id("workspaces") },
+  returns: contextValidator,
+  handler: async (ctx, { workspaceId }) => {
+    await requireMembership(ctx, workspaceId);
+    return loadContext(ctx, workspaceId);
+  },
+});
+
+export const listPublishedWork = query({
+  args: {
+    workspaceId: v.id("workspaces"),
+    paginationOpts: paginationOptsValidator,
+  },
+  returns: paginationResultValidator(publishedWorkValidator),
+  handler: async (ctx, args) => {
+    await requireMembership(ctx, args.workspaceId);
+    if (
+      !Number.isInteger(args.paginationOpts.numItems) ||
+      args.paginationOpts.numItems < 1 ||
+      args.paginationOpts.numItems > 100
+    )
+      throw new ConvexError({ code: "INVALID_INPUT" });
+    const result = await ctx.db
+      .query("published_work")
+      .withIndex("by_workspace_and_created", (q) =>
+        q.eq("workspaceId", args.workspaceId),
+      )
+      .order("desc")
+      .paginate(args.paginationOpts);
+    return { ...result, page: result.page.map(toPublishedWork) };
+  },
+});
+
+/** Human owner/admin edits are decisions; no pending proposal is created. */
+export const updateContextField = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    field: fieldValidator,
+    proposedValue: v.string(),
+    sourceFileIds: v.array(v.id("files")),
+    expectedVersion: v.number(),
+    ownerUserId: v.optional(v.id("users")),
+    // Until entries have stable IDs, the revision guards positional edits.
+    entryIndex: v.optional(v.number()),
+  },
+  returns: v.object({ version: v.number() }),
+  handler: async (ctx, args) => {
+    await requireHumanSession(ctx);
+    const { user, membership } = await requireMembership(ctx, args.workspaceId);
+    if (membership.role !== "owner" && membership.role !== "admin")
+      throw new ConvexError({ code: "FORBIDDEN" });
+    const context = await ctx.db
+      .query("structured_context")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .unique();
+    if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
+    if (args.expectedVersion !== context.revision)
+      throw new ConvexError({
+        code: "VERSION_CONFLICT",
+        currentVersion: context.revision,
+      });
+    const text = args.proposedValue.trim();
+    if (
+      !text ||
+      text.length > 10000 ||
+      (args.field === "ownership" && text.length > 200)
+    )
+      throw new ConvexError({ code: "INVALID_INPUT" });
+    if (args.field !== "ownership" && args.ownerUserId !== undefined)
+      throw new ConvexError({ code: "INVALID_INPUT", field: "ownerUserId" });
+    const listKey = {
+      constraint: "constraints",
+      decision: "decisions",
+      ownership: "ownership",
+      open_question: "openQuestions",
+    } as const;
+    const key =
+      args.field === "goal" || args.field === "scope"
+        ? null
+        : listKey[args.field];
+    if (
+      args.entryIndex !== undefined &&
+      (!key ||
+        !Number.isInteger(args.entryIndex) ||
+        args.entryIndex < 0 ||
+        args.entryIndex >= context[key].length)
+    )
+      throw new ConvexError({ code: "INVALID_INPUT", field: "entryIndex" });
+    const sourceFileIds = await checkSourceFiles(
+      ctx,
+      args.workspaceId,
+      args.sourceFileIds,
+    );
+    const actor = humanActor(user);
+    await applyApprovedProposal(
+      ctx,
+      {
+        workspaceId: args.workspaceId,
+        field: args.field,
+        proposedValue: text,
+        sourceFileIds,
+        ...(args.field === "ownership"
+          ? { ownerUserId: args.ownerUserId, ownerArea: text }
+          : {}),
+      },
+      actor,
+      Date.now(),
+      args.entryIndex,
+    );
+    await recordWorkspaceEvent(ctx, {
+      workspaceId: args.workspaceId,
+      kind: "context.updated",
+      entityType: "structured_context",
+      entityId: context._id,
+      summary: `Updated ${args.field.replaceAll("_", " ")}`,
+      actor,
+    });
+    return { version: context.revision + 1 };
+  },
+});
 
 export const proposeContextChange = mutation({
   args: {
@@ -176,9 +307,18 @@ export async function decideProposalCore(
 
 async function applyApprovedProposal(
   ctx: MutationCtx,
-  proposal: Doc<"context_proposals">,
+  proposal: Pick<
+    Doc<"context_proposals">,
+    | "workspaceId"
+    | "field"
+    | "proposedValue"
+    | "sourceFileIds"
+    | "ownerUserId"
+    | "ownerArea"
+  >,
   actor: ReturnType<typeof humanActor>,
   now: number,
+  entryIndex?: number,
 ) {
   const context = await ctx.db
     .query("structured_context")
@@ -196,6 +336,10 @@ async function applyApprovedProposal(
     updatedAt: now,
     updatedBy: actor,
   };
+  const put = <T>(entries: T[], entry: T) =>
+    entryIndex === undefined
+      ? [...entries, entry]
+      : entries.map((old, index) => (index === entryIndex ? entry : old));
   switch (proposal.field) {
     case "goal":
       await ctx.db.patch(context._id, { ...next, goal: value });
@@ -206,13 +350,13 @@ async function applyApprovedProposal(
     case "constraint":
       await ctx.db.patch(context._id, {
         ...next,
-        constraints: [...context.constraints, value],
+        constraints: put(context.constraints, value),
       });
       break;
     case "decision":
       await ctx.db.patch(context._id, {
         ...next,
-        decisions: [...context.decisions, value],
+        decisions: put(context.decisions, value),
       });
       break;
     case "ownership": {
@@ -231,8 +375,10 @@ async function applyApprovedProposal(
         ...next,
         ownership: [
           ...context.ownership.filter(
-            (entry) =>
-              entry.ownerArea === undefined || nameKey(entry.ownerArea) !== area,
+            (entry, index) =>
+              index !== entryIndex &&
+              (entry.ownerArea === undefined ||
+                nameKey(entry.ownerArea) !== area),
           ),
           {
             ...value,
@@ -247,7 +393,7 @@ async function applyApprovedProposal(
     case "open_question":
       await ctx.db.patch(context._id, {
         ...next,
-        openQuestions: [...context.openQuestions, value],
+        openQuestions: put(context.openQuestions, value),
       });
       break;
   }
