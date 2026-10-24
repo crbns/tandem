@@ -20,3 +20,11 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | Tests pass | PASS | `pnpm --filter web test`: errors + mock API suites |
 | Function mapping and gaps in `CONTRACT_NOTES.md` | PASS | every function is "requested from Person 2" |
 | Convex adapter against a live deployment | PENDING (backend) | no functions exist yet |
+
+## Gate 3: file list
+
+| Check | Status | Notes |
+|---|---|---|
+| Seeded files render with correct versions and actor badges | PASS | proposal.md v1 Agent · Claude; brief.md v2 Human · Alex; notes.txt v1 |
+| Create file → v1 → opens detail | PASS | verified end-to-end after Phase 4 added the detail route |
+| Refresh button + refetch on window focus | PASS | how MCP-created files appear in P0 (no realtime) |
