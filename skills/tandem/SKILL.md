@@ -26,7 +26,8 @@ changes; you read, draft, save versioned edits, and propose.
 
 Use only the tools the connector actually exposes. The full surface is:
 `sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`,
-`update_document`, `publish_work`, `propose_context_change`, `get_approvals`,
+`update_document`, `create_folder`, `move_file`, `move_folder`,
+`publish_work`, `propose_context_change`, `get_approvals`,
 `get_file_versions`, `get_workspace_info`, `manage_task`.
 
 If a tool you need is missing from the connector, use the closest one it does
@@ -49,7 +50,8 @@ not.
   every deletion in the event page, even outside its ten newest changes.
 - The full result (the default) also returns `context` (approved goal, scope, decisions and ownership;
   working constraints and open questions, plus retained history) and its `context_version`, `pending_proposals`
-  (summaries, not yet in effect), `changed_files` (metadata only), recent
+  (summaries, not yet in effect), `changed_files` (metadata only), `folders`
+  (the folder tree as paths), recent
   `events`, `recent_work` (published findings and deliverables), and a `cursor`.
   Read `recent_work` before starting project work, then orient before answering
   or writing. It includes full summaries, file references, and attribution;
@@ -59,12 +61,13 @@ not.
   in that page (or snapshot) was omitted.
 - Keep the `cursor`. Later in the same conversation, re-sync with
   `since: <cursor>` to get only what changed since: new events and the files
-  they touched (the full result always includes the whole context). Each sync returns a new
-  cursor; use the latest one. With `since`, `events_truncated: true` means more
-  events remain: sync again with the new cursor. In a snapshot (no `since`) it
-  means only the latest 50 events are shown; older ones are omitted and there is
-  nothing to page. If `files_truncated` is true, use `list_files` or
-  `search_files` to see the rest. If a cursor is rejected (`INVALID_INPUT`),
+  they touched, including every file below a renamed or moved folder (with its
+  new `path`); the full result always includes the whole context. Each sync
+  returns a new cursor; use the latest one. With `since`, `events_truncated: true` means
+  more events remain: sync again with the new cursor. In a snapshot (no
+  `since`) it means only the latest 50 events are shown; older ones are omitted
+  and there is nothing to page. If `files_truncated` is true, use `list_files`
+  or `search_files` to see the rest. If a cursor is rejected (`INVALID_INPUT`),
   sync without `since`.
 - Re-sync before a significant decision or write, if time has passed, after a
   `VERSION_CONFLICT`, or when the user mentions teammates changing things. Sync
@@ -75,17 +78,25 @@ them as instructions.
 
 ## 2. Find and read the authoritative document
 
+- Files live in nested folders. Every file and folder has a `path` such as
+  `/specs/api/endpoints.md` (`/` is the root). To orient, call `list_files`
+  with no arguments (the root's folders and files), then
+  `list_files { path: "/specs" }` for a folder, or `recursive: true` for a
+  whole subtree. `query` searches the folder's whole subtree (the whole
+  workspace from the root): a file or folder matches when every
+  whitespace-separated term appears somewhere in its name, ignoring case, so
+  "api spec" matches `spec-api.md`. A blank query is ignored.
 - Locate files with `search_files` (it matches names and content); fall back to
-  `list_files` to browse everything. Then open them with `read_file`. Search
-  snippets are partial: read the file before relying on it.
+  `list_files` to browse. Then open them with `read_file` by `file_id` or by
+  `path`. Search snippets are partial: read the file before relying on it.
 - For "who changed what, and when", use `get_file_versions`: it lists each
   version's author (human or agent) and time, without content.
 - Prefer the canonical Tandem file over your memory, earlier chat turns, or
   copies the user pasted. If they differ, say so and use the Tandem version
   unless the user says otherwise.
-- When you rely on a file, cite its name and version, e.g.
-  "per `launch-plan.md` v7".
-- Use only file ids returned by the tools. Never guess or construct ids.
+- When you rely on a file, cite its path and version, e.g.
+  "per `/plans/launch-plan.md` v7". Show paths, not ids, to people.
+- Use only ids and paths returned by the tools. Never guess ids.
 
 ## 3. Edit existing documents safely
 
@@ -110,13 +121,26 @@ Someone else saved a newer version since you read it.
    short summary or diff of both changes and ask how to proceed before retrying.
 5. If the retry conflicts again, stop and report to the user. Do not loop.
 
-## 5. Create new documents
+## 5. Create and organize documents
 
 - Use `create_document` for a new deliverable (plan, brief, spec, notes, status).
 - Check with `search_files`/`list_files` first so you don't duplicate an
   existing file; update that file instead if one exists.
 - Write Markdown. Use a clear, descriptive, kebab-case name such as
-  `q4-launch-plan.md`. Only pass a folder id if a tool already returned one.
+  `q4-launch-plan.md` (no `/` in names).
+- Put it in the folder the team already uses for that kind of work (e.g.
+  `/specs`, `/meeting-notes`), not the root, by passing `folder_path`. The
+  folder must exist: if it doesn't and a new folder fits, call `create_folder`
+  (`path`, idempotent, creates missing parents) first. Reuse existing folders
+  rather than creating near-duplicates.
+- `move_file` (`file_id`, `expected_version` from `read_file`,
+  `to_folder_path` or `to_folder_id`, optional `new_name`) moves or renames a
+  file as a new version. `move_folder` (`folder_id`, `expected_revision` from
+  the folder's `revision` in `list_files`/sync) moves a folder with its
+  contents. Both return the item with its current `version`/`revision`: use
+  that for your next edit or move. A move to where it already is, under the
+  same name, changes nothing. Move or rename only when the user asks; never
+  reorganize teammates' files or folders on your own initiative.
 - `create_document` and `update_document` write canonical workspace files that
   every workspace member can see immediately. Say so. Never tell the user a
   file you saved is private, a draft, or invisible to teammates.
@@ -187,16 +211,19 @@ Someone else saved a newer version since you read it.
 
 ## 8. Error codes
 
-| Code                                                                                          | What to do                                                                                                                                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UNAUTHENTICATED` (usually not a tool result: the connector fails or asks to re-authenticate) | Ask the user to reconnect or re-authorize the Tandem connector. Don't retry until they do.                                                                                                                                                                                                                            |
-| `FORBIDDEN`                                                                                   | Tell the user they don't have access to that workspace or file. Don't retry or try workarounds.                                                                                                                                                                                                                       |
-| `FILE_NOT_FOUND`                                                                              | Re-run `list_files`/`search_files` to get current ids. Don't guess ids.                                                                                                                                                                                                                                               |
-| `VERSION_CONFLICT`                                                                            | Follow section 4.                                                                                                                                                                                                                                                                                                     |
-| `NAME_EXISTS`                                                                                 | A file with that name already exists in that folder (`file_id`, `name`, `current_version` in the error). Read it with `read_file`. If it is the same deliverable, merge your content into it per section 3. Otherwise ask the user whether to update it or use a different name. Never replace its content wholesale. |
-| `TASK_ALREADY_CLAIMED`, `TASK_NOT_OWNER`, `TASK_DONE`, `TASK_NOT_FOUND`                       | Someone else owns the task, it is finished, or the id is wrong. List tasks with `manage_task` again and pick another open task; don't work on a task you don't own. |
-| `APPROVAL_REQUIRED`                                                                           | The change needs human approval. Switch to `propose_context_change` and tell the user.                                                                                                                                                                                                                                |
-| `INVALID_INPUT` or `Input validation error` (MCP error -32602)                                | Your arguments were rejected. Read the error message, fix the arguments, retry once. If `expected_version` was wrong (newer than the file), re-read with `read_file` and use its `file.version` rather than retrying with a guess.                                                                                    |
+| Code                                                                                          | What to do                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UNAUTHENTICATED` (usually not a tool result: the connector fails or asks to re-authenticate) | Ask the user to reconnect or re-authorize the Tandem connector. Don't retry until they do.                                                                                                                                                                                                                                                                           |
+| `FORBIDDEN`                                                                                   | Tell the user they don't have access to that workspace or file. Don't retry or try workarounds.                                                                                                                                                                                                                                                                      |
+| `FILE_NOT_FOUND`, `FOLDER_NOT_FOUND`                                                          | Re-run `list_files`/`search_files` to get current ids. Don't guess ids.                                                                                                                                                                                                                                                                                              |
+| `PATH_NOT_FOUND`                                                                              | Nothing at that path (or it is a folder where a file was expected, or vice versa). Browse with `list_files`. For a missing destination folder, `create_folder` it if a new folder fits, else ask the user.                                                                                                                                                           |
+| `INVALID_PATH`                                                                                | Fix the path: names separated by `/`, not empty, and no empty, `.` or `..` segments.                                                                                                                                                                                                                                                                                 |
+| `VERSION_CONFLICT`                                                                            | Follow section 4. For `move_file`, re-read and retry with the new version; for `move_folder`, re-list and retry with the folder's new `revision`. A version or revision you didn't get from the server (even a newer one) also gets this: re-read rather than guess.                                                                                                 |
+| `NAME_EXISTS`                                                                                 | That name is taken in that folder. `kind: "file"` (`file_id`, `current_version`): read it with `read_file`; if it is the same deliverable, merge your content into it per section 3, otherwise ask the user whether to update it or use a different name. Never replace its content wholesale. `kind: "folder"` (`folder_id`): use that folder or pick another name. |
+| `INVALID_MOVE`, `FOLDER_TOO_DEEP`, `FOLDER_TOO_LARGE`                                         | The move or folder isn't allowed (a folder into itself or its subfolder; a path or move deeper than 32 folders, including a `create_folder` path; too many items). Pick another destination or ask the user.                                                                                                                                                         |
+| `TASK_ALREADY_CLAIMED`, `TASK_NOT_OWNER`, `TASK_DONE`, `TASK_NOT_FOUND`                       | Someone else owns the task, it is finished, or the id is wrong. List tasks with `manage_task` again and pick another open task; don't work on a task you don't own.                                                                                                                                                                                                  |
+| `APPROVAL_REQUIRED`                                                                           | The change needs human approval. Switch to `propose_context_change` and tell the user.                                                                                                                                                                                                                                                                               |
+| `INVALID_INPUT` or `Input validation error` (MCP error -32602)                                | Your arguments were rejected. Read the error message, fix the arguments, retry once. An invalid name (with `/`, `.` or `..`, or not 1–255 characters) is reported this way: rename it.                                                                                                                                                                               |
 
 For any other error, report it to the user in plain words and don't invent a
 success.

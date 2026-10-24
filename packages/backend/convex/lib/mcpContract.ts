@@ -12,10 +12,20 @@ interface FileRow {
   workspaceId: string;
   parentId: string | null;
   name: string;
+  path: string;
   mimeType: string;
   version: number;
   updatedAt: number;
   updatedBy: Actor;
+}
+
+interface FolderRow {
+  id: string;
+  parentId: string | null;
+  name: string;
+  path: string;
+  revision: number;
+  updatedAt: number;
 }
 
 type Field = Doc<"context_proposals">["field"];
@@ -96,6 +106,12 @@ export type ToolErrorCode =
   | "NAME_EXISTS"
   | "APPROVAL_REQUIRED"
   | "INVALID_INPUT"
+  | "INVALID_PATH"
+  | "PATH_NOT_FOUND"
+  | "FOLDER_NOT_FOUND"
+  | "INVALID_MOVE"
+  | "FOLDER_TOO_DEEP"
+  | "FOLDER_TOO_LARGE"
   | "TASK_NOT_FOUND"
   | "TASK_ALREADY_CLAIMED"
   | "TASK_NOT_OWNER"
@@ -131,6 +147,14 @@ function fileNotFound(fileId: string) {
   );
 }
 
+function folderNotFound(folderId: string) {
+  return new ToolError(
+    "FOLDER_NOT_FOUND",
+    `No folder with id ${folderId}. Call list_files to find the correct folder id.`,
+    { folder_id: folderId },
+  );
+}
+
 function invalidCursor() {
   return invalidInput("cursor is invalid or for another workspace; call sync_workspace without since");
 }
@@ -145,9 +169,15 @@ export function approvalRequired(field: string) {
 
 export interface ErrorHint {
   fileId?: string;
+  folderId?: string;
   taskId?: string;
   expectedVersion?: number;
   workspaceId?: string;
+  /**
+   * The tool that failed, so recovery hints name a next step it fits
+   * (VERSION_CONFLICT retries default to update_document).
+   */
+  tool?: "update_document" | "create_document" | "create_folder" | "move_file" | "move_folder";
 }
 
 function codeOf(err: ConvexError<Value>): string | undefined {
@@ -187,6 +217,18 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
     case "INVALID_SOURCE_FILE":
       return fileNotFound(str("fileId") ?? hint.fileId ?? "(unknown)");
     case "VERSION_CONFLICT": {
+      if (num("currentRevision") !== undefined) {
+        // A folder: its optimistic-lock counter is `revision`.
+        const folderId = str("folderId") ?? hint.folderId ?? "(unknown)";
+        const current = num("currentRevision")!;
+        const expected = num("expectedRevision") ?? 0;
+        return new ToolError(
+          "VERSION_CONFLICT",
+          `Folder ${folderId} is at revision ${current}, not ${expected}; someone else changed it. ` +
+            `Call list_files to see where it is now, then retry move_folder with expected_revision=${current}.`,
+          { folder_id: folderId, current_revision: current, expected_revision: expected },
+        );
+      }
       const taskId = str("taskId");
       if (taskId) {
         const current = num("currentVersion") ?? 0;
@@ -205,12 +247,27 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
       return new ToolError(
         "VERSION_CONFLICT",
         `File ${fileId} is at version ${current}, not ${expected}; someone else changed it. ` +
-          `Re-read the file with read_file, merge your changes into the latest content, ` +
-          `then retry update_document with expected_version=${current}.`,
+          (hint.tool === "move_file"
+            ? `Re-read the file with read_file and check the move still makes sense, `
+            : `Re-read the file with read_file, merge your changes into the latest content, `) +
+          `then retry ${hint.tool === "move_file" ? "move_file" : "update_document"} with expected_version=${current}.`,
         { file_id: fileId, current_version: current, expected_version: expected },
       );
     }
     case "NAME_EXISTS": {
+      const moving = hint.tool === "move_file" || hint.tool === "move_folder";
+      if (str("kind") === "folder") {
+        const folderId = str("folderId") ?? "";
+        const name = str("name") ?? "";
+        return new ToolError(
+          "NAME_EXISTS",
+          `A folder named ${JSON.stringify(name)} already exists there (folder_id ${folderId}). ` +
+            (moving
+              ? `Pass a different new_name or destination, or ask the user.`
+              : `Choose a different name, or use that folder.`),
+          { kind: "folder", folder_id: folderId, name },
+        );
+      }
       const fileId = str("fileId") ?? "";
       const name = str("name") ?? "";
       const current = num("currentVersion") ?? 1;
@@ -218,9 +275,13 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
       return new ToolError(
         "NAME_EXISTS",
         `A file named ${JSON.stringify(name)} already exists (file_id ${fileId}, version ${current}). ` +
-          `Read it with read_file. If it is the same document, merge your changes into it with update_document; ` +
-          `otherwise choose a different name or ask the user.`,
-        { file_id: fileId, name, current_version: current },
+          (hint.tool === "create_folder"
+            ? `A folder can't share a name with a file in the same folder: choose a different folder path, or ask the user.`
+            : moving
+              ? `Pass a different new_name or destination, or ask the user.`
+              : `Read it with read_file. If it is the same document, merge your changes into it with update_document; ` +
+                `otherwise choose a different name or ask the user.`),
+        { kind: "file", file_id: fileId, name, current_version: current },
       );
     }
     case "TASK_NOT_FOUND": {
@@ -265,11 +326,77 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
       return approvalRequired(str("field") ?? "context");
     case "INVALID_CURSOR":
       return invalidCursor();
-    case "INVALID_NAME":
-      return invalidInput("name must contain 1–255 visible characters.");
-    case "INVALID_PARENT_FOLDER":
+    case "INVALID_NAME": {
+      // MCP reports invalid names as INVALID_INPUT (docs/filesystem.md), saying why.
+      const moving = hint.tool === "move_file" || hint.tool === "move_folder";
+      const why =
+        str("reason") === "slash"
+          ? moving
+            ? 'it contains "/". new_name is only the name: pass the destination folder as to_folder_path (create it first with create_folder)'
+            : 'it contains "/". To put a file in a folder, pass folder_path (create the folder first with create_folder)'
+          : str("reason") === "dot"
+            ? 'it is "." or ".."'
+            : str("reason") === "length"
+              ? hint.tool === "create_folder"
+                ? "a folder name in the path is longer than 255 characters"
+                : "it is empty or longer than 255 characters"
+              : undefined;
       return invalidInput(
-        "parent_id must be a folder in this workspace; omit it to create at the top level.",
+        `Invalid name${why ? `: ${why}.` : "."} A name is 1–255 visible characters, without "/", and not "." or "..".`,
+        { field: "name" },
+      );
+    }
+    case "FOLDER_NOT_FOUND":
+    case "INVALID_PARENT_FOLDER":
+      return folderNotFound(str("folderId") ?? hint.folderId ?? "(unknown)");
+    case "INVALID_PATH": {
+      const path = str("path") ?? "";
+      // Paths may contain untrusted names, so quote them.
+      return new ToolError(
+        "INVALID_PATH",
+        `Invalid path ${JSON.stringify(path)}. Write paths like "/specs/api/endpoints.md": ` +
+          `names separated by "/", without empty, "." or ".." segments.`,
+        { path },
+      );
+    }
+    case "PATH_NOT_FOUND": {
+      const path = str("path") ?? "";
+      const recovery =
+        str("found") === "folder"
+          ? "That path is a folder; call list_files with it to see its contents."
+          : str("found") === "file"
+            ? "That path is a file, not a folder."
+            : str("expected") === "file"
+              ? "Call list_files to browse folders, or search_files to find the file."
+              : "Call list_files on the parent folder, or create the folder with create_folder.";
+      return new ToolError("PATH_NOT_FOUND", `Nothing at path ${JSON.stringify(path)}. ${recovery}`, { path });
+    }
+    case "INVALID_MOVE":
+      return new ToolError(
+        "INVALID_MOVE",
+        "A folder can't be moved into itself or one of its own subfolders. Choose a destination outside it.",
+        { folder_id: str("folderId") ?? hint.folderId ?? "(unknown)" },
+      );
+    case "FOLDER_TOO_DEEP":
+      return new ToolError(
+        "FOLDER_TOO_DEEP",
+        `Folders can nest at most ${num("maxDepth") ?? 32} levels deep, and this would go deeper. Use a shallower folder.`,
+        { max_depth: num("maxDepth") ?? 32 },
+      );
+    case "FOLDER_TOO_LARGE":
+      // MCP can only hit the move limit (folders in the moved subtree); the
+      // delete limit (folders and files) is dashboard-only.
+      if (hint.tool === "move_folder")
+        return new ToolError(
+          "FOLDER_TOO_LARGE",
+          `That folder has more than ${num("limit") ?? 2000} folders inside it, too many to move at once. ` +
+            `Move its subfolders one at a time, or ask the user.`,
+          { limit: num("limit") ?? 2000 },
+        );
+      return new ToolError(
+        "FOLDER_TOO_LARGE",
+        `That folder holds more than ${num("limit") ?? 500} items, too many for one operation. Ask the user.`,
+        { limit: num("limit") ?? 500 },
       );
     case "INVALID_INPUT":
     case "PROPOSAL_NOT_FOUND":
@@ -337,10 +464,22 @@ export function toFile(f: FileRow) {
     workspace_id: f.workspaceId,
     parent_id: f.parentId,
     name: f.name,
+    path: f.path,
     mime_type: f.mimeType,
     version: f.version,
     updated_at: iso(f.updatedAt),
     updated_by: toAttribution(f.updatedBy),
+  };
+}
+
+export function toFolder(f: FolderRow) {
+  return {
+    id: f.id,
+    parent_id: f.parentId,
+    name: f.name,
+    path: f.path,
+    revision: f.revision,
+    updated_at: iso(f.updatedAt),
   };
 }
 
@@ -442,6 +581,8 @@ type SyncRow = {
   pendingProposals: Pick<ProposalRow, "id" | "field" | "operation" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt">[];
   changedFiles: FileRow[];
   filesTruncated: boolean;
+  folders: FolderRow[];
+  foldersTruncated: boolean;
   recentWork: Parameters<typeof toPublished>[0][];
   workTruncated: boolean;
   tasks: TaskRow[];
@@ -506,7 +647,7 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
       brief,
       workspace: r.workspace,
       context_version: r.context.revision,
-      changed_files: r.changedFiles.map((f) => ({ id: f.id, name: f.name, version: f.version })),
+      changed_files: r.changedFiles.map((f) => ({ id: f.id, name: f.name, path: f.path, version: f.version })),
       // The cursor acknowledges the whole event page, not just recent_changes.
       // Preserve every tombstone even when the brief's ten-event list is capped.
       deleted_file_ids: r.events.filter((e) => e.kind === "file.deleted").map((e) => e.entityId),
@@ -538,6 +679,8 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
     })),
     changed_files: r.changedFiles.map(toFile),
     files_truncated: r.filesTruncated,
+    folders: r.folders.map(toFolder),
+    folders_truncated: r.foldersTruncated,
     recent_work: r.recentWork.map(toPublished),
     work_truncated: r.workTruncated,
     tasks: r.tasks.map(toTask),

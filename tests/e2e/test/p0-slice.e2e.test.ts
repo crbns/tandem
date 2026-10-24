@@ -33,6 +33,9 @@ const TOOL_SURFACE = [
   "read_file",
   "create_document",
   "update_document",
+  "create_folder",
+  "move_file",
+  "move_folder",
   "publish_work",
   "propose_context_change",
   "get_approvals",
@@ -606,6 +609,8 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
   });
 
   it("7c. an agent adds and resolves a working question immediately with retained history", async () => {
+    // Manual approval is the default; this step covers the automatic mode.
+    await a.dashboard.setContextApproval(workspaceId, "automatic");
     const before = await agent.ok<McpSync>("sync_workspace");
     const text = `Which native client should we demo first? (${run})`;
     const added = await agent.ok<{ proposal: { id: string; status: string } }>(
@@ -666,6 +671,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       questionId: question.id,
       resolved: after.context.open_questions.find((q) => q.id === question.id),
     };
+    await a.dashboard.setContextApproval(workspaceId, "manual");
   });
 
   it("7d. a superseding decision stays pending until human approval and retains both IDs", async () => {
@@ -725,6 +731,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
   });
 
   it("7e. resolves a dashboard-created question longer than 2000 characters without proposed_value", async () => {
+    await a.dashboard.setContextApproval(workspaceId, "automatic");
     const before = await agent.ok<McpSync>("sync_workspace");
     const text = `Long dashboard question (${run}): ${"x".repeat(2100)}`;
     await a.http.mutation(api.context.updateContextField, {
@@ -755,6 +762,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       resolved_at: expect.any(Number),
     });
     evidence.step7e = { questionId: question.id, length: text.length, status: "resolved" };
+    await a.dashboard.setContextApproval(workspaceId, "manual");
   });
 
   it("8. tenant boundaries: C's token and session can't touch A's workspace; revoked and malformed tokens get 401", async () => {
@@ -996,5 +1004,28 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     expect(refresh.status).toBe(400);
     await claude.close().catch(() => {});
     evidence.step10 = { clientId, connectionId: oauthConnection!.id, file: created };
+  });
+
+  it("11. folders: the agent makes /specs/api and a document in it; B's dashboard listing sees both", async () => {
+    type McpFolder = { id: string; name: string; path: string };
+    const made = await agent.ok<{ folder: McpFolder; created: boolean }>("create_folder", { path: "/specs/api" });
+    expect(made).toMatchObject({ created: true, folder: { name: "api", path: "/specs/api" } });
+    // mkdir -p is idempotent and paths are case-insensitive.
+    const again = await agent.ok<{ folder: McpFolder; created: boolean }>("create_folder", { path: "/Specs/API/" });
+    expect(again).toMatchObject({ created: false, folder: { id: made.folder.id } });
+    const doc = await agent.ok<McpFile & { path: string }>("create_document", {
+      name: "endpoints.md",
+      content: "GET /",
+      folder_path: "/specs/api",
+    });
+    expect(doc).toMatchObject({ path: "/specs/api/endpoints.md", version: 1 });
+
+    const root = await b.dashboard.listDirectory(workspaceId);
+    expect(root.folders.find((f) => f.name === "specs")).toMatchObject({ path: "/specs" });
+    const listing = await b.dashboard.listDirectory(workspaceId, made.folder.id);
+    expect(listing.breadcrumbs.map((crumb) => crumb.name)).toEqual(["specs", "api"]);
+    expect(listing.files).toEqual([expect.objectContaining({ id: doc.id, name: "endpoints.md", version: 1 })]);
+    expect((await agent.fails("list_files", { path: "//" })).code).toBe("INVALID_PATH");
+    evidence.step11 = { folder: made.folder, file: doc };
   });
 });

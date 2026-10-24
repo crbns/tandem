@@ -45,12 +45,29 @@ export interface WorkspaceSummary {
 export interface FileMetadata {
   id: string;
   workspace_id: string;
+  /** The containing folder, or null at the workspace root. */
   parent_id: string | null;
   name: string;
+  /** "/" + folder names + file name, e.g. "/specs/api/endpoints.md". */
+  path: string;
   mime_type: string;
   version: number;
   updated_at: string;
   updated_by: Attribution;
+}
+
+/**
+ * A folder (docs/filesystem.md). The root is implicit: it has no row and its
+ * path is "/". `revision` is the folder's optimistic-lock counter, starting at 1.
+ */
+export interface FolderMetadata {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  /** No trailing slash, e.g. "/specs/api". */
+  path: string;
+  revision: number;
+  updated_at: string;
 }
 
 export interface FileWithContent {
@@ -58,11 +75,81 @@ export interface FileWithContent {
   content: string;
 }
 
+/**
+ * Paths start with "/" (optional on input), separate names with "/", and
+ * ignore one trailing "/". Each segment is matched by `nameKey`. Empty
+ * segments, "." and ".." throw INVALID_PATH.
+ */
 export interface ListFilesInput {
   workspace_id?: string;
-  /** Folders aren't supported yet: throw INVALID_INPUT for any folder_id. */
+  /** Folder to list; a missing, deleted or other-workspace folder throws FOLDER_NOT_FOUND. */
   folder_id?: string;
+  /** Folder path to list, alternative to `folder_id` (both: INVALID_INPUT); missing: PATH_NOT_FOUND. */
+  path?: string;
+  /** List the folder's whole subtree, flattened, instead of its immediate children. */
+  recursive?: boolean;
+  /** Name search over the folder's subtree (the whole workspace without a folder). */
   query?: string;
+}
+
+export interface ListFilesResult {
+  /** The listed folder; `id` is null for the root. */
+  folder: { id: string | null; path: string };
+  /** Sorted by name (immediate children) or by path (recursive or query). */
+  folders: FolderMetadata[];
+  files: FileMetadata[];
+  /** More than 500 folders or 500 files matched; the rest were omitted. */
+  truncated: boolean;
+}
+
+/** Exactly one of `file_id` and `path` (a file path in the default workspace). */
+export interface ReadFileInput {
+  file_id?: string;
+  path?: string;
+}
+
+export interface CreateFolderInput {
+  /**
+   * `mkdir -p`: missing segments are created, existing folders reused. A
+   * segment naming a file throws NAME_EXISTS (kind "file"); more than 32
+   * levels throws FOLDER_TOO_DEEP. The root ("/") is INVALID_PATH.
+   */
+  path: string;
+  workspace_id?: string;
+}
+
+export interface CreateFolderResult {
+  folder: FolderMetadata;
+  /** False when the folder already existed (the call is idempotent). */
+  created: boolean;
+}
+
+/**
+ * Destination is exactly one of `to_folder_id` and `to_folder_path` ("/" is
+ * the root). `new_name` renames in the same step, with the same rules as a
+ * new name. A name taken by another file or folder in the destination throws
+ * NAME_EXISTS.
+ */
+export interface MoveFileInput {
+  file_id: string;
+  /** Checked like update_document; the move writes version N+1 with the same content. */
+  expected_version: number;
+  to_folder_id?: string;
+  to_folder_path?: string;
+  new_name?: string;
+}
+
+/**
+ * Like MoveFileInput. Moving a folder into itself or one of its descendants
+ * throws INVALID_MOVE; a result deeper than 32 levels throws FOLDER_TOO_DEEP.
+ */
+export interface MoveFolderInput {
+  folder_id: string;
+  /** The folder's current `revision`; stale throws VERSION_CONFLICT. */
+  expected_revision: number;
+  to_folder_id?: string;
+  to_folder_path?: string;
+  new_name?: string;
 }
 
 export interface CreateDocumentInput {
@@ -72,19 +159,23 @@ export interface CreateDocumentInput {
    * (src/names.ts): Unicode NFKC, strip zero-width characters (U+200B-U+200D,
    * U+2060, U+FEFF), trim, collapse internal whitespace to one space, case-fold
    * with uppercase then lowercase (so "Straße" and "STRASSE" collide).
-   * If the key is empty, throw INVALID_INPUT. If a file with the same key exists
-   * there, throw NAME_EXISTS with its file_id, name, and current_version.
-   * 1–255 characters; reject longer names with INVALID_INPUT.
+   * If the key is empty, or the name contains "/" or is "." or "..", throw
+   * INVALID_INPUT. Files and folders share one namespace per folder: if a file
+   * with the same key exists there, throw NAME_EXISTS with kind "file", its
+   * file_id, name, and current_version; for a folder, kind "folder" and its
+   * folder_id. 1–255 characters; reject longer names with INVALID_INPUT.
    */
   name: string;
   content: string;
   mime_type: string;
   workspace_id?: string;
   /**
-   * Must name an existing folder in the same workspace as the new document;
-   * otherwise throw INVALID_INPUT. Never link a record across workspaces.
+   * Must name a live folder in the same workspace as the new document;
+   * otherwise throw FOLDER_NOT_FOUND. Never link a record across workspaces.
    */
   parent_id?: string;
+  /** Alternative to `parent_id` (both: INVALID_INPUT). Must exist: PATH_NOT_FOUND otherwise. */
+  folder_path?: string;
 }
 
 export interface UpdateDocumentInput {
@@ -225,6 +316,9 @@ export interface PublishedWork {
 export type WorkspaceEventType =
   | "file.created"
   | "file.updated"
+  | "file.moved"
+  | "folder.created"
+  | "folder.moved"
   | "context.migrated"
   | "context.recorded"
   | "context.resolved"
@@ -239,7 +333,10 @@ export type WorkspaceEventType =
   | "workspace.member_added"
   | "workspace.invite_created"
   | "workspace.invite_revoked"
-  | "folder.created"
+  | "file.renamed"
+  | "file.deleted"
+  | "folder.renamed"
+  | "folder.deleted"
   | "agent.connected"
   | "agent.revoked";
 
@@ -298,6 +395,9 @@ export interface SyncResult {
   /** Newest updated_at first, at most 50. */
   changed_files: FileMetadata[];
   files_truncated: boolean;
+  /** Every live folder in the workspace, sorted by path, at most 200. */
+  folders: FolderMetadata[];
+  folders_truncated: boolean;
   /** Newest first, at most 20; with since, restricted to this event page. */
   recent_work: PublishedWork[];
   /** Older matching work was omitted; this is not a work pagination cursor. */
@@ -353,10 +453,15 @@ export interface ApplyContextChangeInput {
  * membership on every call and throw TandemError for expected failures.
  * When `workspace_id` is omitted, use the actor's default workspace.
  *
- * Every successful write (createDocument, updateDocument, proposeContextChange,
- * publishWork, decideProposal, applyContextChange) appends a WorkspaceEvent
- * atomically with the change. For agent actors, writes through the MCP tools
- * also set the connection's last_action_at.
+ * Every successful write (createDocument, updateDocument, createFolder,
+ * moveFile, moveFolder, proposeContextChange, publishWork, decideProposal,
+ * applyContextChange) appends a WorkspaceEvent atomically with the change.
+ * For agent actors, writes through the MCP tools also set the connection's
+ * last_action_at.
+ *
+ * Files and folders form the file system in docs/filesystem.md: one namespace
+ * per folder (files and folders compared by `nameKey`), paths resolved segment
+ * by segment, at most 32 nested folders.
  */
 export interface TandemBackend {
   /** Which implementation this is, e.g. "mock". Dev-only features check it. */
@@ -424,14 +529,18 @@ export interface TandemBackend {
     actor: Actor,
     input: ApplyContextChangeInput,
   ): Promise<{ context: StructuredContext; context_version: number }>;
-  listFiles(actor: Actor, input: ListFilesInput): Promise<FileMetadata[]>;
+  listFiles(actor: Actor, input: ListFilesInput): Promise<ListFilesResult>;
   /**
    * Searches one workspace, with the same membership check as listFiles (FORBIDDEN
    * for a non-member workspace_id). Name matches come first, then newest
    * updated_at first; at most `limit` results.
    */
   searchFiles(actor: Actor, input: SearchFilesInput): Promise<SearchResult[]>;
-  readFile(actor: Actor, fileId: string): Promise<FileWithContent>;
+  /**
+   * By id (unknown and cross-tenant: FILE_NOT_FOUND) or by path in the default
+   * workspace (PATH_NOT_FOUND, also when the path names a folder).
+   */
+  readFile(actor: Actor, input: ReadFileInput): Promise<FileWithContent>;
   /**
    * Revision metadata (no content), newest first, at most `limit` (1–100).
    * Unknown and cross-tenant files both throw FILE_NOT_FOUND, like readFile.
@@ -464,4 +573,16 @@ export interface TandemBackend {
     actor: Actor,
     input: UpdateDocumentInput,
   ): Promise<FileMetadata>;
+  /** Idempotent `mkdir -p`; records folder.created for each new folder. */
+  createFolder(
+    actor: Actor,
+    input: CreateFolderInput,
+  ): Promise<CreateFolderResult>;
+  /**
+   * Version checks as in updateDocument (VERSION_CONFLICT names move_file),
+   * then version N+1 with unchanged content and a file.moved event.
+   */
+  moveFile(actor: Actor, input: MoveFileInput): Promise<FileMetadata>;
+  /** Revision N+1 and a folder.moved event; the subtree moves with it. */
+  moveFolder(actor: Actor, input: MoveFolderInput): Promise<FolderMetadata>;
 }

@@ -194,7 +194,12 @@ It builds `apps/mcp`, then for every trial does the following:
 
 Prompts are in `eval/prompts.json`: the 5 fresh-chat prompts from
 `TESTING.md`, a conflict prompt (`p6-conflict-edit`), an explicitly authorized
-create prompt (`p7-create-document`), plus 2 unrelated controls.
+create prompt (`p7-create-document`), 3 folder prompts, plus 2 unrelated
+controls. Before a folder prompt the harness saves the `FOLDER_SEED` tree from
+`eval/fixtures.mjs` (`/specs/api-spec.md`, `/meeting-notes/...`) and grades
+where the new document landed (`p8-folder-existing` into `/meeting-notes`,
+`p9-folder-new` into a new `/retros`) or whether `/specs/api-spec.md` was read
+and quoted (`p10-read-path`). See the report's Folders section.
 
 **Environments (`--env`).** `bare` (the default) is the setup above: an empty
 project with Tandem as the only MCP server. `realistic` gives the model

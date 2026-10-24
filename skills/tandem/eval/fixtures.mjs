@@ -91,3 +91,38 @@ export function main(): void {
 }
 `,
 };
+
+// Saved (as user_sam) before prompts with "folders" set, so the workspace has
+// the folders a team would already use. A file's `marker` is a phrase only its
+// content has; a read-by-path answer must repeat it.
+export const FOLDER_SEED = {
+  folders: ["/specs", "/meeting-notes"],
+  files: [
+    {
+      folder_path: "/specs",
+      name: "api-spec.md",
+      marker: "120 requests per minute",
+      content: `# API spec
+
+## Rate limits
+
+Each client may send at most 120 requests per minute. Over the limit the
+server answers 429 with a Retry-After header.
+
+## Versioning
+
+Every write carries expected_version; a stale write gets VERSION_CONFLICT.
+`,
+    },
+    {
+      folder_path: "/meeting-notes",
+      name: "standup-2026-10-20.md",
+      content: `# Standup, 2026-10-20
+
+- Sam: version history panel in review.
+- Alex: MCP server OAuth flow.
+- Blockers: none.
+`,
+    },
+  ],
+};

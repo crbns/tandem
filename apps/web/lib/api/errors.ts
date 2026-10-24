@@ -9,7 +9,12 @@ export const API_ERROR_CODES = [
   "INVITE_REVOKED",
   "FORBIDDEN",
   "FILE_NOT_FOUND",
+  "FOLDER_NOT_FOUND",
   "NAME_EXISTS",
+  "INVALID_NAME",
+  "INVALID_MOVE",
+  "FOLDER_TOO_DEEP",
+  "FOLDER_TOO_LARGE",
   "VERSION_CONFLICT",
   "UNAUTHENTICATED",
   "APPROVAL_REQUIRED",
@@ -30,6 +35,10 @@ export interface ApiErrorDetails {
   /** Head content, if the backend includes it with the conflict. */
   currentContent?: string;
   updatedBy?: Actor;
+  /** Folder revision on the server; set on a folder's VERSION_CONFLICT. */
+  currentRevision?: number;
+  /** NAME_EXISTS: the file or folder that already has the name. */
+  existing?: { kind: "file" | "folder"; id?: string; name?: string };
   /** Original error message, for logs only. Never shown to users verbatim. */
   cause?: string;
 }
@@ -93,7 +102,10 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
   const backendCode = record && typeof record.code === "string" ? record.code : undefined;
   const code = backendCode && isApiErrorCode(backendCode)
     ? backendCode
-    : backendCode === "INVALID_UPLOAD_SIZE" || backendCode === "UNSUPPORTED_MIME_TYPE" || backendCode === "NOT_BINARY_FILE" || backendCode === "UPLOAD_ALREADY_FINALIZED" || backendCode === "UPLOAD_NOT_FOUND" || backendCode === "INVALID_NAME" || backendCode === "INVALID_PARENT_FOLDER" || backendCode === "INVALID_EMAIL" || backendCode === "USER_NOT_REGISTERED"
+    // A destination or parent folder that is missing or deleted (MCP maps it the same way).
+    : backendCode === "INVALID_PARENT_FOLDER"
+      ? "FOLDER_NOT_FOUND"
+    : backendCode === "INVALID_UPLOAD_SIZE" || backendCode === "UNSUPPORTED_MIME_TYPE" || backendCode === "NOT_BINARY_FILE" || backendCode === "UPLOAD_ALREADY_FINALIZED" || backendCode === "UPLOAD_NOT_FOUND" || backendCode === "INVALID_PATH" || backendCode === "INVALID_EMAIL" || backendCode === "USER_NOT_REGISTERED"
       ? "INVALID_INPUT"
       : backendCode === "USER_NOT_INITIALIZED"
         ? "UNAUTHENTICATED"
@@ -118,6 +130,18 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
       details.currentContent = currentContent;
     const updatedBy = asActor(record.updatedBy ?? record.updated_by);
     if (updatedBy) details.updatedBy = updatedBy;
+    const currentRevision = record.currentRevision ?? record.current_revision;
+    if (typeof currentRevision === "number")
+      details.currentRevision = currentRevision;
+    // NAME_EXISTS names what holds the name: { kind, fileId | folderId, name }.
+    if (record.kind === "file" || record.kind === "folder") {
+      const id = record.kind === "file" ? record.fileId ?? record.file_id : record.folderId ?? record.folder_id;
+      details.existing = {
+        kind: record.kind,
+        ...(typeof id === "string" ? { id } : {}),
+        ...(typeof record.name === "string" ? { name: record.name } : {}),
+      };
+    }
   }
   if (code === "UNKNOWN") details.cause = JSON.stringify(data);
   return new TandemApiError(code, details);

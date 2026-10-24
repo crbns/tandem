@@ -15,9 +15,14 @@ import {
   toFileMetadata,
   updateDocumentCore,
 } from "./lib/ops";
+import {
+  assertNameFree,
+  moveFileCore,
+  requireParentFolder,
+  requireValidName,
+} from "./lib/fs";
 
 import { validateBinaryUpload } from "./lib/binaries";
-import { MAX_NAME_LENGTH, nameKey, storedName } from "./lib/names";
 
 const actorValidator = v.object({
   type: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
@@ -253,6 +258,21 @@ export const renameFile = mutation({
   },
 });
 
+export const moveFile = mutation({
+  args: {
+    fileId: v.id("files"),
+    parentId: v.union(v.id("folders"), v.null()),
+    expectedVersion: v.number(),
+  },
+  returns: v.object({ version: v.number() }),
+  handler: async (ctx, args) => {
+    const file = await getAuthorizedFile(ctx, args.fileId);
+    const user = await requireUser(ctx);
+    const moved = await moveFileCore(ctx, { ...args, file, actor: humanActor(user) });
+    return { version: moved.version };
+  },
+});
+
 export const deleteFile = mutation({
   args: { fileId: v.id("files"), expectedVersion: v.number() },
   returns: v.null(),
@@ -279,6 +299,8 @@ export const finalizeUpload = mutation({
     workspaceId: v.id("workspaces"),
     storageId: v.id("_storage"),
     name: v.string(),
+    // New uploads only: the folder to place the file in (root when absent).
+    parentId: v.optional(v.id("folders")),
     fileId: v.optional(v.id("files")),
     expectedVersion: v.optional(v.number()),
   },
@@ -328,29 +350,15 @@ export const finalizeUpload = mutation({
     } else {
       if (args.expectedVersion !== undefined)
         throw new ConvexError({ code: "INVALID_INPUT" });
-      name = storedName(args.name);
-      const key = nameKey(name);
-      if (!key || name.length > MAX_NAME_LENGTH)
-        throw new ConvexError({ code: "INVALID_NAME" });
-      const existing = await ctx.db
-        .query("files")
-        .withIndex("by_workspace_and_parent_and_name_key", (q) =>
-          q
-            .eq("workspaceId", args.workspaceId)
-            .eq("parentId", undefined)
-            .eq("nameKey", key),
-        )
-        .first();
-      if (existing)
-        throw new ConvexError({
-          code: "NAME_EXISTS",
-          fileId: existing._id,
-          currentVersion: existing.version,
-        });
+      await requireParentFolder(ctx, args.workspaceId, args.parentId);
+      const valid = requireValidName(args.name);
+      name = valid.name;
+      await assertNameFree(ctx, args.workspaceId, args.parentId, valid.key);
       fileId = await ctx.db.insert("files", {
         workspaceId: args.workspaceId,
+        parentId: args.parentId,
         name,
-        nameKey: key,
+        nameKey: valid.key,
         mimeType,
         storageId: args.storageId,
         version,

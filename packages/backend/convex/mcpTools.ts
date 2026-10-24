@@ -9,7 +9,7 @@
 import { vMcpUser } from "@convex-dev/mcp";
 import { ConvexError, v } from "convex/values";
 import { internalMutation } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import {
   requireAgent,
@@ -33,7 +33,6 @@ import {
   publishWorkCore,
   searchFilesCore,
   syncCore,
-  toFileMetadata,
   toPublishedWork,
   toProposal,
   toTask,
@@ -41,12 +40,31 @@ import {
   updateTaskCore,
 } from "./lib/ops";
 import {
+  ensureFolderPathCore,
+  fileRowValidator,
+  filePath,
+  folderPath,
+  folderRowValidator,
+  getFolderInWorkspace,
+  joinPath,
+  listChildFiles,
+  listChildFolders,
+  loadFolderIndex,
+  MAX_FOLDER_DEPTH,
+  moveFileCore,
+  moveFolderCore,
+  resolvePath,
+  toFileRow,
+  toFolderRow,
+  type FolderIndex,
+} from "./lib/fs";
+import { matchesQuery, queryTerms } from "./lib/names";
+import {
   actorValidator,
   contextApprovalValidator,
   contextFieldValidator,
   contextValidator,
   eventValidator,
-  fileMetadataValidator,
   proposalStatusValidator,
   proposalValidator,
   publishedWorkValidator,
@@ -55,7 +73,10 @@ import {
   taskValidator,
 } from "./lib/validators";
 
-const LIST_LIMIT = 200;
+const LIST_LIMIT = 500;
+// Live files a list_files query scans in the folder's subtree.
+const LIST_SEARCH_SCAN = 1000;
+const SYNC_FOLDER_LIMIT = 200;
 const MEMBER_LIMIT = 100;
 const TEXT_MIME_TYPES = new Set(["text/markdown", "text/plain"]);
 
@@ -84,6 +105,58 @@ function boundedText(value: string, max: number, field: string): string {
     throw new ConvexError({ code: "INVALID_INPUT", field });
   return text;
 }
+
+/**
+ * A folder named by id or by path (list_files, create_document and move
+ * destinations); null is the root. A path that is missing or names a file is
+ * PATH_NOT_FOUND; an id that isn't a live folder here is FOLDER_NOT_FOUND.
+ */
+async function folderArg(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  arg: { id?: string; path?: string },
+  field: string,
+): Promise<Doc<"folders"> | null> {
+  if (arg.id !== undefined && arg.path !== undefined)
+    throw new ConvexError({ code: "INVALID_INPUT", field });
+  if (arg.id !== undefined) return await getFolderInWorkspace(ctx, arg.id, workspaceId);
+  if (arg.path === undefined) return null;
+  const found = await resolvePath(ctx, workspaceId, arg.path);
+  if (found?.kind === "root") return null;
+  if (found?.kind === "folder") return found.folder;
+  throw new ConvexError({
+    code: "PATH_NOT_FOUND",
+    path: arg.path,
+    expected: "folder",
+    ...(found ? { found: "file" } : {}),
+  });
+}
+
+/** True when `parentId` is `rootId` or below it; everything is below the root. */
+function isWithin(
+  index: FolderIndex,
+  parentId: Id<"folders"> | undefined,
+  rootId: Id<"folders"> | null,
+): boolean {
+  if (!rootId) return true;
+  // The bound also stops a corrupt cycle.
+  for (let at = parentId, hops = 0; at && hops <= 2 * MAX_FOLDER_DEPTH; hops++) {
+    if (at === rootId) return true;
+    at = index.get(at)?.parentId;
+  }
+  return false;
+}
+
+/** File metadata from lib/ops plus its path, computed from the folder index. */
+function withPath<F extends { parentId: Id<"folders"> | null; name: string }>(
+  index: FolderIndex,
+  file: F,
+): F & { path: string } {
+  return { ...file, path: joinPath(index.folderPath(file.parentId), file.name) };
+}
+
+const byName = (a: string, b: string) =>
+  a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
 /**
  * Presence for a failed agent call. A failing tool mutation rolls back its own
@@ -178,59 +251,106 @@ export const getWorkspaceInfo = internalMutation({
   },
 });
 
+/**
+ * list_files: a folder's immediate children (root by default), its whole
+ * subtree flattened when `recursive`, or name matches within the subtree when
+ * `query` has a term (see matchesQuery; a blank query is no query). Children
+ * sort by name; subtrees and matches by path.
+ */
 export const listFiles = internalMutation({
   args: {
     principal,
     workspaceId: v.optional(v.string()),
     folderId: v.optional(v.string()),
+    path: v.optional(v.string()),
+    recursive: v.optional(v.boolean()),
     query: v.optional(v.string()),
   },
   returns: v.object({
-    files: v.array(fileMetadataValidator),
+    folder: v.object({ id: v.union(v.id("folders"), v.null()), path: v.string() }),
+    folders: v.array(folderRowValidator),
+    files: v.array(fileRowValidator),
     truncated: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal);
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
-    let folderId: Id<"folders"> | undefined;
-    if (args.folderId !== undefined) {
-      const id = ctx.db.normalizeId("folders", args.folderId);
-      const folder = id ? await ctx.db.get(id) : null;
-      if (!folder || folder.workspaceId !== workspaceId)
-        throw new ConvexError({ code: "INVALID_INPUT", field: "folderId" });
-      folderId = folder._id;
+    const folder = await folderArg(ctx, workspaceId, { id: args.folderId, path: args.path }, "path");
+    const rootId = folder?._id ?? null;
+    const base = await folderPath(ctx, rootId);
+    const terms = queryTerms(args.query ?? "");
+
+    if (terms.length === 0 && !args.recursive) {
+      const folders = await listChildFolders(ctx, workspaceId, folder?._id, LIST_LIMIT + 1);
+      const files = await listChildFiles(ctx, workspaceId, folder?._id, LIST_LIMIT + 1);
+      return {
+        folder: { id: rootId, path: base },
+        folders: folders
+          .slice(0, LIST_LIMIT)
+          .sort((a, b) => byName(a.name, b.name))
+          .map((f) => toFolderRow(f, joinPath(base, f.name))),
+        files: files
+          .slice(0, LIST_LIMIT)
+          .sort((a, b) => byName(a.name, b.name))
+          .map((f) => toFileRow(f, joinPath(base, f.name))),
+        truncated: folders.length > LIST_LIMIT || files.length > LIST_LIMIT,
+      };
     }
-    const needle = args.query?.trim();
-    let rows;
-    if (needle) {
-      // Name search runs over the whole workspace through the search index,
-      // so `truncated` means more files matched than were returned.
-      rows = await ctx.db
+
+    const index = await loadFolderIndex(ctx, workspaceId);
+    let folders = index.folders.filter((f) => isWithin(index, f.parentId, rootId));
+    const subtreeFolderIds = folders.map((f) => f._id);
+    /** Up to `limit` + 1 live files in the folder's subtree. */
+    const filesInScope = async (limit: number) => {
+      if (!rootId)
+        return await ctx.db
+          .query("files")
+          .withIndex("by_workspace_and_deleted_at_and_parent", (q) =>
+            q.eq("workspaceId", workspaceId).eq("deletedAt", undefined),
+          )
+          .take(limit + 1);
+      const found: Doc<"files">[] = [];
+      for (const id of [rootId, ...subtreeFolderIds]) {
+        if (found.length > limit) break;
+        found.push(...(await listChildFiles(ctx, workspaceId, id, limit + 1 - found.length)));
+      }
+      return found;
+    };
+    let files: Doc<"files">[];
+    let truncated = index.truncated;
+    if (terms.length > 0) {
+      // One rule for folders and files (lib/names.ts matchesQuery), applied
+      // to a bounded scan of the subtree; `truncated` also means the scan
+      // stopped early. Name-index hits add word matches beyond the scan.
+      folders = folders.filter((f) => matchesQuery(f.name, terms));
+      const scanned = await filesInScope(LIST_SEARCH_SCAN);
+      if (scanned.length > LIST_SEARCH_SCAN) truncated = true;
+      const hits = await ctx.db
         .query("files")
-        .withSearchIndex("search_name", (q) => {
-          const search = q.search("name", needle).eq("workspaceId", workspaceId).eq("deletedAt", undefined);
-          return folderId ? search.eq("parentId", folderId) : search;
-        })
-        .take(LIST_LIMIT + 1);
-    } else if (folderId) {
-      rows = await ctx.db
-        .query("files")
-        .withIndex("by_workspace_and_deleted_at_and_parent", (q) =>
-          q.eq("workspaceId", workspaceId).eq("deletedAt", undefined).eq("parentId", folderId),
+        .withSearchIndex("search_name", (q) =>
+          // A few terms are plenty for candidates; search queries are capped.
+          q.search("name", terms.slice(0, 8).join(" ")).eq("workspaceId", workspaceId).eq("deletedAt", undefined),
         )
         .take(LIST_LIMIT + 1);
+      const byId = new Map([...scanned.slice(0, LIST_SEARCH_SCAN), ...hits].map((f) => [f._id, f] as const));
+      files = [...byId.values()].filter(
+        (f) => isWithin(index, f.parentId, rootId) && matchesQuery(f.name, terms),
+      );
     } else {
-      rows = await ctx.db
-        .query("files")
-        .withIndex("by_workspace_and_deleted_at_and_updated_at", (q) =>
-          q.eq("workspaceId", workspaceId).eq("deletedAt", undefined),
-        )
-        .order("desc")
-        .take(LIST_LIMIT + 1);
+      files = await filesInScope(LIST_LIMIT);
     }
-    const truncated = rows.length > LIST_LIMIT;
-    const files = rows.slice(0, LIST_LIMIT);
-    return { files: files.map(toFileMetadata), truncated };
+    const folderRows = folders
+      .map((f) => toFolderRow(f, index.folderPath(f._id)))
+      .sort((a, b) => byName(a.path, b.path));
+    const fileRows = files
+      .map((f) => toFileRow(f, index.filePath(f)))
+      .sort((a, b) => byName(a.path, b.path));
+    return {
+      folder: { id: rootId, path: base },
+      folders: folderRows.slice(0, LIST_LIMIT),
+      files: fileRows.slice(0, LIST_LIMIT),
+      truncated: truncated || folderRows.length > LIST_LIMIT || fileRows.length > LIST_LIMIT,
+    };
   },
 });
 
@@ -243,7 +363,7 @@ export const searchFiles = internalMutation({
   },
   returns: v.array(
     v.object({
-      file: fileMetadataValidator,
+      file: fileRowValidator,
       snippet: v.string(),
       match: v.union(v.literal("name"), v.literal("content")),
     }),
@@ -251,27 +371,48 @@ export const searchFiles = internalMutation({
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal);
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
-    return await searchFilesCore(ctx, workspaceId, args.query, args.limit);
+    const results = await searchFilesCore(ctx, workspaceId, args.query, args.limit);
+    const index = await loadFolderIndex(ctx, workspaceId);
+    return results.map((r) => ({ ...r, file: withPath(index, r.file) }));
   },
 });
 
+/** read_file by id, or by path in the connection's workspace. */
 export const readFile = internalMutation({
-  args: { principal, fileId: v.string() },
+  args: { principal, fileId: v.optional(v.string()), path: v.optional(v.string()) },
   returns: v.object({
-    file: fileMetadataValidator,
+    file: fileRowValidator,
     content: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal);
-    const file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
-    return { file: toFileMetadata(file), content: file.storageId ? "binary: view or download in the dashboard" : (file.content ?? null) };
+    if ((args.fileId === undefined) === (args.path === undefined))
+      throw new ConvexError({ code: "INVALID_INPUT", field: "file_id" });
+    let file: Doc<"files">;
+    if (args.fileId !== undefined) {
+      file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
+    } else {
+      const found = await resolvePath(ctx, session.workspaceId, args.path!);
+      if (found?.kind !== "file")
+        throw new ConvexError({
+          code: "PATH_NOT_FOUND",
+          path: args.path!,
+          expected: "file",
+          ...(found ? { found: "folder" } : {}),
+        });
+      file = found.file;
+    }
+    return {
+      file: toFileRow(file, await filePath(ctx, file)),
+      content: file.storageId ? "binary: view or download in the dashboard" : (file.content ?? null),
+    };
   },
 });
 
 export const getFileVersions = internalMutation({
   args: { principal, fileId: v.string(), limit: v.number() },
   returns: v.object({
-    file: fileMetadataValidator,
+    file: fileRowValidator,
     versions: v.array(
       v.object({
         version: v.number(),
@@ -292,7 +433,7 @@ export const getFileVersions = internalMutation({
       .take(limit);
     const encoder = new TextEncoder();
     return {
-      file: toFileMetadata(file),
+      file: toFileRow(file, await filePath(ctx, file)),
       // Sizes only: revision content never leaves through this function.
       versions: revisions.map((revision) => ({
         version: revision.version,
@@ -309,30 +450,33 @@ export const createDocument = internalMutation({
     principal,
     workspaceId: v.optional(v.string()),
     parentId: v.optional(v.string()),
+    /** Alternative to parentId; the folder must already exist. */
+    folderPath: v.optional(v.string()),
     name: v.string(),
     mimeType: v.string(),
     content: v.string(),
   },
-  returns: fileMetadataValidator,
+  returns: fileRowValidator,
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal, { write: true });
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
     if (!TEXT_MIME_TYPES.has(args.mimeType))
       throw new ConvexError({ code: "INVALID_INPUT", field: "mimeType" });
-    let parentId;
-    if (args.parentId !== undefined) {
-      parentId = ctx.db.normalizeId("folders", args.parentId) ?? undefined;
-      if (!parentId) throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
-    }
+    const parent = await folderArg(
+      ctx,
+      workspaceId,
+      { id: args.parentId, path: args.folderPath },
+      "folder_path",
+    );
     const file = await createDocumentCore(ctx, {
       workspaceId,
-      parentId,
+      parentId: parent?._id,
       name: args.name,
       mimeType: args.mimeType,
       content: args.content,
       actor: session.actor,
     });
-    return toFileMetadata(file);
+    return toFileRow(file, await filePath(ctx, file));
   },
 });
 
@@ -343,7 +487,7 @@ export const updateDocument = internalMutation({
     content: v.string(),
     expectedVersion: v.number(),
   },
-  returns: fileMetadataValidator,
+  returns: fileRowValidator,
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal, { write: true });
     const file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
@@ -353,7 +497,89 @@ export const updateDocument = internalMutation({
       expectedVersion: args.expectedVersion,
       actor: session.actor,
     });
-    return toFileMetadata(updated);
+    return toFileRow(updated, await filePath(ctx, updated));
+  },
+});
+
+/** create_folder: `mkdir -p`, idempotent (`created` false when it existed). */
+export const createFolder = internalMutation({
+  args: { principal, workspaceId: v.optional(v.string()), path: v.string() },
+  returns: v.object({ folder: folderRowValidator, created: v.boolean() }),
+  handler: async (ctx, args) => {
+    const session = await agentCall(ctx, args.principal, { write: true });
+    const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
+    const { folder, created } = await ensureFolderPathCore(ctx, {
+      workspaceId,
+      path: args.path,
+      actor: session.actor,
+    });
+    return { folder: toFolderRow(folder, await folderPath(ctx, folder._id)), created };
+  },
+});
+
+/** move_file: version N+1 with the same content, in the destination folder. */
+export const moveFile = internalMutation({
+  args: {
+    principal,
+    fileId: v.string(),
+    expectedVersion: v.number(),
+    toFolderId: v.optional(v.string()),
+    toFolderPath: v.optional(v.string()),
+    newName: v.optional(v.string()),
+  },
+  returns: fileRowValidator,
+  handler: async (ctx, args) => {
+    const session = await agentCall(ctx, args.principal, { write: true });
+    if (args.toFolderId === undefined && args.toFolderPath === undefined)
+      throw new ConvexError({ code: "INVALID_INPUT", field: "to_folder_path" });
+    const file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
+    const dest = await folderArg(
+      ctx,
+      session.workspaceId,
+      { id: args.toFolderId, path: args.toFolderPath },
+      "to_folder_path",
+    );
+    const moved = await moveFileCore(ctx, {
+      file,
+      parentId: dest?._id ?? null,
+      expectedVersion: args.expectedVersion,
+      name: args.newName,
+      actor: session.actor,
+    });
+    return toFileRow(moved, await filePath(ctx, moved));
+  },
+});
+
+/** move_folder: the folder and its subtree move; revision N+1. */
+export const moveFolder = internalMutation({
+  args: {
+    principal,
+    folderId: v.string(),
+    expectedRevision: v.number(),
+    toFolderId: v.optional(v.string()),
+    toFolderPath: v.optional(v.string()),
+    newName: v.optional(v.string()),
+  },
+  returns: folderRowValidator,
+  handler: async (ctx, args) => {
+    const session = await agentCall(ctx, args.principal, { write: true });
+    if (args.toFolderId === undefined && args.toFolderPath === undefined)
+      throw new ConvexError({ code: "INVALID_INPUT", field: "to_folder_path" });
+    const folder = await getFolderInWorkspace(ctx, args.folderId, session.workspaceId);
+    const dest = await folderArg(
+      ctx,
+      session.workspaceId,
+      { id: args.toFolderId, path: args.toFolderPath },
+      "to_folder_path",
+    );
+    const moved = await moveFolderCore(ctx, {
+      folder,
+      parentId: dest?._id ?? null,
+      expectedRevision: args.expectedRevision,
+      name: args.newName,
+      actor: session.actor,
+    });
+    return toFolderRow(moved, await folderPath(ctx, moved._id));
   },
 });
 
@@ -381,8 +607,11 @@ export const syncWorkspace = internalMutation({
         createdAt: v.number(),
       }),
     ),
-    changedFiles: v.array(fileMetadataValidator),
+    changedFiles: v.array(fileRowValidator),
     filesTruncated: v.boolean(),
+    /** Every live folder, sorted by path, on every sync. */
+    folders: v.array(folderRowValidator),
+    foldersTruncated: v.boolean(),
     recentWork: v.array(publishedWorkValidator),
     workTruncated: v.boolean(),
     tasks: v.array(taskValidator),
@@ -401,6 +630,10 @@ export const syncWorkspace = internalMutation({
     )
       throw new ConvexError({ code: "INVALID_CURSOR" });
     const result = await syncCore(ctx, workspaceId, args.sinceSeq);
+    const index = await loadFolderIndex(ctx, workspaceId);
+    const folders = index.folders
+      .map((f) => toFolderRow(f, index.folderPath(f._id)))
+      .sort((a, b) => byName(a.path, b.path));
     // One row per connection, so two connections of the same person and
     // client don't overwrite each other's cursor.
     const cursor = await ctx.db
@@ -429,7 +662,12 @@ export const syncWorkspace = internalMutation({
         updatedAt: now,
       });
     }
-    return result;
+    return {
+      ...result,
+      changedFiles: result.changedFiles.map((f) => withPath(index, f)),
+      folders: folders.slice(0, SYNC_FOLDER_LIMIT),
+      foldersTruncated: index.truncated || folders.length > SYNC_FOLDER_LIMIT,
+    };
   },
 });
 

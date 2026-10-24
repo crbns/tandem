@@ -91,6 +91,12 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
     else clearDraftStash(userKey, file.id);
   }, [userKey, readOnly, file.id, pending?.draft, pending?.baseVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The page reloads the file after a move or rename (and on workspace events);
+  // let the machine adopt a newer version whose content didn't change.
+  useEffect(() => {
+    dispatch({ type: "HEAD_SEEN", head });
+  }, [head.version, head.content]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const refreshLastEdited = () => {
     api.readFile(file.id).then(
       (latest) => setLastEdited({ actor: latest.updatedBy, at: latest.updatedAt }),

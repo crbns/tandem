@@ -98,6 +98,30 @@ describe("file action dialogs", () => {
       code: "FILE_NOT_FOUND",
     });
   });
+  it("returns to the folder the deleted file was in", async () => {
+    const api = createMockApi({
+      latencyMs: [0, 0],
+      getActor: () => ({ actorType: "human", userId: "user_demo" }),
+    });
+    harness.api = api;
+    const { version } = await api.moveFile("file_brief", "folder_specs", (await api.readFile("file_brief")).version);
+    const file = await api.readFile("file_brief");
+    expect(file).toMatchObject({ parentId: "folder_specs", version });
+    const render = () => {
+      harness.cursor = 0;
+      return FileActions({ file, redirectAfterDelete: true });
+    };
+    (
+      find(render(), (e) => e.props["aria-label"] === `Delete ${file.name}`)
+        .props.onClick as () => void
+    )();
+    await (
+      find(render(), (e) => e.type === "form").props.onSubmit as (e: {
+        preventDefault(): void;
+      }) => Promise<void>
+    )({ preventDefault() {} });
+    expect(harness.push).toHaveBeenCalledExactlyOnceWith(`/w/${MOCK_WORKSPACE_ID}?folder=folder_specs`);
+  });
   it("keeps a newer edit when deletion is confirmed from stale metadata", async () => {
     const api = createMockApi({
       latencyMs: [0, 0],

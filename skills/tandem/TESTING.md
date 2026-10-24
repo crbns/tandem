@@ -41,7 +41,7 @@ For Claude web and Claude desktop, test each separately:
 2. Follow OAuth to Tandem, sign in as a test member, select the disposable
    workspace/assistant and allow access. Record any administrator restriction.
 3. Enable the connector in the chat tools menu. Expand tool discovery and
-   record all exposed tool names; the expected surface is the eleven tools
+   record all exposed tool names; the expected surface is the fourteen tools
    listed in `SKILL.md`.
 4. Open Settings → Capabilities → Skills, enable skills, upload
    `dist/tandem-skill.zip`, and enable `tandem`. Record missing menus or plan
@@ -114,6 +114,22 @@ and repeat; do not call that a conflict-recovery pass. A recovery passes only
 when a reread follows the error, one retry succeeds, the final head includes
 both edits, and revision history contains the teammate revision and new head.
 Overlapping edits and repeated conflicts are separate, unmeasured branches.
+
+## Folders
+
+In the same functionality chat (it assumes the workspace has no `/client-check`
+folder yet):
+
+```text
+Create a folder /client-check/[client] and save a shared document named
+notes.md in it with content "Folder test". You have my permission to save
+it for the team. Then read it back by its path and report the path and version.
+```
+
+Pass: `create_folder` with that path (one call creates both levels), then
+`create_document` with `folder_path` (or the new folder's id), then `read_file`
+with `path: "/client-check/[client]/notes.md"`. Repeating `create_folder`
+returns `created: false`. The dashboard shows the file inside the new folder.
 
 For **every write**, record whether the client showed a confirmation prompt,
 its exact wording/options, which option was chosen, and whether approval applies

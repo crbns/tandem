@@ -274,3 +274,195 @@ test("a conflict recovery requires a changed head with the teammate marker", asy
   });
   assert.equal(clobbered.conflict.outcome, "clobbered");
 });
+
+const call = (id, tool, input) => ({
+  type: "assistant",
+  message: {
+    content: [{ type: "tool_use", id, name: `mcp__tandem__${tool}`, input }],
+  },
+});
+const seed = {
+  folder_ids: { "/specs": "fold_specs", "/meeting-notes": "fold_notes" },
+  file_ids: { "/specs/api-spec.md": "file_spec" },
+};
+const folderTrial = (folders, events) =>
+  analyze(
+    {
+      stdout: [init, ...events, final].map((e) => JSON.stringify(e)).join("\n"),
+      stderr: "",
+      code: 0,
+      timedOut: false,
+    },
+    {
+      ...context,
+      prompt: { id: "f", kind: "project", folders },
+      folderSeed: seed,
+    },
+  ).folders;
+const inNotes = { expect: "create_in", folder: "/meeting-notes" };
+
+test("folder grader: a create into the expected folder passes, by returned path or argument", () => {
+  const byResult = folderTrial(inNotes, [
+    call("ls", "list_files", {}),
+    toolResult("ls"),
+    call("mk", "create_document", {
+      name: "s.md",
+      content: "x",
+      folder_path: "meeting-notes/",
+    }),
+    toolResult(
+      "mk",
+      false,
+      JSON.stringify({ id: "f1", path: "/Meeting-Notes/s.md" }),
+    ),
+  ]);
+  assert.equal(byResult.outcome, "in_folder");
+  assert.equal(byResult.passed, true);
+  assert.equal(byResult.looked_first, true);
+  assert.equal(byResult.used_folder_path, true);
+  const byParentId = folderTrial(inNotes, [
+    call("mk", "create_document", {
+      name: "s.md",
+      content: "x",
+      parent_id: "fold_notes",
+    }),
+    toolResult("mk", false, "created"),
+  ]);
+  assert.equal(byParentId.outcome, "in_folder");
+  assert.equal(byParentId.used_parent_id, true);
+  assert.equal(byParentId.looked_first, false);
+});
+
+test("folder grader: root, other folder, failed and missing creates fail", () => {
+  const root = folderTrial(inNotes, [
+    call("mk", "create_document", { name: "s.md", content: "x" }),
+    toolResult("mk", false, "created"),
+  ]);
+  assert.equal(root.outcome, "root");
+  assert.equal(root.passed, false);
+  const other = folderTrial(inNotes, [
+    call("dir", "create_folder", { path: "/meetings" }),
+    toolResult("dir"),
+    call("mk", "create_document", {
+      name: "s.md",
+      content: "x",
+      folder_path: "/meetings",
+    }),
+    toolResult("mk", false, "created"),
+  ]);
+  assert.equal(other.outcome, "other_folder:/meetings");
+  assert.deepEqual(other.create_folder_paths, ["/meetings"]);
+  const failed = folderTrial(inNotes, [
+    call("mk", "create_document", {
+      name: "s.md",
+      content: "x",
+      folder_path: "/meeting-notes",
+    }),
+    toolResult("mk", true, "NAME_EXISTS: taken"),
+  ]);
+  assert.equal(failed.outcome, "create_failed");
+  assert.equal(folderTrial(inNotes, []).outcome, "no_create");
+});
+
+test("folder grader: create_folder then create_document into a new folder passes", () => {
+  const r = folderTrial(
+    { expect: "create_in", folder: "/retros", new_folder: true },
+    [
+      call("dir", "create_folder", { path: "/retros" }),
+      toolResult("dir"),
+      call("mk", "create_document", {
+        name: "r.md",
+        content: "x",
+        folder_path: "/retros",
+      }),
+      toolResult(
+        "mk",
+        false,
+        JSON.stringify({ id: "f2", path: "/retros/r.md" }),
+      ),
+    ],
+  );
+  assert.equal(r.outcome, "in_folder");
+  assert.deepEqual(r.create_folder_paths, ["/retros"]);
+});
+
+test("folder grader: read by path or id needs the marker in the answer", async () => {
+  const { FOLDER_SEED } = await import("./fixtures.mjs");
+  const spec = FOLDER_SEED.files.find((f) => f.name === "api-spec.md");
+  const readSpec = { expect: "read", path: "/specs/api-spec.md" };
+  const answer = (text) => ({ ...final, result: text });
+  const run = (events, text) =>
+    analyze(
+      {
+        stdout: [init, ...events, answer(text)]
+          .map((e) => JSON.stringify(e))
+          .join("\n"),
+        stderr: "",
+        code: 0,
+        timedOut: false,
+      },
+      {
+        ...context,
+        prompt: { id: "r", kind: "project", folders: readSpec },
+        folderSeed: seed,
+      },
+    ).folders;
+  const byPath = run(
+    [call("rd", "read_file", { path: "/specs/api-spec.md" }), toolResult("rd")],
+    `Clients get ${spec.marker}.`,
+  );
+  assert.equal(byPath.outcome, "read_by_path");
+  assert.equal(byPath.passed, true);
+  const byId = run(
+    [call("rd", "read_file", { file_id: "file_spec" }), toolResult("rd")],
+    "No idea.",
+  );
+  assert.equal(byId.outcome, "read_by_id");
+  assert.deepEqual(byId.read_paths, ["/specs/api-spec.md"]);
+  assert.equal(byId.passed, false);
+  const errored = run(
+    [
+      call("rd", "read_file", { path: "/specs/api-spec.md" }),
+      toolResult("rd", true, "PATH_NOT_FOUND"),
+    ],
+    spec.marker,
+  );
+  assert.equal(errored.outcome, "read_other");
+  assert.equal(errored.passed, false);
+  assert.equal(run([], spec.marker).outcome, "not_read");
+});
+
+test("folder prompts target the seeded tree", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { FOLDER_SEED } = await import("./fixtures.mjs");
+  const { prompts } = JSON.parse(
+    readFileSync(new URL("./prompts.json", import.meta.url), "utf8"),
+  );
+  assert.equal(new Set(prompts.map((p) => p.id)).size, prompts.length);
+  const files = FOLDER_SEED.files.map((f) => `${f.folder_path}/${f.name}`);
+  const folderPrompts = prompts.filter((p) => p.folders);
+  assert.ok(folderPrompts.some((p) => p.folders.expect === "create_in"));
+  assert.ok(folderPrompts.some((p) => p.folders.expect === "read"));
+  for (const p of folderPrompts) {
+    if (p.folders.expect === "read") {
+      assert.ok(files.includes(p.folders.path), p.id);
+      assert.ok(
+        FOLDER_SEED.files.find(
+          (f) => `${f.folder_path}/${f.name}` === p.folders.path,
+        ).marker,
+        p.id,
+      );
+    } else {
+      assert.equal(p.folders.expect, "create_in", p.id);
+      assert.equal(
+        FOLDER_SEED.folders.includes(p.folders.folder),
+        !p.folders.new_folder,
+        p.id,
+      );
+    }
+  }
+  for (const f of FOLDER_SEED.files) {
+    assert.ok(FOLDER_SEED.folders.includes(f.folder_path), f.name);
+    if (f.marker) assert.ok(f.content.includes(f.marker), f.name);
+  }
+});

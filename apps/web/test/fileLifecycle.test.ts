@@ -23,7 +23,7 @@ describe("mock file lifecycle parity", () => {
       api.renameFile(file.id, " BRIEF.MD ", 1),
     ).rejects.toMatchObject({ code: "NAME_EXISTS" });
     await expect(api.renameFile(file.id, "\u200b ", 1)).rejects.toMatchObject({
-      code: "INVALID_INPUT",
+      code: "INVALID_NAME",
     });
     expect(await api.renameFile(file.id, "  Final.md ", 1)).toEqual({
       version: 2,

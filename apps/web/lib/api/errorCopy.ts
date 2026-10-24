@@ -1,10 +1,31 @@
-import type { ApiErrorCode } from "./errors";
+import type { ApiErrorCode, TandemApiError } from "./errors";
 
 /** Copy for errors from creating a file, where the generic text talks about editing. */
 export const CREATE_ERROR_COPY: Partial<Record<ApiErrorCode, string>> = {
   FORBIDDEN: "You can't create files in this workspace.",
   NAME_EXISTS: "A file with this name already exists here. Open it, or pick another name.",
+  FOLDER_NOT_FOUND: "This folder was moved or deleted. Go back to the workspace root and try again.",
 };
+
+/** Copy for renaming, moving or deleting a folder, where conflicts are about the folder. */
+export const FOLDER_ERROR_COPY: Partial<Record<ApiErrorCode, string>> = {
+  VERSION_CONFLICT: "Someone changed this folder since you opened it. The list has been refreshed; try again.",
+  FOLDER_NOT_FOUND: "This folder was moved or deleted. The list has been refreshed.",
+};
+
+/**
+ * One sentence for an inline error. NAME_EXISTS says whether a file or a
+ * folder holds the name; everything else uses `overrides`, then ERROR_COPY.
+ */
+export function describeError(error: TandemApiError, overrides: Partial<Record<ApiErrorCode, string>> = {}): string {
+  const existing = error.details.existing;
+  if (error.code === "NAME_EXISTS" && existing) {
+    const what = existing.kind === "folder" ? "A folder" : "A file";
+    const named = existing.name ? ` named “${existing.name}”` : " with this name";
+    return `${what}${named} already exists here. Names ignore case and extra spaces; pick another.`;
+  }
+  return overrides[error.code] ?? ERROR_COPY[error.code].description;
+}
 
 /** Copy for deciding a proposal, where VERSION_CONFLICT means the context moved on. */
 export const DECIDE_ERROR_COPY: Partial<Record<ApiErrorCode, { title: string; description: string }>> = {
@@ -34,9 +55,29 @@ export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: stri
     title: "File not found",
     description: "It may have been moved or deleted, or the link is wrong.",
   },
+  FOLDER_NOT_FOUND: {
+    title: "Folder not found",
+    description: "It may have been moved or deleted, or the link is wrong. Go back to the workspace root to find your files.",
+  },
   NAME_EXISTS: {
     title: "Name already taken",
-    description: "A file with this name already exists in this folder. Names ignore case and surrounding spaces.",
+    description: "A file or folder with this name already exists in this folder. Names ignore case and surrounding spaces.",
+  },
+  INVALID_NAME: {
+    title: "That name won't work",
+    description: "Names need 1 to 255 characters, can't contain “/”, and can't be “.” or “..”.",
+  },
+  INVALID_MOVE: {
+    title: "Can't move a folder there",
+    description: "A folder can't be moved into itself or into one of its own subfolders. Pick another destination.",
+  },
+  FOLDER_TOO_DEEP: {
+    title: "Too many nested folders",
+    description: "Folders can be nested at most 32 levels deep. Pick a destination closer to the workspace root.",
+  },
+  FOLDER_TOO_LARGE: {
+    title: "Folder is too large to delete at once",
+    description: "A folder holding more than 500 files and folders can't be deleted in one step. Nothing was deleted; delete some subfolders first.",
   },
   VERSION_CONFLICT: {
     title: "Someone saved a newer version",

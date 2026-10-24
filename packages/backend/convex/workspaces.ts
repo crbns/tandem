@@ -1,5 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { createFolderCore } from "./lib/fs";
 import { loadContext } from "./lib/ops";
 import { contextApprovalValidator, contextValidator } from "./lib/validators";
 import {
@@ -120,33 +121,8 @@ export const createFolder = mutation({
   returns: v.id("folders"),
   handler: async (ctx, args) => {
     const { user } = await requireMembership(ctx, args.workspaceId);
-    if (!args.name.trim()) throw new ConvexError({ code: "INVALID_NAME" });
-    if (args.parentId) {
-      const parent = await ctx.db.get(args.parentId);
-      if (!parent || parent.workspaceId !== args.workspaceId)
-        throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
-    }
-    const now = Date.now();
-    const actor = humanActor(user);
-    const folderId = await ctx.db.insert("folders", {
-      workspaceId: args.workspaceId,
-      parentId: args.parentId,
-      name: args.name.trim(),
-      createdBy: actor,
-      updatedBy: actor,
-      revision: 1,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await recordWorkspaceEvent(ctx, {
-      workspaceId: args.workspaceId,
-      kind: "folder.created",
-      entityType: "folder",
-      entityId: folderId,
-      summary: `Created folder ${args.name.trim()}`,
-      actor,
-    });
-    return folderId;
+    const folder = await createFolderCore(ctx, { ...args, actor: humanActor(user) });
+    return folder._id;
   },
 });
 

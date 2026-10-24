@@ -18,6 +18,7 @@ import {
   type ContextProposal,
   type FileDetail,
   type FileSummary,
+  type FolderSummary,
   type ProjectContext,
   type Revision,
   type Workspace,
@@ -47,6 +48,18 @@ interface StoredFile {
   blobs?: Map<number, Blob>;
   revisions: Revision[]; // oldest first; append-only
 }
+
+interface StoredFolder {
+  deletedAt?: number;
+  deletedBy?: Actor;
+  /** The path is derived from the parent chain on read. */
+  folder: Omit<FolderSummary, "path">;
+}
+
+// docs/filesystem.md limits, mirrored so the mock rejects what the backend does.
+const MAX_FOLDER_DEPTH = 32;
+const MAX_DELETE_ITEMS = 500;
+const MAX_DIRECTORY_CHILDREN = 500;
 
 // Alex's assistant: a teammate's Claude, so attribution has to say whose.
 const CLAUDE: Actor = {
@@ -132,11 +145,20 @@ function seed(now: number): Map<string, StoredFile> {
   return files;
 }
 
+function seedFolders(now: number): Map<string, StoredFolder> {
+  const folder = (id: string, name: string, parentId: string | null): [string, StoredFolder] => [
+    id,
+    { folder: { id, workspaceId: MOCK_WORKSPACE_ID, parentId, name, revision: 1, updatedAt: now - 60 * MINUTE, updatedBy: ALEX } },
+  ];
+  return new Map([folder("folder_specs", "specs", null)]);
+}
+
 export function createMockApi({
   latencyMs = [150, 400],
   getActor,
 }: MockOptions): MockTandemApi {
   const files = seed(Date.now());
+  const folders = seedFolders(Date.now());
   const workspaces: Workspace[] = [
     { id: MOCK_WORKSPACE_ID, name: "Cal Hacks Team" },
   ];
@@ -339,14 +361,74 @@ export function createMockApi({
     return file;
   };
 
+  // One namespace per folder: a file and a folder can't share a name either.
+  const checkCollision = (workspaceId: string, parentId: string | null, name: string, exceptId?: string) => {
+    const key = nameKey(name);
+    const file = [...files.values()].find(f => f.deletedAt === undefined && f.summary.id !== exceptId && f.summary.workspaceId === workspaceId && f.summary.parentId === parentId && nameKey(f.summary.name) === key);
+    if (file)
+      throw new TandemApiError("NAME_EXISTS", { currentVersion: file.summary.version, existing: { kind: "file", id: file.summary.id, name: file.summary.name } });
+    const folder = [...folders.values()].find(f => f.deletedAt === undefined && f.folder.id !== exceptId && f.folder.workspaceId === workspaceId && f.folder.parentId === parentId && nameKey(f.folder.name) === key);
+    if (folder)
+      throw new TandemApiError("NAME_EXISTS", { existing: { kind: "folder", id: folder.folder.id, name: folder.folder.name } });
+  };
   const validateName = (workspaceId: string, parentId: string | null, raw: string, exceptId?: string) => {
     const name = storedName(raw);
-    const key = nameKey(name);
-    if (!key || name.length > MAX_NAME_LENGTH) throw new TandemApiError("INVALID_INPUT");
-    if ([...files.values()].some(f => f.deletedAt === undefined && f.summary.id !== exceptId && f.summary.workspaceId === workspaceId && f.summary.parentId === parentId && nameKey(f.summary.name) === key))
-      throw new TandemApiError("NAME_EXISTS");
+    if (!nameKey(name) || name.length > MAX_NAME_LENGTH || name.includes("/") || name === "." || name === "..")
+      throw new TandemApiError("INVALID_NAME");
+    checkCollision(workspaceId, parentId, name, exceptId);
     return name;
   };
+
+  const getFolder = (folderId: string, workspaceId?: string): StoredFolder => {
+    const folder = folders.get(folderId);
+    if (!folder || folder.deletedAt !== undefined || (workspaceId !== undefined && folder.folder.workspaceId !== workspaceId))
+      throw new TandemApiError("FOLDER_NOT_FOUND");
+    return folder;
+  };
+  /** A destination folder id, checked live and in this workspace; null is the root. */
+  const parentIn = (workspaceId: string, parentId: string | null | undefined) =>
+    parentId == null ? null : getFolder(parentId, workspaceId).folder.id;
+  /** Root first, ending with `folderId` itself; empty for the root. */
+  const ancestors = (folderId: string | null): StoredFolder[] => {
+    const chain: StoredFolder[] = [];
+    for (let id = folderId; id !== null; id = folders.get(id)!.folder.parentId) chain.unshift(folders.get(id)!);
+    return chain;
+  };
+  const folderPath = (folderId: string | null) => `/${ancestors(folderId).map((f) => f.folder.name).join("/")}`;
+  const filePath = ({ parentId, name }: FileSummary) => (parentId === null ? `/${name}` : `${folderPath(parentId)}/${name}`);
+  const childFolders = (workspaceId: string, parentId: string | null) =>
+    [...folders.values()].filter((f) => f.deletedAt === undefined && f.folder.workspaceId === workspaceId && f.folder.parentId === parentId);
+  /** Levels of folders from `folder` down to its deepest descendant, itself included. */
+  const height = (folder: StoredFolder): number =>
+    1 + Math.max(0, ...childFolders(folder.folder.workspaceId, folder.folder.id).map(height));
+  /** The folder and everything live inside it. */
+  const subtree = (root: StoredFolder) => {
+    const inside: StoredFolder[] = [];
+    const queue = [root];
+    while (queue.length) {
+      const folder = queue.shift()!;
+      inside.push(folder);
+      queue.push(...childFolders(folder.folder.workspaceId, folder.folder.id));
+    }
+    const ids = new Set(inside.map((f) => f.folder.id));
+    const contained = [...files.values()].filter((f) => f.deletedAt === undefined && f.summary.parentId !== null && ids.has(f.summary.parentId));
+    return { folders: inside, files: contained };
+  };
+  const checkRevision = (folder: StoredFolder, expectedRevision: number) => {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new TandemApiError("INVALID_INPUT");
+    if (folder.folder.revision !== expectedRevision)
+      throw new TandemApiError("VERSION_CONFLICT", { currentRevision: folder.folder.revision });
+  };
+  const touchFolder = (folder: StoredFolder, actor: Actor) => {
+    folder.folder = { ...folder.folder, revision: folder.folder.revision + 1, updatedAt: Date.now(), updatedBy: actor };
+    notify(folder.folder.workspaceId);
+  };
+  const cloneFolder = (f: StoredFolder): FolderSummary => ({
+    ...f.folder,
+    updatedBy: { ...f.folder.updatedBy },
+    path: folderPath(f.folder.id),
+  });
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
   const checkVersion = (file: StoredFile, expectedVersion: number) => {
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new TandemApiError("INVALID_INPUT");
     if (file.summary.version !== expectedVersion) throw new TandemApiError("VERSION_CONFLICT", { currentVersion: file.summary.version });
@@ -451,14 +533,16 @@ export function createMockApi({
         .map((f) => ({
           ...cloneSummary(f.summary),
           custody: f.revisions.map((r) => r.actorType),
+          path: filePath(f.summary),
         }));
     },
 
-    async createFile(workspaceId, { name, mimeType, content }) {
+    async createFile(workspaceId, { name, mimeType, content, parentId: requestedParent }) {
       await delay();
       if (!workspaces.some((w) => w.id === workspaceId))
         throw new TandemApiError("FORBIDDEN");
-      name = validateName(workspaceId, null, name);
+      const parentId = parentIn(workspaceId, requestedParent);
+      name = validateName(workspaceId, parentId, name);
       const id = `file_new_${nextId++}`;
       const actor = getActor();
       const now = Date.now();
@@ -468,7 +552,7 @@ export function createMockApi({
         summary: {
           id,
           workspaceId,
-          parentId: null,
+          parentId,
           name,
           mimeType,
           version: 1,
@@ -499,20 +583,21 @@ export function createMockApi({
       notify(file.summary.workspaceId);
     },
 
-    async uploadFile(workspaceId, blob, options) {
+    async uploadFile(workspaceId, blob, target) {
       await delay();
       requireMember(workspaceId);
       if (blob.size < 1 || blob.size > MAX_UPLOAD_BYTES || !BINARY_MIME_TYPES.has(blob.type || "application/octet-stream")) throw new TandemApiError("INVALID_INPUT");
       const actor = getActor();
       const now = Date.now();
-      const existing = options ? getFile(options.fileId) : undefined;
+      const existing = target && "fileId" in target ? getFile(target.fileId) : undefined;
       if (existing && existing.summary.workspaceId !== workspaceId) throw new TandemApiError("FORBIDDEN");
-      if (existing && existing.summary.version !== options!.expectedVersion) throw new TandemApiError("VERSION_CONFLICT");
+      if (existing && target && "fileId" in target && existing.summary.version !== target.expectedVersion) throw new TandemApiError("VERSION_CONFLICT");
       if (existing && existing.content !== null) throw new TandemApiError("INVALID_INPUT");
-      const name = existing?.summary.name ?? validateName(workspaceId, null, blob.name);
+      const parentId = existing?.summary.parentId ?? parentIn(workspaceId, target && "parentId" in target ? target.parentId : null);
+      const name = existing?.summary.name ?? validateName(workspaceId, parentId, blob.name);
       const id = existing?.summary.id ?? `file_new_${nextId++}`;
       const version = (existing?.summary.version ?? 0) + 1;
-      const stored: StoredFile = existing ?? { content: null, revisions: [], summary: { id, workspaceId, parentId: null, name, mimeType: blob.type || "application/octet-stream", version, updatedAt: now, updatedBy: actor } };
+      const stored: StoredFile = existing ?? { content: null, revisions: [], summary: { id, workspaceId, parentId, name, mimeType: blob.type || "application/octet-stream", version, updatedAt: now, updatedBy: actor } };
       stored.summary = { ...stored.summary, name, mimeType: blob.type || "application/octet-stream", version, updatedAt: now, updatedBy: actor };
       stored.blobs ??= new Map();
       stored.blobs.set(version, blob);
@@ -520,6 +605,112 @@ export function createMockApi({
       files.set(id, stored);
       notify(workspaceId);
       return { id, version };
+    },
+
+    async moveFile(fileId, parentId, expectedVersion) {
+      await delay();
+      const file = getFile(fileId);
+      requireMember(file.summary.workspaceId);
+      checkVersion(file, expectedVersion);
+      const destination = parentIn(file.summary.workspaceId, parentId);
+      // Moving keeps the name, so only collisions apply (legacy names stay valid).
+      checkCollision(file.summary.workspaceId, destination, file.summary.name, fileId);
+      file.summary.parentId = destination;
+      return { version: commit(file, file.content, getActor()) };
+    },
+
+    async listDirectory(workspaceId, folderId) {
+      await delay();
+      if (!workspaces.some((w) => w.id === workspaceId))
+        throw new TandemApiError("FORBIDDEN");
+      const folder = folderId ? getFolder(folderId, workspaceId) : null;
+      const parentId = folder?.folder.id ?? null;
+      return {
+        folder: folder ? cloneFolder(folder) : null,
+        breadcrumbs: ancestors(parentId).map((f) => ({ id: f.folder.id, name: f.folder.name })),
+        folders: childFolders(workspaceId, parentId).map(cloneFolder).sort(byName).slice(0, MAX_DIRECTORY_CHILDREN),
+        files: [...files.values()]
+          .filter((f) => f.deletedAt === undefined && f.summary.workspaceId === workspaceId && f.summary.parentId === parentId)
+          .map((f) => ({ ...cloneSummary(f.summary), custody: f.revisions.map((r) => r.actorType), path: filePath(f.summary) }))
+          .sort(byName)
+          .slice(0, MAX_DIRECTORY_CHILDREN),
+      };
+    },
+
+    async listFolderTree(workspaceId) {
+      await delay();
+      if (!workspaces.some((w) => w.id === workspaceId))
+        throw new TandemApiError("FORBIDDEN");
+      return [...folders.values()]
+        .filter((f) => f.deletedAt === undefined && f.folder.workspaceId === workspaceId)
+        .map(cloneFolder)
+        .sort((a, b) => a.path.localeCompare(b.path));
+    },
+
+    async createFolder(workspaceId, { name, parentId: requestedParent }) {
+      await delay();
+      requireMember(workspaceId);
+      const parentId = parentIn(workspaceId, requestedParent);
+      if (ancestors(parentId).length + 1 > MAX_FOLDER_DEPTH) throw new TandemApiError("FOLDER_TOO_DEEP");
+      const stored: StoredFolder = {
+        folder: {
+          id: `folder_new_${nextId++}`,
+          workspaceId,
+          parentId,
+          name: validateName(workspaceId, parentId, name),
+          revision: 1,
+          updatedAt: Date.now(),
+          updatedBy: { ...getActor() },
+        },
+      };
+      folders.set(stored.folder.id, stored);
+      notify(workspaceId);
+      return cloneFolder(stored);
+    },
+
+    async renameFolder(folderId, name, expectedRevision) {
+      await delay();
+      const folder = getFolder(folderId);
+      requireMember(folder.folder.workspaceId);
+      checkRevision(folder, expectedRevision);
+      folder.folder.name = validateName(folder.folder.workspaceId, folder.folder.parentId, name, folderId);
+      touchFolder(folder, { ...getActor() });
+      return cloneFolder(folder);
+    },
+
+    async moveFolder(folderId, parentId, expectedRevision) {
+      await delay();
+      const folder = getFolder(folderId);
+      const { workspaceId } = folder.folder;
+      requireMember(workspaceId);
+      checkRevision(folder, expectedRevision);
+      const destination = parentIn(workspaceId, parentId);
+      const destinationChain = ancestors(destination);
+      if (destinationChain.some((f) => f.folder.id === folderId)) throw new TandemApiError("INVALID_MOVE");
+      if (destinationChain.length + height(folder) > MAX_FOLDER_DEPTH) throw new TandemApiError("FOLDER_TOO_DEEP");
+      checkCollision(workspaceId, destination, folder.folder.name, folderId);
+      folder.folder.parentId = destination;
+      touchFolder(folder, { ...getActor() });
+      return cloneFolder(folder);
+    },
+
+    async deleteFolder(folderId, expectedRevision) {
+      await delay();
+      const folder = getFolder(folderId);
+      requireMember(folder.folder.workspaceId);
+      checkRevision(folder, expectedRevision);
+      const inside = subtree(folder);
+      // All or nothing: nothing is written when the subtree is over the cap.
+      if (inside.folders.length + inside.files.length > MAX_DELETE_ITEMS) throw new TandemApiError("FOLDER_TOO_LARGE");
+      const now = Date.now();
+      const actor = getActor();
+      for (const f of inside.folders) Object.assign(f, { deletedAt: now, deletedBy: { ...actor } });
+      for (const f of inside.files) {
+        f.deletedAt = f.summary.updatedAt = now;
+        f.deletedBy = f.summary.updatedBy = { ...actor };
+      }
+      notify(folder.folder.workspaceId);
+      return { deletedFiles: inside.files.length, deletedFolders: inside.folders.length };
     },
 
     async getFileBlob(fileId, version) {
@@ -536,6 +727,7 @@ export function createMockApi({
       const file = getFile(fileId);
       const detail: FileDetail = {
         ...cloneSummary(file.summary),
+        path: filePath(file.summary),
         content: file.content,
         permissions: { canEdit: true },
       };

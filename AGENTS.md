@@ -32,7 +32,7 @@ Shared files for people. Shared understanding for their AI assistants. Built for
 
 ## MCP tool surface
 
-`sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`, `update_document` (needs `expected_version`), `publish_work`, `propose_context_change`, `get_approvals`, `get_file_versions`, `get_workspace_info`, `manage_task` (list/create/claim/update/complete workspace tasks; writes need `expected_version`). Binary uploads go through the dashboard first. Don't assume a native chat can send binaries through MCP.
+`sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`, `update_document` (needs `expected_version`), `create_folder`, `move_file` (needs `expected_version`), `move_folder` (needs `expected_revision`), `publish_work`, `propose_context_change`, `get_approvals`, `get_file_versions`, `get_workspace_info`, `manage_task` (list/create/claim/update/complete workspace tasks; writes need `expected_version`). Binary uploads go through the dashboard first. Don't assume a native chat can send binaries through MCP.
 
 ## Stack
 

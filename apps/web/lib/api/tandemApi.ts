@@ -13,7 +13,9 @@ import type {
   NewAgentConnection,
   ProposalStatus,
   CreateFileInput,
+  DirectoryListing,
   FileDetail,
+  FolderSummary,
   FileSummary,
   FileUpdate,
   ProjectContext,
@@ -21,6 +23,7 @@ import type {
   Workspace,
   InviteRole,
   WorkspaceInvite,
+  UploadTarget,
 } from "./types";
 
 /**
@@ -43,8 +46,23 @@ export interface TandemApi {
   ): Promise<{ id: string; version: number }>;
   renameFile(fileId: string, name: string, expectedVersion: number): Promise<{ version: number }>;
   deleteFile(fileId: string, expectedVersion: number): Promise<void>;
+  /** A new head version (N+1) in another folder; `parentId` null is the root. */
+  moveFile(fileId: string, parentId: string | null, expectedVersion: number): Promise<{ version: number }>;
+  /**
+   * A folder's immediate children (folders, then files). `folderId` omitted is
+   * the workspace root; rejects with FOLDER_NOT_FOUND for a deleted folder.
+   */
+  listDirectory(workspaceId: string, folderId?: string | null): Promise<DirectoryListing>;
+  /** Every live folder in the workspace, for pickers and breadcrumbs. */
+  listFolderTree(workspaceId: string): Promise<FolderSummary[]>;
+  createFolder(workspaceId: string, input: { name: string; parentId?: string | null }): Promise<FolderSummary>;
+  renameFolder(folderId: string, name: string, expectedRevision: number): Promise<FolderSummary>;
+  /** Rejects with INVALID_MOVE when `parentId` is the folder or inside it. */
+  moveFolder(folderId: string, parentId: string | null, expectedRevision: number): Promise<FolderSummary>;
+  /** Soft-deletes the folder and everything in it (history kept). */
+  deleteFolder(folderId: string, expectedRevision: number): Promise<{ deletedFiles: number; deletedFolders: number }>;
   /** Pending finalization may still commit later; it is not a failed upload. */
-  uploadFile(workspaceId: string, file: File, options?: { fileId: string; expectedVersion: number }): Promise<{ id: string; version: number; pending?: false } | { pending: true }>;
+  uploadFile(workspaceId: string, file: File, target?: UploadTarget): Promise<{ id: string; version: number; pending?: false } | { pending: true }>;
   getFileBlob(fileId: string, version?: number): Promise<Blob>;
   readFile(fileId: string): Promise<FileDetail>;
   /** Rejects with VERSION_CONFLICT when `expectedVersion` isn't the head. */

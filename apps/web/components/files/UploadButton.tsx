@@ -4,11 +4,12 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { UploadIcon } from "lucide-react";
 import { normalizeError, useTandemApi } from "@/lib/api";
-import { ERROR_COPY } from "@/lib/api/errorCopy";
+import { describeError } from "@/lib/api/errorCopy";
 import { Button } from "@/components/ui/button";
 
-export function UploadButton({ workspaceId, fileId, expectedVersion, onUploaded }: {
-  workspaceId: string; fileId?: string; expectedVersion?: number; onUploaded?: () => void;
+export function UploadButton({ workspaceId, fileId, expectedVersion, parentId = null, onUploaded }: {
+  /** `parentId` places a new upload in a folder; ignored for a new version. */
+  workspaceId: string; fileId?: string; expectedVersion?: number; parentId?: string | null; onUploaded?: () => void;
 }) {
   const api = useTandemApi();
   const router = useRouter();
@@ -30,7 +31,7 @@ export function UploadButton({ workspaceId, fileId, expectedVersion, onUploaded 
         setBusy(true);
         setError(null);
         try {
-          const result = await api.uploadFile(workspaceId, file, fileId && expectedVersion !== undefined ? { fileId, expectedVersion } : undefined);
+          const result = await api.uploadFile(workspaceId, file, fileId && expectedVersion !== undefined ? { fileId, expectedVersion } : parentId ? { parentId } : undefined);
           if (result.pending) {
             setMessage("Upload is taking longer than expected; it will appear in the file list when it finishes.");
             return;
@@ -39,7 +40,7 @@ export function UploadButton({ workspaceId, fileId, expectedVersion, onUploaded 
           else router.push(`/w/${workspaceId}/files/${result.id}`);
         } catch (err) {
           const normalized = normalizeError(err);
-          setError(normalized.code === "VERSION_CONFLICT" ? "A newer version was saved. Refresh the file and review it before uploading again." : ERROR_COPY[normalized.code].description);
+          setError(normalized.code === "VERSION_CONFLICT" ? "A newer version was saved. Refresh the file and review it before uploading again." : describeError(normalized));
         } finally { setBusy(false); }
       }} />
       <Button variant="outline" size="sm" disabled={busy} onClick={() => input.current?.click()}>

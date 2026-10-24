@@ -7,6 +7,7 @@ import { ArrowLeftIcon, InfoIcon } from "lucide-react";
 import { TandemApiError, useTandemApi, type FileDetail, type Revision } from "@/lib/api";
 import { RestoreRevisionDialog } from "@/components/history/RestoreRevisionDialog";
 import { useResource } from "@/lib/api/useResource";
+import { useFolderTrail } from "@/lib/api/useFolderTrail";
 import { belongsToWorkspace, isMarkdown } from "@/lib/files";
 import { formatAbsolute } from "@/lib/time";
 import { BinaryPreview } from "@/components/files/BinaryPreview";
@@ -135,6 +136,7 @@ export default function HistoryPage() {
   }, [api, fileId, workspaceId]);
   const { resource, refreshing, reload } = useResource(load);
   const [selected, setSelected] = useState<number | null>(null);
+  const folders = useFolderTrail(workspaceId, resource.status === "ready" ? resource.data[0].parentId : null);
   const fileHref = `/w/${workspaceId}/files/${fileId}`;
 
   if (resource.status === "loading") {
@@ -180,6 +182,7 @@ export default function HistoryPage() {
           fileId={file.id}
           name={file.name}
           mimeType={file.mimeType}
+          folders={folders}
           trail={{ label: "History", fileHref }}
         />
         <div className="flex items-center gap-2">
