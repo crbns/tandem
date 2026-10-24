@@ -245,8 +245,21 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
       return approvalRequired(str("field") ?? "context");
     case "INVALID_CURSOR":
       return invalidCursor();
-    case "INVALID_NAME":
-      return invalidInput('name must contain 1–255 visible characters, without "/", and not be "." or "..".');
+    case "INVALID_NAME": {
+      // MCP reports invalid names as INVALID_INPUT (docs/filesystem.md), saying why.
+      const why =
+        str("reason") === "slash"
+          ? 'it contains "/". To put a file in a folder, pass folder_path (create the folder first with create_folder)'
+          : str("reason") === "dot"
+            ? 'it is "." or ".."'
+            : str("reason") === "length"
+              ? "it is empty or longer than 255 characters"
+              : undefined;
+      return invalidInput(
+        `Invalid name${why ? `: ${why}.` : "."} A name is 1–255 visible characters, without "/", and not "." or "..".`,
+        { field: "name" },
+      );
+    }
     case "FOLDER_NOT_FOUND":
     case "INVALID_PARENT_FOLDER":
       return folderNotFound(str("folderId") ?? hint.folderId ?? "(unknown)");

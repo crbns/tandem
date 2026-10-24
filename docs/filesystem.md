@@ -14,8 +14,8 @@ the `apps/mcp` mock harness and the skill) follows.
   A folder path has no trailing slash (`/specs/api`). Paths are resolved
   segment by segment using the same collision key as names (`nameKey` in
   `lib/names.ts`): case-insensitive, NFKC, whitespace-collapsed. Input paths
-  may omit the leading `/`, and a trailing `/` is ignored; empty segments
-  (`//`), `.` and `..` are `INVALID_PATH`.
+  may omit the leading `/`, and a trailing `/` is ignored; the empty path
+  `""`, empty segments (`//`), `.` and `..` are `INVALID_PATH`.
 - **Names** (files and folders) follow `storedName`/`nameKey`, 1–255 chars,
   and may not contain `/`, or be `.` or `..` (`INVALID_NAME`). The `/` rule
   applies to new names only (create, rename, move with rename); legacy rows are
@@ -25,7 +25,9 @@ the `apps/mcp` mock harness and the skill) follows.
   `NAME_EXISTS` with `{ kind: "file", fileId, name, currentVersion }` or
   `{ kind: "folder", folderId, name }`. (Existing file collisions keep their
   current payload plus `kind: "file"`.)
-- **Depth limit:** at most 32 nested folders (`FOLDER_TOO_DEEP`).
+- **Depth limit:** at most 32 nested folders (`FOLDER_TOO_DEEP`). Moving a
+  folder measures its whole subtree; a subtree of more than 2000 folders is
+  `FOLDER_TOO_LARGE` (`limit: 2000`) rather than measured partially.
 - **Soft delete only.** Deleting a folder soft-deletes it and its whole subtree
   (folders and files, history kept), at most 500 items per call
   (`FOLDER_TOO_LARGE` otherwise; nothing is written). Each deleted file gets a
@@ -38,11 +40,15 @@ Add, all optional for legacy rows: `nameKey`, `deletedAt`, `deletedBy`.
 Folders keep `revision` as their optimistic-lock counter
 (`expectedRevision`; stale → `VERSION_CONFLICT` with `currentRevision`).
 New indexes: `by_workspace_and_parent_and_name_key`
-(`workspaceId, parentId, nameKey`) and
+(`workspaceId, parentId, nameKey`),
+`by_workspace_and_parent_and_name_key_and_deleted_at`
+(`workspaceId, parentId, nameKey, deletedAt`) and
 `by_workspace_and_deleted_at_and_parent` (`workspaceId, deletedAt, parentId`).
 Backfill: a legacy folder without `nameKey` is treated as having
 `nameKey(name)` for collision checks (compute on read when absent) — no
-migration needed.
+migration needed. The legacy lookup reads only live rows without `nameKey`
+(`nameKey` and `deletedAt` both absent), so soft-deleted folders, which also
+release their key, never crowd it out.
 
 ## Core helpers (`convex/lib/fs.ts`)
 
@@ -120,6 +126,9 @@ All file outputs gain `path` (string). Folder outputs are
 New MCP error codes (mapped in `lib/mcpContract.ts` with a recovery hint):
 `INVALID_PATH`, `PATH_NOT_FOUND`, `FOLDER_NOT_FOUND`, `INVALID_MOVE`,
 `FOLDER_TOO_DEEP`, `FOLDER_TOO_LARGE`; `NAME_EXISTS` gains `kind`.
+MCP reports `INVALID_NAME` as `INVALID_INPUT` (the existing MCP convention,
+shared with the `apps/mcp` mock) with `field: "name"` and a message saying why:
+the name contains `/`, is `.` or `..`, or is not 1–255 characters.
 
 ## Dashboard UI
 

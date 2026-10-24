@@ -139,6 +139,13 @@ export default defineSchema({
       "parentId",
       "nameKey",
     ])
+    // Live legacy rows (no nameKey) without the tombstones that also lack one.
+    .index("by_workspace_and_parent_and_name_key_and_deleted_at", [
+      "workspaceId",
+      "parentId",
+      "nameKey",
+      "deletedAt",
+    ])
     .index("by_workspace_and_deleted_at_and_parent", [
       "workspaceId",
       "deletedAt",

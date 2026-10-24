@@ -1461,6 +1461,23 @@ describe("MCP endpoint", () => {
     // Arguments the old zod schemas rejected are coded INVALID_INPUT errors.
     const blank = await callTool(t, apiKey, "create_document", { name: "   ", content: "" });
     expect(blank.structuredContent.error).toMatchObject({ code: "INVALID_INPUT", field: "name" });
+    // Invalid names are INVALID_INPUT on MCP too, saying why.
+    const slash = await callTool(t, apiKey, "create_document", { name: "bad/name.md", content: "" });
+    expect(slash.structuredContent.error).toMatchObject({ code: "INVALID_INPUT", field: "name" });
+    expect(slash.structuredContent.error.message).toMatch(/contains "\/"[\s\S]*folder_path/);
+    const dots = await callTool(t, apiKey, "create_folder", { path: "/ok" });
+    expect(dots.isError).toBeFalsy();
+    const dotMove = await callTool(t, apiKey, "move_folder", {
+      folder_id: dots.structuredContent.folder.id,
+      expected_revision: 1,
+      to_folder_path: "/",
+      new_name: "..",
+    });
+    expect(dotMove.structuredContent.error).toMatchObject({ code: "INVALID_INPUT", field: "name" });
+    expect(dotMove.structuredContent.error.message).toMatch(/is "\." or "\.\."/);
+    // An empty path segment is INVALID_PATH, not the root.
+    const slashes = await callTool(t, apiKey, "list_files", { path: "//" });
+    expect(slashes.structuredContent.error).toMatchObject({ code: "INVALID_PATH", path: "//" });
     const tooMany = await callTool(t, apiKey, "search_files", { query: "v", limit: 51 });
     expect(tooMany.structuredContent.error).toMatchObject({ code: "INVALID_INPUT", field: "limit" });
 

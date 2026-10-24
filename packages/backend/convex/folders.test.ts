@@ -6,11 +6,13 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import {
   MAX_FOLDER_DEPTH,
+  MAX_INDEXED_FOLDERS,
   ensureFolderPathCore,
   filePath,
   folderPath,
   loadFolderIndex,
   resolvePath,
+  splitPath,
 } from "./lib/fs";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -138,6 +140,21 @@ describe("nested folders", () => {
     ).toMatchObject({ kind: "folder", folder: { _id: legacyId } });
   });
 
+  it("finds legacy folders past many deleted siblings", async () => {
+    const { t, workspaceId, actor, mkdir } = await setup();
+    const row = { workspaceId, createdBy: actor, updatedBy: actor, revision: 1, createdAt: 1, updatedAt: 1 };
+    const legacyId = await t.run(async (ctx) => {
+      // Deleted folders release their nameKey, like legacy rows.
+      for (let i = 0; i < 500; i++)
+        await ctx.db.insert("folders", { ...row, name: `dead${i}`, deletedAt: 1 });
+      return await ctx.db.insert("folders", { ...row, name: "Legacy" });
+    });
+    expect(
+      await t.run((ctx) => resolvePath(ctx, workspaceId, "/Legacy")),
+    ).toMatchObject({ kind: "folder", folder: { _id: legacyId } });
+    await expect(mkdir("LEGACY")).rejects.toThrow(/NAME_EXISTS[\s\S]*"kind":"folder"/);
+  });
+
   it("rejects names containing / and dot names", async () => {
     const { owner, mkdir, touch } = await setup();
     await expect(mkdir("a/b")).rejects.toThrow("INVALID_NAME");
@@ -159,7 +176,6 @@ describe("nested folders", () => {
     const file = await touch("API.md", specs.id);
     await t.run(async (ctx) => {
       expect(await resolvePath(ctx, workspaceId, "/")).toEqual({ kind: "root" });
-      expect(await resolvePath(ctx, workspaceId, "")).toEqual({ kind: "root" });
       expect(await resolvePath(ctx, workspaceId, "specs/")).toMatchObject({
         kind: "folder",
         folder: { _id: specs.id },
@@ -173,6 +189,18 @@ describe("nested folders", () => {
       // A file is not a directory.
       expect(await resolvePath(ctx, workspaceId, "/specs/api.md/x")).toBeNull();
       await expect(resolvePath(ctx, workspaceId, "/specs/../x")).rejects.toThrow("INVALID_PATH");
+    });
+  });
+
+  it("rejects empty paths and empty segments like the MCP mock parser", async () => {
+    const { t, workspaceId } = await setup();
+    for (const path of ["", "//", "///", "specs//", "//specs", "/a//b"])
+      expect(() => splitPath(path), path).toThrow("INVALID_PATH");
+    expect(splitPath("/")).toEqual([]);
+    expect(splitPath("specs/api/")).toEqual(["specs", "api"]);
+    await t.run(async (ctx) => {
+      await expect(resolvePath(ctx, workspaceId, "//")).rejects.toThrow("INVALID_PATH");
+      await expect(resolvePath(ctx, workspaceId, "")).rejects.toThrow("INVALID_PATH");
     });
   });
 
@@ -251,6 +279,28 @@ describe("nested folders", () => {
     await expect(
       owner.mutation(api.folders.moveFolder, { folderId: tree.id, parentId: parentOfDeepest, expectedRevision: 1 }),
     ).rejects.toThrow("FOLDER_TOO_DEEP");
+  });
+
+  it("never lets a move of a wide subtree exceed the depth limit", async () => {
+    const { t, owner, workspaceId, actor, mkdir } = await setup();
+    const a = await mkdir("a");
+    const d = await mkdir("d");
+    const leafId = await t.run(async (ctx) => {
+      const row = { workspaceId, createdBy: actor, updatedBy: actor, revision: 1, createdAt: 1, updatedAt: 1 };
+      const mk = (name: string, parentId: Id<"folders">) =>
+        ctx.db.insert("folders", { ...row, name, nameKey: name, parentId });
+      // The last of MAX_INDEXED_FOLDERS + 1 children carries the deep chain.
+      let id: Id<"folders"> = a.id;
+      for (let i = 0; i <= MAX_INDEXED_FOLDERS; i++) id = await mk(`c${i}`, a.id);
+      for (let i = 0; i < MAX_FOLDER_DEPTH - 2; i++) id = await mk(`n${i}`, id);
+      return id;
+    });
+    const depth = () => t.run(async (ctx) => (await folderPath(ctx, leafId)).split("/").length - 1);
+    expect(await depth()).toBe(MAX_FOLDER_DEPTH);
+    await expect(
+      owner.mutation(api.folders.moveFolder, { folderId: a.id, parentId: d.id, expectedRevision: 1 }),
+    ).rejects.toThrow(/FOLDER_TOO_LARGE[\s\S]*"limit":2000/);
+    expect(await depth()).toBe(MAX_FOLDER_DEPTH);
   });
 
   it("renameFolder with a stale revision is VERSION_CONFLICT", async () => {

@@ -141,6 +141,38 @@ describe("DISCARD_DRAFT", () => {
   });
 });
 
+describe("HEAD_SEEN", () => {
+  const initial = initSaveState("hello", 2);
+  const moved: Theirs = { version: 3, content: "hello" };
+
+  it("rebases a clean editor onto a metadata-only bump", () => {
+    expect(run(initial, { type: "HEAD_SEEN", head: moved })).toEqual(initSaveState("hello", 3));
+  });
+
+  it("keeps a dirty draft and rebases its version after a move, so the save goes through", () => {
+    const dirty = run(initial, { type: "EDIT", draft: "hello, edited" });
+    const rebased = run(dirty, { type: "HEAD_SEEN", head: moved });
+    expect(rebased).toEqual({ base: "hello", baseVersion: 3, draft: "hello, edited", phase: { kind: "dirty" } });
+    expect(canSave(rebased)).toBe(true);
+  });
+
+  it("leaves a real content change to the conflict flow", () => {
+    const dirty = run(initial, { type: "EDIT", draft: "mine" });
+    const changed: Theirs = { version: 3, content: "their text" };
+    expect(run(dirty, { type: "HEAD_SEEN", head: changed })).toBe(dirty);
+    expect(run(initial, { type: "HEAD_SEEN", head: changed })).toBe(initial);
+  });
+
+  it("ignores the current or an older head, and an in-flight save or open conflict", () => {
+    expect(run(initial, { type: "HEAD_SEEN", head: { version: 2, content: "hello" } })).toBe(initial);
+    expect(run(initial, { type: "HEAD_SEEN", head: { version: 1, content: "hello" } })).toBe(initial);
+    const saving = run(initial, { type: "EDIT", draft: "x" }, { type: "SAVE" });
+    expect(run(saving, { type: "HEAD_SEEN", head: moved })).toBe(saving);
+    const conflicted = run(saving, { type: "SAVE_CONFLICT", theirs });
+    expect(run(conflicted, { type: "HEAD_SEEN", head: moved })).toBe(conflicted);
+  });
+});
+
 describe("draftToStash", () => {
   const initial = initSaveState("hello", 1);
 
@@ -193,6 +225,18 @@ describe("performSave", () => {
       type: "SAVE_CONFLICT",
       theirs: { version: 2, content: "agent text", updatedBy: claude },
     });
+  });
+
+  it("saves without a conflict after the user's own move once the editor has seen the new head", async () => {
+    const api = createMockApi({ latencyMs: [0, 0], getActor: () => human });
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown", content: "same" });
+    const { id: folderId } = await api.createFolder(MOCK_WORKSPACE_ID, { name: "dest", parentId: null });
+    let state = run(initSaveState("same", 1), { type: "EDIT", draft: "edited" });
+    await api.moveFile(id, folderId, 1);
+    const head = await api.readFile(id);
+    state = run(state, { type: "HEAD_SEEN", head: { version: head.version, content: head.content ?? "" } }, { type: "SAVE" });
+    const event = await performSave(api, id, state.baseVersion, state.draft);
+    expect(event).toEqual({ type: "SAVE_OK", version: 3, content: "edited" });
   });
 
   it("returns SAVE_ERROR with the normalized code for other failures", async () => {

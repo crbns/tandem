@@ -33,6 +33,9 @@ const TOOL_SURFACE = [
   "read_file",
   "create_document",
   "update_document",
+  "create_folder",
+  "move_file",
+  "move_folder",
   "publish_work",
   "propose_context_change",
   "get_approvals",
@@ -995,5 +998,28 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     expect(refresh.status).toBe(400);
     await claude.close().catch(() => {});
     evidence.step10 = { clientId, connectionId: oauthConnection!.id, file: created };
+  });
+
+  it("11. folders: the agent makes /specs/api and a document in it; B's dashboard listing sees both", async () => {
+    type McpFolder = { id: string; name: string; path: string };
+    const made = await agent.ok<{ folder: McpFolder; created: boolean }>("create_folder", { path: "/specs/api" });
+    expect(made).toMatchObject({ created: true, folder: { name: "api", path: "/specs/api" } });
+    // mkdir -p is idempotent and paths are case-insensitive.
+    const again = await agent.ok<{ folder: McpFolder; created: boolean }>("create_folder", { path: "/Specs/API/" });
+    expect(again).toMatchObject({ created: false, folder: { id: made.folder.id } });
+    const doc = await agent.ok<McpFile & { path: string }>("create_document", {
+      name: "endpoints.md",
+      content: "GET /",
+      folder_path: "/specs/api",
+    });
+    expect(doc).toMatchObject({ path: "/specs/api/endpoints.md", version: 1 });
+
+    const root = await b.dashboard.listDirectory(workspaceId);
+    expect(root.folders.find((f) => f.name === "specs")).toMatchObject({ path: "/specs" });
+    const listing = await b.dashboard.listDirectory(workspaceId, made.folder.id);
+    expect(listing.breadcrumbs.map((crumb) => crumb.name)).toEqual(["specs", "api"]);
+    expect(listing.files).toEqual([expect.objectContaining({ id: doc.id, name: "endpoints.md", version: 1 })]);
+    expect((await agent.fails("list_files", { path: "//" })).code).toBe("INVALID_PATH");
+    evidence.step11 = { folder: made.folder, file: doc };
   });
 });

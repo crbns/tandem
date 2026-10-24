@@ -37,6 +37,8 @@ export type SaveEvent =
   | { type: "SAVE_ERROR"; code: ApiErrorCode }
   | { type: "RELOAD_THEIRS" }
   | { type: "KEEP_MINE_REBASE" }
+  /** The file was reloaded; `head` is what the server has now. */
+  | { type: "HEAD_SEEN"; head: Theirs }
   | { type: "DISMISS_ERROR" }
   /** User explicitly throws away their unsaved edits (after confirming). */
   | { type: "DISCARD_DRAFT" };
@@ -132,6 +134,18 @@ export function saveReducer(state: SaveState, event: SaveEvent): SaveState {
       // replace it: move the base forward, keep their draft.
       const { content, version } = phase.theirs;
       return { base: content, baseVersion: version, draft: state.draft, phase: settled(content, state.draft) };
+    }
+
+    case "HEAD_SEEN": {
+      // A newer version with our base's content (a move or rename) changes
+      // nothing the draft builds on, so adopt its number and the next save
+      // doesn't conflict with it. A content change is left for the save to
+      // surface as a conflict; an in-flight save or open conflict settle the
+      // version themselves.
+      const { head } = event;
+      if (head.version <= state.baseVersion || head.content !== state.base) return state;
+      if (phase.kind === "saving" || phase.kind === "conflict") return state;
+      return { ...state, baseVersion: head.version };
     }
 
     case "DISMISS_ERROR":

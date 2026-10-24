@@ -5,7 +5,7 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { type Actor, recordWorkspaceEvent } from "./auth";
-import { isValidName, nameKey, storedName } from "./names";
+import { MAX_NAME_LENGTH, isValidName, nameKey, storedName } from "./names";
 import { actorValidator, fileMetadataValidator } from "./validators";
 
 type ReadCtx = QueryCtx | MutationCtx;
@@ -17,7 +17,7 @@ export const MAX_FOLDER_DEPTH = 32;
 export const MAX_DELETE_ITEMS = 500;
 /** Children of each kind returned for one directory listing. */
 export const MAX_DIRECTORY_CHILDREN = 500;
-/** Live folders read by loadFolderIndex. */
+/** Live folders read by loadFolderIndex, and by a folder move (FOLDER_TOO_LARGE). */
 export const MAX_INDEXED_FOLDERS = 2000;
 // Rows scanned per parent when looking for legacy rows without a nameKey.
 const LEGACY_SCAN_LIMIT = 500;
@@ -77,10 +77,18 @@ export const folderRowValidator = v.object({
 // ---------------------------------------------------------------------------
 // Names, paths and lookups
 
-/** Stored name and collision key for a new name, or INVALID_NAME. */
+/** Stored name and collision key for a new name, or INVALID_NAME with a reason. */
 export function requireValidName(raw: string): { name: string; key: string } {
   const name = storedName(raw);
-  if (!isValidName(name)) throw new ConvexError({ code: "INVALID_NAME" });
+  if (!isValidName(name)) {
+    const reason =
+      !nameKey(name) || name.length > MAX_NAME_LENGTH
+        ? "length"
+        : name.includes("/")
+          ? "slash"
+          : "dot";
+    throw new ConvexError({ code: "INVALID_NAME", reason });
+  }
   return { name, key: nameKey(name) };
 }
 
@@ -89,16 +97,17 @@ export function joinPath(parentPath: string, name: string): string {
 }
 
 /**
- * Path segments (stored names) of a workspace path. "" and "/" are root ([]).
- * The leading "/" is optional and one trailing "/" is ignored; empty
- * segments, "." and ".." are INVALID_PATH.
+ * Path segments (stored names) of a workspace path; "/" is root ([]). The
+ * leading "/" is optional and one trailing "/" is ignored. "", empty
+ * segments ("//"), "." and ".." are INVALID_PATH, as in the apps/mcp mock.
  */
 export function splitPath(path: string): string[] {
-  let rest = path.trim();
-  if (rest.startsWith("/")) rest = rest.slice(1);
-  if (rest.endsWith("/")) rest = rest.slice(0, -1);
-  if (rest === "") return [];
-  const segments = rest.split("/").map(storedName);
+  if (path === "") throw new ConvexError({ code: "INVALID_PATH", path });
+  const body = path.startsWith("/") ? path.slice(1) : path;
+  if (body === "") return [];
+  const segments = (body.endsWith("/") ? body.slice(0, -1) : body)
+    .split("/")
+    .map(storedName);
   if (
     segments.length > MAX_FOLDER_DEPTH + 1 ||
     segments.some((s) => nameKey(s) === "" || s === "." || s === "..")
@@ -125,17 +134,19 @@ export async function findChildFolder(
     )
     .first();
   if (keyed) return keyed;
-  // Legacy folders have no stored key; deleted folders released theirs.
+  // Legacy folders have no stored key. Deleted folders released theirs too,
+  // so the range excludes them rather than letting them fill the scan.
   const unkeyed = await ctx.db
     .query("folders")
-    .withIndex("by_workspace_and_parent_and_name_key", (q) =>
-      q.eq("workspaceId", workspaceId).eq("parentId", parentId).eq("nameKey", undefined),
+    .withIndex("by_workspace_and_parent_and_name_key_and_deleted_at", (q) =>
+      q
+        .eq("workspaceId", workspaceId)
+        .eq("parentId", parentId)
+        .eq("nameKey", undefined)
+        .eq("deletedAt", undefined),
     )
     .take(LEGACY_SCAN_LIMIT);
-  return (
-    unkeyed.find((f) => f.deletedAt === undefined && folderKey(f) === key) ??
-    null
-  );
+  return unkeyed.find((f) => folderKey(f) === key) ?? null;
 }
 
 /** The live file named `key` directly under `parentId` (root when undefined). */
@@ -522,7 +533,11 @@ export async function renameFolderCore(
   return (await ctx.db.get(folder._id))!;
 }
 
-/** Levels in the live subtree rooted at `folder` (1 for a leaf), up to `cap`. */
+/**
+ * Levels in the live subtree rooted at `folder` (1 for a leaf), exact up to
+ * `cap`; cap + 1 means deeper. A subtree over MAX_INDEXED_FOLDERS folders is
+ * FOLDER_TOO_LARGE rather than measured partially.
+ */
 async function subtreeHeight(
   ctx: ReadCtx,
   folder: Doc<"folders">,
@@ -530,11 +545,17 @@ async function subtreeHeight(
 ): Promise<number> {
   let level = [folder._id];
   let height = 0;
-  while (level.length > 0 && height <= cap) {
+  let seen = 0;
+  while (level.length > 0) {
     height++;
+    if (height > cap) break;
     const next: FolderId[] = [];
     for (const id of level) {
-      const children = await listChildFolders(ctx, folder.workspaceId, id, MAX_INDEXED_FOLDERS);
+      const room = MAX_INDEXED_FOLDERS - seen;
+      const children = await listChildFolders(ctx, folder.workspaceId, id, room + 1);
+      if (children.length > room)
+        throw new ConvexError({ code: "FOLDER_TOO_LARGE", limit: MAX_INDEXED_FOLDERS });
+      seen += children.length;
       next.push(...children.map((c) => c._id));
     }
     level = next;
