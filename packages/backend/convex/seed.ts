@@ -15,18 +15,26 @@ import {
   retrieveAccount,
 } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
-import { internal } from "./_generated/api";
+import { components, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   type ActionCtx,
   type MutationCtx,
+  type QueryCtx,
   internalAction,
   internalMutation,
   internalQuery,
 } from "./_generated/server";
 import { MIN_PASSWORD_LENGTH } from "./auth";
 import { decideProposalCore } from "./context";
-import { generateAgentToken, hashAgentToken, TOKEN_PATTERN } from "./lib/agent";
+import { revokeConnectionCredentials } from "./lib/agent";
+import {
+  ALL_MCP_SCOPES,
+  API_KEY_PATTERN,
+  mcpResource,
+  randomSecret,
+  sha256Hex,
+} from "./lib/mcpConfig";
 import { type Actor, humanActor, recordWorkspaceEvent } from "./lib/auth";
 import { createDocumentCore, proposeContextChangeCore } from "./lib/ops";
 
@@ -110,6 +118,8 @@ const SEED_ACTOR: Actor = { type: "system", label: "Demo seed" };
 
 const resetResult = v.object({
   workspaceId: v.id("workspaces"),
+  /** The MCP server URL the members' API keys work against. */
+  mcpUrl: v.string(),
   workspaceName: v.string(),
   briefFileId: v.id("files"),
   password: v.string(),
@@ -128,8 +138,8 @@ const resetResult = v.object({
 });
 
 /**
- * Rebuilds the demo. `password` (all three users) and `tokens` (per person)
- * are optional; omitted ones are generated, so pass the previous values to
+ * Rebuilds the demo. `password` (all three users) and `tokens` (per person,
+ * `mcp_sk_` API keys for the Convex MCP endpoint) are optional; omitted ones are generated, so pass the previous values to
  * keep sign-ins and assistant configs working across resets. Existing demo
  * accounts get the password reset and their sessions signed out.
  */
@@ -152,13 +162,16 @@ export const resetDemo = internalAction({
     if (password.length < MIN_PASSWORD_LENGTH)
       throw new ConvexError({ code: "WEAK_PASSWORD", field: "password" });
     const tokens = DEMO_PEOPLE.map(
-      (person) => args.tokens?.[person.key] ?? generateAgentToken(),
+      (person) => args.tokens?.[person.key] ?? randomSecret("mcp_sk_"),
     );
     DEMO_PEOPLE.forEach((person, i) => {
-      if (!TOKEN_PATTERN.test(tokens[i]!) || tokens.indexOf(tokens[i]!) !== i)
+      if (!API_KEY_PATTERN.test(tokens[i]!) || tokens.indexOf(tokens[i]!) !== i)
         throw new ConvexError({ code: "INVALID_INPUT", field: `tokens.${person.key}` });
     });
-    const taken: number[] = await ctx.runQuery(internal.seed.tokensInUse, { tokens });
+    const taken: number[] = await ctx.runQuery(internal.seed.tokensInUse, {
+      tokens,
+      now: Date.now(),
+    });
     if (taken.length > 0)
       throw new ConvexError({
         code: "INVALID_INPUT",
@@ -175,25 +188,37 @@ export const resetDemo = internalAction({
   },
 });
 
-/** Indexes of `tokens` held by a connection outside a demo workspace. */
+/** Indexes of `tokens` held by a credential outside a demo workspace. */
 export const tokensInUse = internalQuery({
-  args: { tokens: v.array(v.string()) },
+  args: { tokens: v.array(v.string()), now: v.number() },
   returns: v.array(v.number()),
-  handler: async (ctx, { tokens }) => {
+  handler: async (ctx, { tokens, now }) => {
     const taken = [];
     for (const [i, token] of tokens.entries()) {
-      const tokenHash = await hashAgentToken(token);
-      const connection = await ctx.db
-        .query("agent_connections")
-        .withIndex("by_token_hash", (q) => q.eq("tokenHash", tokenHash))
-        .first();
-      if (!connection) continue;
-      const workspace = await ctx.db.get(connection.workspaceId);
+      const owner = await keyOwner(ctx, token, now);
+      if (owner === null) continue;
+      const workspace = owner === "unknown" ? null : await ctx.db.get(owner.workspaceId);
       if (workspace?.demoSeed !== true) taken.push(i);
     }
     return taken;
   },
 });
+
+/** The connection an API key acts for: null when unused, "unknown" when it isn't a connection. */
+async function keyOwner(
+  ctx: QueryCtx,
+  token: string,
+  now: number,
+): Promise<Doc<"agent_connections"> | "unknown" | null> {
+  const info = await ctx.runQuery(components.mcp.tokens.verify, {
+    hash: await sha256Hex(token),
+    now,
+  });
+  if (!info) return null;
+  const connectionId = ctx.db.normalizeId("agent_connections", info.userId);
+  const connection = connectionId ? await ctx.db.get(connectionId) : null;
+  return connection ?? "unknown";
+}
 
 /** Deletes the demo workspace (if any) and builds it again, in one transaction. */
 export const rebuildDemoWorkspace = internalMutation({
@@ -307,12 +332,8 @@ export const rebuildDemoWorkspace = internalMutation({
 
     const members = [];
     for (const { person, user, token } of cast) {
-      const tokenHash = await hashAgentToken(token);
-      const taken = await ctx.db
-        .query("agent_connections")
-        .withIndex("by_token_hash", (q) => q.eq("tokenHash", tokenHash))
-        .first();
-      if (taken)
+      // The old demo connections' keys were revoked with their workspace above.
+      if ((await keyOwner(ctx, token, now)) !== null)
         throw new ConvexError({ code: "INVALID_INPUT", field: `tokens.${person.key}` });
       const actor = humanActor(user);
       const connectionId = await ctx.db.insert("agent_connections", {
@@ -320,11 +341,19 @@ export const rebuildDemoWorkspace = internalMutation({
         userId: user._id,
         client: person.client,
         displayName: person.connectionName,
-        tokenHash,
+        authKind: "api_key",
         updatedBy: actor,
         revision: 1,
         createdAt: now,
         updatedAt: now,
+      });
+      // The key's grant acts for this connection (see convex/mcp.ts).
+      await ctx.runMutation(components.mcp.grants.createApiKey, {
+        userId: connectionId,
+        name: person.connectionName,
+        scopes: ALL_MCP_SCOPES,
+        resource: mcpResource(),
+        hash: await sha256Hex(token),
       });
       await recordWorkspaceEvent(ctx, {
         workspaceId,
@@ -347,6 +376,7 @@ export const rebuildDemoWorkspace = internalMutation({
     }
     return {
       workspaceId,
+      mcpUrl: mcpResource(),
       workspaceName: DEMO_WORKSPACE_NAME,
       briefFileId: brief._id,
       members,
@@ -431,6 +461,7 @@ async function deleteWorkspace(ctx: MutationCtx, workspaceId: Id<"workspaces">) 
         .withIndex("by_workspace_and_user", (q) => q.eq("workspaceId", workspaceId))
         .take(DELETE_BATCH),
     async (connection) => {
+      await revokeConnectionCredentials(ctx, connection._id);
       const cursors = await ctx.db
         .query("sync_cursors")
         .withIndex("by_agent_connection", (q) =>

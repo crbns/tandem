@@ -33,30 +33,30 @@ The script generates an RS256 key pair with `jose` and sets `JWT_PRIVATE_KEY`, `
 pnpm --filter web dev   # http://localhost:3000
 ```
 
-## 4. Run the MCP server against Convex
+## 4. Use the MCP server
 
-Get an agent token: create one in the dashboard (Assistants page), or for scripted tests:
+There is no separate MCP process: `@convex-dev/mcp` serves it from the deployment's HTTP actions at `<CONVEX_SITE_URL>/mcp` (`http://127.0.0.1:3211/mcp` locally), together with the OAuth endpoints (`/mcp/oauth/*`) and the discovery documents under `/.well-known/`. The tools live in `packages/backend/convex/mcp.ts`.
+
+Get an API key: create one in the dashboard (Assistants page → Create API key), or for scripted tests:
 
 ```sh
 cd packages/backend
 TOKEN=$(CONVEX_URL=http://127.0.0.1:3210 node scripts/dev-agent-token.mjs)
 ```
 
-`dev-agent-token.mjs [email] [password] [client]` signs up or signs in a Password user (default `dev@example.com`), creates a workspace if they have none, and prints a new `tdm_…` token for one connection. It's for local deployments only.
+`dev-agent-token.mjs [email] [password] [client]` signs up or signs in a Password user (default `dev@example.com`), creates a workspace if they have none, and prints a new `mcp_sk_…` key for one connection. It's for local deployments only.
 
 ```sh
-TANDEM_BACKEND=convex CONVEX_URL=http://127.0.0.1:3210 pnpm --filter mcp dev
-```
-
-```sh
-curl -s http://127.0.0.1:8787/mcp \
+curl -s http://127.0.0.1:3211/mcp \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-The token can also go in the `api-key` header. The MCP server holds no Convex credentials: it forwards the token, and Convex verifies it on every call. `TANDEM_DEV_TOKENS` and `TANDEM_DEV_ANON_USER` apply to the mock backend only (anon mode refuses to start with Convex).
+OAuth clients (claude.ai custom connectors) need a public HTTPS URL, so they can't reach a local deployment directly. Locally, the OAuth flow is covered by `convex/agent.test.ts` and step 10 of the e2e test. The consent page is `http://localhost:3000/oauth/consent`: the deployment's `SITE_URL` (step 2) decides where the component sends people, and `MCP_CONSENT_URL` overrides it.
+
+`apps/mcp` is now only a mock-backed harness for the skill eval (`TANDEM_DEV_TOKENS`, `TANDEM_DEV_ANON_USER`); it never talks to Convex.
 
 ## 5. Demo seed and reset
 
@@ -71,8 +71,8 @@ Deletes and rebuilds only the demo workspace (Alex, Blake and Casey, `brief.md` 
 ```sh
 pnpm --filter @repo/backend test         # convex-test unit tests (no running backend needed)
 pnpm --filter @repo/backend check-types
-pnpm --filter mcp test
+pnpm --filter mcp test                   # the eval harness's mock server
 pnpm --filter web test
 ```
 
-End to end (tests/e2e): `pnpm test:e2e` runs the P0 slice against the live local deployment, the real MCP server (spawned on a free port with `TANDEM_BACKEND=convex`) and the dashboard's own data layer (`apps/web/lib/api/convex.ts`). It reuses a running `npx convex dev` at `CONVEX_URL` (default `http://127.0.0.1:3210`) or starts one and stops it afterwards. It needs step 2 done once. Every run signs up fresh users and creates fresh workspaces, so reruns pass. Set `E2E_EVIDENCE=<path>` to write the ids and results of each step as JSON. It is not part of `pnpm test`.
+End to end (tests/e2e): `pnpm test:e2e` runs the P0 slice against the live local deployment, its MCP endpoint (API keys and a full OAuth consent flow) and the dashboard's own data layer (`apps/web/lib/api/convex.ts`). It reuses a running `npx convex dev` at `CONVEX_URL` (default `http://127.0.0.1:3210`) or starts one and stops it afterwards. The MCP URL is `CONVEX_SITE_URL` + `/mcp`; without it, the e2e uses the next port after `CONVEX_URL`'s. It needs step 2 done once. Every run signs up fresh users and creates fresh workspaces, so reruns pass. Set `E2E_EVIDENCE=<path>` to write the ids and results of each step as JSON. It is not part of `pnpm test`.

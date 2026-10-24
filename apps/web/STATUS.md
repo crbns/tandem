@@ -60,13 +60,14 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | Approve/Reject only for owner/admin; members read-only | PASS (unit + mock) | `canDecideProposals`; backend also enforces |
 | Stale approval shows VERSION_CONFLICT clearly, context untouched | PASS (mock / unit) | ochre alert; adapter re-reads stale proposals because the backend returns null |
 | Pending approvals listed on workspace home, linked to the screen | PASS (mock) | |
-| `/w/<id>/assistants`: create connection, token shown once + copy + Claude Code command | PASS (mock) | `NEXT_PUBLIC_MCP_URL`; placeholder + warning when unset |
+| `/w/<id>/assistants`: create API key, key shown once + copy + Claude Code command | PASS (mock), relabeled 2026-10-24 | server URL now comes from the backend (`getMcpServerUrl`), no `NEXT_PUBLIC_MCP_URL` |
+| `/oauth/consent?request=`: sign-in round trip, pick workspace + assistant, Allow/Deny, refuses to render framed | PASS (mock, browser 2026-10-24) | sign-in returned to the page with `?request=` intact; Allow landed on Assistants. Framing refusal not exercised in a browser. Data layer: unit tests and e2e step 10 |
 | Connections list "Last MCP action / Last sync", never "online"; revoke with confirmation | PASS (mock) | |
-| Against live `agentConnections` + MCP server | PENDING (live) | needs T1's deployment and the MCP Convex adapter |
+| Against live `agentConnections` + MCP server | PASS (e2e, local deployment) | `tests/e2e` steps 2–10 through the dashboard's data layer; claude.ai itself needs a public deployment |
 
 ## Gate 6: live Convex integration
 
-The backend functions exist; these need a seeded deployment (dev `NEXT_PUBLIC_CONVEX_URL`, a test login, and `NEXT_PUBLIC_MCP_URL`, in `apps/web/.env.local` only).
+The backend functions exist; these need a seeded deployment (dev `NEXT_PUBLIC_CONVEX_URL` and a test login, in `apps/web/.env.local` only).
 
 | Check | Status | Notes |
 |---|---|---|

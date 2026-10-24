@@ -1,12 +1,23 @@
 /// <reference types="vite/client" />
+import mcpTest from "@convex-dev/mcp/test";
 import { convexTest } from "convex-test";
 import { ConvexError } from "convex/values";
-import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { beforeAll, describe, expect, it } from "vitest";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { ALL_MCP_SCOPES } from "./lib/mcpConfig";
 import schema from "./schema";
 
+declare const process: { env: Record<string, string | undefined> };
+
 const modules = import.meta.glob("./**/*.ts");
+const SITE = "https://tandem-test.convex.site";
+const MCP_URL = `${SITE}/mcp`;
+
+beforeAll(() => {
+  process.env.CONVEX_SITE_URL = SITE;
+  process.env.SITE_URL = "https://tandem.example";
+});
 
 /** Resolves to the thrown ConvexError's data, or fails the test. */
 async function errorData(promise: Promise<unknown>) {
@@ -23,8 +34,77 @@ async function errorData(promise: Promise<unknown>) {
   throw new Error("expected the call to throw");
 }
 
+function newTest() {
+  return convexTest(schema, modules);
+}
+type Test = ReturnType<typeof newTest>;
+type Caller = ReturnType<Test["withIdentity"]>;
+
+/** What the MCP component passes a tool for a credential acting for `connectionId`. */
+function principalFor(
+  connectionId: string,
+  scopes: string[] = ALL_MCP_SCOPES,
+) {
+  return { userId: connectionId, scopes, connectionId: `grant_${connectionId}` };
+}
+
+/**
+ * Creates an API-key connection. `token` is the principal tools receive once
+ * the component has verified the key; `apiKey` is the bearer secret itself.
+ */
+async function connect(
+  as: Caller,
+  args: { workspaceId: Id<"workspaces">; client: string; displayName?: string },
+) {
+  const created = await as.action(api.agentConnections.createAgentConnection, args);
+  return {
+    connectionId: created.connectionId,
+    apiKey: created.token,
+    mcpUrl: created.mcpUrl,
+    token: principalFor(created.connectionId),
+  };
+}
+
+/** One JSON-RPC request to the MCP endpoint (stateless, like claude.ai's). */
+async function mcpRequest(
+  t: Test,
+  bearer: string | null,
+  method: string,
+  params: Record<string, unknown> = {},
+) {
+  const res = await t.fetch("/mcp", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "MCP-Protocol-Version": "2025-06-18",
+      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  const body = res.status === 200 ? await res.json() : null;
+  return { status: res.status, headers: res.headers, body };
+}
+
+/** Calls a tool over HTTP and returns its MCP result. */
+async function callTool(
+  t: Test,
+  bearer: string,
+  name: string,
+  args: Record<string, unknown> = {},
+) {
+  const res = await mcpRequest(t, bearer, "tools/call", { name, arguments: args });
+  expect(res.status).toBe(200);
+  return res.body.result as {
+    isError?: boolean;
+    structuredContent: Record<string, any>;
+    content: { type: string; text: string }[];
+  };
+}
+
 async function setup() {
-  const t = convexTest(schema, modules);
+  const t = newTest();
+  mcpTest.register(t);
   const insertUser = (name: string) =>
     t.run((ctx) =>
       ctx.db.insert("users", { name, email: `${name.toLowerCase()}@example.com` }),
@@ -67,27 +147,34 @@ async function setup() {
 }
 
 describe("agent connections", () => {
-  it("creates a token once, verifies it, and rejects it after revoke", async () => {
+  it("creates an API key once, stores only its hash, and 401s it after revoke", async () => {
     const { t, sam, samId, workspaceId } = await setup();
-    const created = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude", displayName: "Sam's Claude" },
-    );
-    expect(created.token).toMatch(/^tdm_[A-Za-z0-9_-]{43}$/);
+    const created = await connect(sam, { workspaceId, client: "claude", displayName: "Sam's Claude" });
+    expect(created.apiKey).toMatch(/^mcp_sk_[A-Za-z0-9_-]{43}$/);
+    expect(created.mcpUrl).toBe(MCP_URL);
+    expect(await t.query(api.agentConnections.getMcpServerUrl, {})).toBe(MCP_URL);
 
     const stored = await t.run((ctx) => ctx.db.get(created.connectionId));
-    expect(stored?.tokenHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(JSON.stringify(stored)).not.toContain(created.token);
+    expect(stored).toMatchObject({ authKind: "api_key", userId: samId, client: "claude" });
+    expect(stored?.tokenHash).toBeUndefined();
+    expect(JSON.stringify(stored)).not.toContain(created.apiKey);
 
-    const identity = await t.query(api.mcp.verifyToken, {
-      token: created.token,
-    });
-    expect(identity).toMatchObject({
-      userId: samId,
-      client: "claude",
-      connectionId: created.connectionId,
-      workspaceId,
-    });
+    // The key works against the real endpoint and sees all 11 tools.
+    const list = await mcpRequest(t, created.apiKey, "tools/list");
+    expect(list.status).toBe(200);
+    expect(list.body.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
+      "create_document",
+      "get_approvals",
+      "get_file_versions",
+      "get_workspace_info",
+      "list_files",
+      "propose_context_change",
+      "publish_work",
+      "read_file",
+      "search_files",
+      "sync_workspace",
+      "update_document",
+    ]);
 
     const listed = await sam.query(api.agentConnections.listAgentConnections, {
       workspaceId,
@@ -97,6 +184,7 @@ describe("agent connections", () => {
       connectionId: created.connectionId,
       userName: "Sam",
       displayName: "Sam's Claude",
+      authKind: "api_key",
       lastMcpActionAt: null,
       revokedAt: null,
     });
@@ -105,35 +193,32 @@ describe("agent connections", () => {
     await sam.mutation(api.agentConnections.revokeAgentConnection, {
       connectionId: created.connectionId,
     });
-    expect(
-      await errorData(t.query(api.mcp.verifyToken, { token: created.token })),
-    ).toMatchObject({ code: "UNAUTHENTICATED" });
+    const after = await mcpRequest(t, created.apiKey, "tools/list");
+    expect(after.status).toBe(401);
+    expect(after.headers.get("WWW-Authenticate")).toContain(
+      `resource_metadata="${SITE}/.well-known/oauth-protected-resource/mcp"`,
+    );
+    // The connection row itself is refused too, should a credential survive.
     expect(
       await errorData(
-        t.mutation(api.mcp.listFiles, { token: created.token }),
+        t.mutation(internal.mcpTools.listFiles, { principal: created.token }),
       ),
     ).toMatchObject({ code: "UNAUTHENTICATED" });
   });
 
-  it("rejects unknown and malformed tokens", async () => {
+  it("answers unknown, malformed and missing credentials with 401", async () => {
     const { t } = await setup();
-    for (const token of ["", "nope", `tdm_${"A".repeat(43)}`]) {
-      expect(
-        await errorData(t.query(api.mcp.verifyToken, { token })),
-      ).toMatchObject({ code: "UNAUTHENTICATED" });
+    for (const bearer of [null, "nope", `mcp_sk_${"A".repeat(43)}`, `tdm_${"A".repeat(43)}`]) {
+      const res = await mcpRequest(t, bearer, "tools/list");
+      expect(res.status).toBe(401);
+      expect(res.headers.get("WWW-Authenticate")).toMatch(/^Bearer resource_metadata=/);
     }
   });
 
   it("lets members see only their own connections and owners see all", async () => {
     const { alex, sam, workspaceId } = await setup();
-    await sam.mutation(api.agentConnections.createAgentConnection, {
-      workspaceId,
-      client: "claude",
-    });
-    const alexConn = await alex.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "chatgpt" },
-    );
+    await connect(sam, { workspaceId, client: "claude" });
+    const alexConn = await connect(alex, { workspaceId, client: "chatgpt" });
     expect(
       await sam.query(api.agentConnections.listAgentConnections, {
         workspaceId,
@@ -155,10 +240,10 @@ describe("agent connections", () => {
   });
 
   it("refuses connections for a workspace the caller isn't in, and bad clients", async () => {
-    const { jordan, sam, workspaceId } = await setup();
+    const { t, jordan, sam, workspaceId } = await setup();
     expect(
       await errorData(
-        jordan.mutation(api.agentConnections.createAgentConnection, {
+        jordan.action(api.agentConnections.createAgentConnection, {
           workspaceId,
           client: "claude",
         }),
@@ -166,25 +251,43 @@ describe("agent connections", () => {
     ).toMatchObject({ code: "FORBIDDEN" });
     expect(
       await errorData(
-        sam.mutation(api.agentConnections.createAgentConnection, {
+        sam.action(api.agentConnections.createAgentConnection, {
           workspaceId,
           client: "copilot",
         }),
       ),
     ).toMatchObject({ code: "INVALID_INPUT" });
+    // Nothing was half-created: no rows and no orphaned keys.
+    expect(await t.run((ctx) => ctx.db.query("agent_connections").take(10))).toEqual([]);
+  });
+
+  it("refuses writes from a read-only connection inside the transaction", async () => {
+    const { t, sam, workspaceId } = await setup();
+    const { connectionId } = await connect(sam, { workspaceId, client: "claude" });
+    const readOnly = principalFor(connectionId, ["tandem:read"]);
+    expect(
+      await errorData(
+        t.mutation(internal.mcpTools.createDocument, {
+          principal: readOnly,
+          name: "x.md",
+          mimeType: "text/markdown",
+          content: "",
+        }),
+      ),
+    ).toMatchObject({ code: "FORBIDDEN", scope: "tandem:write" });
+    // Reads still work.
+    const files = await t.mutation(internal.mcpTools.listFiles, { principal: readOnly });
+    expect(files.files).toEqual([]);
   });
 });
 
 describe("agent file writes", () => {
   it("rejects a stale agent write after a human edit and keeps v2 intact", async () => {
     const { t, alex, sam, samId, alexId, workspaceId } = await setup();
-    const { token, connectionId } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
+    const { token, connectionId } = await connect(sam, { workspaceId, client: "claude" });
 
-    const created = await t.mutation(api.mcp.createDocument, {
-      token,
+    const created = await t.mutation(internal.mcpTools.createDocument, {
+      principal: token,
       name: "brief.md",
       mimeType: "text/markdown",
       content: "v1 by agent",
@@ -206,8 +309,8 @@ describe("agent file writes", () => {
 
     expect(
       await errorData(
-        t.mutation(api.mcp.updateDocument, {
-          token,
+        t.mutation(internal.mcpTools.updateDocument, {
+          principal: token,
           fileId: created.id,
           content: "stale agent edit",
           expectedVersion: 1,
@@ -221,8 +324,8 @@ describe("agent file writes", () => {
     // A version from the future is a conflict too, never a write.
     expect(
       await errorData(
-        t.mutation(api.mcp.updateDocument, {
-          token,
+        t.mutation(internal.mcpTools.updateDocument, {
+          principal: token,
           fileId: created.id,
           content: "future",
           expectedVersion: 7,
@@ -230,8 +333,8 @@ describe("agent file writes", () => {
       ),
     ).toMatchObject({ code: "VERSION_CONFLICT", currentVersion: 2 });
 
-    const read = await t.mutation(api.mcp.readFile, {
-      token,
+    const read = await t.mutation(internal.mcpTools.readFile, {
+      principal: token,
       fileId: created.id,
     });
     expect(read.content).toBe("v2 by human");
@@ -251,8 +354,8 @@ describe("agent file writes", () => {
       agentConnectionId: connectionId,
     });
 
-    const versions = await t.mutation(api.mcp.getFileVersions, {
-      token,
+    const versions = await t.mutation(internal.mcpTools.getFileVersions, {
+      principal: token,
       fileId: created.id,
       limit: 10,
     });
@@ -282,10 +385,7 @@ describe("agent file writes", () => {
 
   it("enforces name uniqueness per folder, trimmed and case-insensitive", async () => {
     const { t, alex, sam, workspaceId } = await setup();
-    const { token } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
     const first = await alex.mutation(api.files.createDocument, {
       workspaceId,
       name: "Notes.md",
@@ -294,8 +394,8 @@ describe("agent file writes", () => {
     });
     expect(
       await errorData(
-        t.mutation(api.mcp.createDocument, {
-          token,
+        t.mutation(internal.mcpTools.createDocument, {
+          principal: token,
           name: "  notes.MD ",
           mimeType: "text/markdown",
           content: "dup",
@@ -306,24 +406,21 @@ describe("agent file writes", () => {
 
   it("searches names and content case-insensitively with snippets", async () => {
     const { t, sam, workspaceId } = await setup();
-    const { token } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
-    await t.mutation(api.mcp.createDocument, {
-      token,
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
+    await t.mutation(internal.mcpTools.createDocument, {
+      principal: token,
       name: "plan.md",
       mimeType: "text/markdown",
       content: "We will ship the DEMO on Saturday.",
     });
-    await t.mutation(api.mcp.createDocument, {
-      token,
+    await t.mutation(internal.mcpTools.createDocument, {
+      principal: token,
       name: "demo-notes.md",
       mimeType: "text/markdown",
       content: "nothing here",
     });
-    const results = await t.mutation(api.mcp.searchFiles, {
-      token,
+    const results = await t.mutation(internal.mcpTools.searchFiles, {
+      principal: token,
       query: "demo",
       limit: 10,
     });
@@ -338,10 +435,7 @@ describe("agent file writes", () => {
 describe("tenant boundaries", () => {
   it("denies another workspace's files and workspace ids to a token", async () => {
     const { t, sam, jordan, workspaceId, otherWorkspaceId } = await setup();
-    const { token } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
     const foreign = await jordan.mutation(api.files.createDocument, {
       workspaceId: otherWorkspaceId,
       name: "secret.md",
@@ -350,13 +444,13 @@ describe("tenant boundaries", () => {
     });
     expect(
       await errorData(
-        t.mutation(api.mcp.readFile, { token, fileId: foreign.id }),
+        t.mutation(internal.mcpTools.readFile, { principal: token, fileId: foreign.id }),
       ),
     ).toMatchObject({ code: "FILE_NOT_FOUND" });
     expect(
       await errorData(
-        t.mutation(api.mcp.updateDocument, {
-          token,
+        t.mutation(internal.mcpTools.updateDocument, {
+          principal: token,
           fileId: foreign.id,
           content: "x",
           expectedVersion: 1,
@@ -365,13 +459,13 @@ describe("tenant boundaries", () => {
     ).toMatchObject({ code: "FILE_NOT_FOUND" });
     expect(
       await errorData(
-        t.mutation(api.mcp.listFiles, { token, workspaceId: otherWorkspaceId }),
+        t.mutation(internal.mcpTools.listFiles, { principal: token, workspaceId: otherWorkspaceId }),
       ),
     ).toMatchObject({ code: "FORBIDDEN" });
     expect(
       await errorData(
-        t.mutation(api.mcp.createDocument, {
-          token,
+        t.mutation(internal.mcpTools.createDocument, {
+          principal: token,
           workspaceId: otherWorkspaceId,
           name: "x.md",
           mimeType: "text/markdown",
@@ -381,8 +475,8 @@ describe("tenant boundaries", () => {
     ).toMatchObject({ code: "FORBIDDEN" });
     expect(
       await errorData(
-        t.mutation(api.mcp.proposeContextChange, {
-          token,
+        t.mutation(internal.mcpTools.proposeContextChange, {
+          principal: token,
           field: "goal",
           proposedValue: "steal",
           rationale: "r",
@@ -390,8 +484,8 @@ describe("tenant boundaries", () => {
         }),
       ),
     ).toMatchObject({ code: "INVALID_SOURCE_FILE" });
-    const search = await t.mutation(api.mcp.searchFiles, {
-      token,
+    const search = await t.mutation(internal.mcpTools.searchFiles, {
+      principal: token,
       query: "jordan",
       limit: 10,
     });
@@ -400,10 +494,7 @@ describe("tenant boundaries", () => {
 
   it("rejects an outsider's token once they leave the workspace", async () => {
     const { t, sam, samId, workspaceId } = await setup();
-    const { token } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
     await t.run(async (ctx) => {
       const membership = await ctx.db
         .query("workspace_members")
@@ -414,7 +505,7 @@ describe("tenant boundaries", () => {
       await ctx.db.delete(membership!._id);
     });
     expect(
-      await errorData(t.mutation(api.mcp.listFiles, { token })),
+      await errorData(t.mutation(internal.mcpTools.listFiles, { principal: token })),
     ).toMatchObject({ code: "FORBIDDEN" });
   });
 });
@@ -422,12 +513,9 @@ describe("tenant boundaries", () => {
 describe("proposals", () => {
   it("lets agents propose but never decide", async () => {
     const { t, alex, sam, samId, workspaceId } = await setup();
-    const { token, connectionId } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
-    const { proposal } = await t.mutation(api.mcp.proposeContextChange, {
-      token,
+    const { token, connectionId } = await connect(sam, { workspaceId, client: "claude" });
+    const { proposal } = await t.mutation(internal.mcpTools.proposeContextChange, {
+      principal: token,
       field: "goal",
       proposedValue: "Ship the demo",
       rationale: "Agreed in standup",
@@ -465,8 +553,8 @@ describe("proposals", () => {
       ).toMatchObject({ code: "APPROVAL_REQUIRED" });
     }
 
-    const pending = await t.mutation(api.mcp.getApprovals, {
-      token,
+    const pending = await t.mutation(internal.mcpTools.getApprovals, {
+      principal: token,
       status: "pending",
       limit: 10,
     });
@@ -487,11 +575,8 @@ describe("proposals", () => {
 describe("sync cursor", () => {
   it("returns events in order without gaps across pages", async () => {
     const { t, alex, sam, workspaceId } = await setup();
-    const { token, connectionId } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
-    const snapshot = await t.mutation(api.mcp.syncWorkspace, { token });
+    const { token, connectionId } = await connect(sam, { workspaceId, client: "claude" });
+    const snapshot = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
     const startSeq = snapshot.cursorSeq;
     expect(snapshot.events.map((e) => e.seq)).toEqual(
       Array.from({ length: startSeq }, (_, i) => i + 1),
@@ -499,8 +584,8 @@ describe("sync cursor", () => {
 
     // 60 interleaved human and agent writes: more than one sync page.
     for (let i = 0; i < 30; i++) {
-      await t.mutation(api.mcp.createDocument, {
-        token,
+      await t.mutation(internal.mcpTools.createDocument, {
+        principal: token,
         name: `agent-${i}.md`,
         mimeType: "text/markdown",
         content: "",
@@ -513,15 +598,15 @@ describe("sync cursor", () => {
       });
     }
 
-    const page1 = await t.mutation(api.mcp.syncWorkspace, {
-      token,
+    const page1 = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: token,
       sinceSeq: startSeq,
       cursorWorkspaceId: workspaceId,
     });
     expect(page1.events).toHaveLength(50);
     expect(page1.eventsTruncated).toBe(true);
-    const page2 = await t.mutation(api.mcp.syncWorkspace, {
-      token,
+    const page2 = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: token,
       sinceSeq: page1.cursorSeq,
     });
     expect(page2.eventsTruncated).toBe(false);
@@ -533,8 +618,8 @@ describe("sync cursor", () => {
     expect(page2.changedFiles.length).toBe(10);
 
     // Nothing new: same cursor, no events.
-    const empty = await t.mutation(api.mcp.syncWorkspace, {
-      token,
+    const empty = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: token,
       sinceSeq: page2.cursorSeq,
     });
     expect(empty.events).toEqual([]);
@@ -543,13 +628,13 @@ describe("sync cursor", () => {
     // A cursor past the head, or for another workspace, is invalid.
     expect(
       await errorData(
-        t.mutation(api.mcp.syncWorkspace, { token, sinceSeq: 10_000 }),
+        t.mutation(internal.mcpTools.syncWorkspace, { principal: token, sinceSeq: 10_000 }),
       ),
     ).toMatchObject({ code: "INVALID_CURSOR" });
     expect(
       await errorData(
-        t.mutation(api.mcp.syncWorkspace, {
-          token,
+        t.mutation(internal.mcpTools.syncWorkspace, {
+          principal: token,
           sinceSeq: 1,
           cursorWorkspaceId: "other",
         }),
@@ -562,21 +647,18 @@ describe("sync cursor", () => {
 
   it("records publish_work as an event and a stored row", async () => {
     const { t, sam, workspaceId } = await setup();
-    const { token } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
-    const before = await t.mutation(api.mcp.syncWorkspace, { token });
-    const work = await t.mutation(api.mcp.publishWork, {
-      token,
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
+    const before = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    const work = await t.mutation(internal.mcpTools.publishWork, {
+      principal: token,
       kind: "finding",
       title: "Latency",
       summary: "p95 is 120ms",
       fileIds: [],
     });
     expect(work.createdBy.type).toBe("agent");
-    const after = await t.mutation(api.mcp.syncWorkspace, {
-      token,
+    const after = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: token,
       sinceSeq: before.cursorSeq,
     });
     expect(after.events.map((e) => [e.kind, e.entityId])).toEqual([
@@ -588,13 +670,10 @@ describe("sync cursor", () => {
 describe("ownership proposals (review M1)", () => {
   it("requires the proposed owner to be a current member, on propose and approve", async () => {
     const { t, alex, sam, samId, alexId, jordanId, workspaceId } = await setup();
-    const { token } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
     const propose = (ownerUserId: string | undefined, area = "Billing") =>
-      t.mutation(api.mcp.proposeContextChange, {
-        token,
+      t.mutation(internal.mcpTools.proposeContextChange, {
+        principal: token,
         field: "ownership",
         proposedValue: area,
         rationale: "Owner needed",
@@ -612,8 +691,8 @@ describe("ownership proposals (review M1)", () => {
     // An owner on a field that isn't ownership.
     expect(
       await errorData(
-        t.mutation(api.mcp.proposeContextChange, {
-          token,
+        t.mutation(internal.mcpTools.proposeContextChange, {
+          principal: token,
           field: "goal",
           proposedValue: "Ship",
           rationale: "r",
@@ -698,7 +777,7 @@ describe("ownership proposals (review M1)", () => {
       proposalId: second.id,
       decision: "approved",
     });
-    const synced = await t.mutation(api.mcp.syncWorkspace, { token });
+    const synced = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
     expect(
       synced.context.ownership.map((e) => [e.text, e.ownerUserId, e.ownerArea]),
     ).toEqual([["PAYMENTS: Sam", samId, "PAYMENTS"]]);
@@ -708,26 +787,23 @@ describe("ownership proposals (review M1)", () => {
 describe("presence on failed calls (review L2)", () => {
   it("touchConnection records the action a failed call rolled back", async () => {
     const { t, sam, workspaceId } = await setup();
-    const { token, connectionId } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
+    const { token, connectionId } = await connect(sam, { workspaceId, client: "claude" });
     expect(
-      await errorData(t.mutation(api.mcp.readFile, { token, fileId: "nope" })),
+      await errorData(t.mutation(internal.mcpTools.readFile, { principal: token, fileId: "nope" })),
     ).toMatchObject({ code: "FILE_NOT_FOUND" });
     // The failing mutation rolled back its own touch.
     let connection = await t.run((ctx) => ctx.db.get(connectionId));
     expect(connection?.lastMcpActionAt).toBeUndefined();
 
     const before = Date.now();
-    await t.mutation(api.mcp.touchConnection, { token });
+    await t.mutation(internal.mcpTools.touchConnection, { principal: token });
     connection = await t.run((ctx) => ctx.db.get(connectionId));
     expect(connection?.lastMcpActionAt).toBeGreaterThanOrEqual(before);
     expect(connection?.lastSyncAt).toBeUndefined();
 
     expect(
       await errorData(
-        t.mutation(api.mcp.touchConnection, { token: `tdm_${"A".repeat(43)}` }),
+        t.mutation(internal.mcpTools.touchConnection, { principal: principalFor("not-a-connection") }),
       ),
     ).toMatchObject({ code: "UNAUTHENTICATED" });
   });
@@ -736,23 +812,17 @@ describe("presence on failed calls (review L2)", () => {
 describe("sync cursor rows (review L3)", () => {
   it("keeps one row per agent connection", async () => {
     const { t, sam, workspaceId } = await setup();
-    const laptop = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude", displayName: "Laptop" },
-    );
-    const work = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude", displayName: "Work" },
-    );
-    const a = await t.mutation(api.mcp.syncWorkspace, { token: laptop.token });
-    await t.mutation(api.mcp.createDocument, {
-      token: work.token,
+    const laptop = await connect(sam, { workspaceId, client: "claude", displayName: "Laptop" });
+    const work = await connect(sam, { workspaceId, client: "claude", displayName: "Work" });
+    const a = await t.mutation(internal.mcpTools.syncWorkspace, { principal: laptop.token });
+    await t.mutation(internal.mcpTools.createDocument, {
+      principal: work.token,
       name: "x.md",
       mimeType: "text/markdown",
       content: "",
     });
-    const b = await t.mutation(api.mcp.syncWorkspace, { token: work.token });
-    await t.mutation(api.mcp.syncWorkspace, { token: laptop.token, sinceSeq: a.cursorSeq });
+    const b = await t.mutation(internal.mcpTools.syncWorkspace, { principal: work.token });
+    await t.mutation(internal.mcpTools.syncWorkspace, { principal: laptop.token, sinceSeq: a.cursorSeq });
     const rows = await t.run((ctx) => ctx.db.query("sync_cursors").take(10));
     expect(
       rows
@@ -770,10 +840,7 @@ describe("sync cursor rows (review L3)", () => {
 describe("list_files query (review L4)", () => {
   it("searches every file by name, and truncated describes the matches", async () => {
     const { t, sam, samId, workspaceId } = await setup();
-    const { token } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
     const actor = { type: "human" as const, userId: samId, label: "Sam" };
     const insert = (name: string, updatedAt: number) =>
       t.run((ctx) =>
@@ -795,11 +862,11 @@ describe("list_files query (review L4)", () => {
     await insert("roadmap.md", 1);
     for (let i = 0; i < 205; i++) await insert(`notes ${i}.md`, 1000 + i);
 
-    const roadmap = await t.mutation(api.mcp.listFiles, { token, query: "roadmap" });
+    const roadmap = await t.mutation(internal.mcpTools.listFiles, { principal: token, query: "roadmap" });
     expect(roadmap.files.map((f) => f.name)).toEqual(["roadmap.md"]);
     expect(roadmap.truncated).toBe(false);
 
-    const notes = await t.mutation(api.mcp.listFiles, { token, query: "notes" });
+    const notes = await t.mutation(internal.mcpTools.listFiles, { principal: token, query: "notes" });
     expect(notes.files).toHaveLength(200);
     expect(notes.truncated).toBe(true);
   });
@@ -836,15 +903,12 @@ describe("decideContextProposal (review L5)", () => {
 });
 
 describe("workspace members for agents (T5b)", () => {
-  it("lists only the token's workspace members, with ids, names and roles but no emails", async () => {
+  it("lists only the connection's workspace members, with ids, names and roles but no emails", async () => {
     const { t, sam, jordan, alexId, samId, jordanId, workspaceId, otherWorkspaceId } =
       await setup();
-    const { token } = await sam.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId, client: "claude" },
-    );
-    const result = await t.mutation(api.mcp.listMembers, { token });
-    expect(result.truncated).toBe(false);
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
+    const result = await t.mutation(internal.mcpTools.getWorkspaceInfo, { principal: token });
+    expect(result.membersTruncated).toBe(false);
     expect(
       [...result.members].sort((a, b) => a.name.localeCompare(b.name)),
     ).toEqual([
@@ -856,28 +920,325 @@ describe("workspace members for agents (T5b)", () => {
     expect(JSON.stringify(result)).not.toContain("@");
     expect(JSON.stringify(result)).not.toContain("email");
 
-    const theirs = await jordan.mutation(
-      api.agentConnections.createAgentConnection,
-      { workspaceId: otherWorkspaceId, client: "claude" },
-    );
-    const other = await t.mutation(api.mcp.listMembers, { token: theirs.token });
+    const theirs = await connect(jordan, { workspaceId: otherWorkspaceId, client: "claude" });
+    const other = await t.mutation(internal.mcpTools.getWorkspaceInfo, { principal: theirs.token });
     expect(other.members).toEqual([
       { userId: jordanId, name: "Jordan", role: "owner" },
     ]);
 
     // A member with no name is shown generically, not by email.
     await t.run((ctx) => ctx.db.patch(samId, { name: undefined }));
-    const unnamed = await t.mutation(api.mcp.listMembers, { token });
+    const unnamed = await t.mutation(internal.mcpTools.getWorkspaceInfo, { principal: token });
     expect(unnamed.members.find((m) => m.userId === samId)?.name).toBe(
       "Workspace member",
     );
     expect(JSON.stringify(unnamed)).not.toContain("@");
 
-    // Unknown tokens get nothing.
+    // Unknown connections get nothing.
     expect(
       await errorData(
-        t.mutation(api.mcp.listMembers, { token: `tdm_${"A".repeat(43)}` }),
+        t.mutation(internal.mcpTools.getWorkspaceInfo, { principal: principalFor("not-a-connection") }),
       ),
     ).toMatchObject({ code: "UNAUTHENTICATED" });
+  });
+});
+
+describe("MCP endpoint", () => {
+  it("serves the snake_case tool contract and coded errors over HTTP", async () => {
+    const { t, alex, sam, samId, workspaceId } = await setup();
+    const { apiKey, connectionId } = await connect(sam, { workspaceId, client: "claude" });
+
+    const info = await callTool(t, apiKey, "get_workspace_info");
+    expect(info.isError).toBeUndefined();
+    expect(info.structuredContent).toMatchObject({
+      user: { id: samId },
+      client: "claude",
+      workspaces: [{ id: workspaceId, name: "Demo", role: "member", member_count: 2, is_default: true }],
+      members_truncated: false,
+      connection: { client: "claude", last_synced_at: null, last_action_at: null },
+    });
+    expect(JSON.parse(info.content[0]!.text)).toEqual(info.structuredContent);
+
+    const created = await callTool(t, apiKey, "create_document", { name: "brief.md", content: "v1" });
+    expect(created.structuredContent).toMatchObject({
+      name: "brief.md",
+      mime_type: "text/markdown",
+      version: 1,
+      updated_by: {
+        actor_type: "agent",
+        user_id: samId,
+        client: "claude",
+        agent_connection_id: connectionId,
+        label: "Sam's claude assistant",
+      },
+    });
+    const fileId = created.structuredContent.id as Id<"files">;
+    await alex.mutation(api.files.updateDocument, { fileId, content: "v2", expectedVersion: 1 });
+
+    const stale = await callTool(t, apiKey, "update_document", {
+      file_id: fileId,
+      content: "stale",
+      expected_version: 1,
+    });
+    expect(stale.isError).toBe(true);
+    expect(stale.structuredContent.error).toMatchObject({
+      code: "VERSION_CONFLICT",
+      file_id: fileId,
+      current_version: 2,
+      expected_version: 1,
+    });
+    expect(stale.content[0]!.text).toMatch(/^VERSION_CONFLICT: /);
+
+    // The failed call still counts as an MCP action (presence), but not a sync.
+    const connection = await t.run((ctx) => ctx.db.get(connectionId));
+    expect(connection?.lastMcpActionAt).toBeTypeOf("number");
+    expect(connection?.lastSyncAt).toBeUndefined();
+
+    const sync = await callTool(t, apiKey, "sync_workspace");
+    const cursor = sync.structuredContent.cursor as string;
+    expect(sync.structuredContent.changed_files.map((f: { name: string }) => f.name)).toEqual(["brief.md"]);
+    const again = await callTool(t, apiKey, "sync_workspace", { since: cursor });
+    expect(again.structuredContent.events).toEqual([]);
+    const badCursor = await callTool(t, apiKey, "sync_workspace", { since: "not-a-cursor" });
+    expect(badCursor.structuredContent.error.code).toBe("INVALID_INPUT");
+
+    // Arguments the old zod schemas rejected are coded INVALID_INPUT errors.
+    const blank = await callTool(t, apiKey, "create_document", { name: "   ", content: "" });
+    expect(blank.structuredContent.error).toMatchObject({ code: "INVALID_INPUT", field: "name" });
+    const tooMany = await callTool(t, apiKey, "search_files", { query: "v", limit: 51 });
+    expect(tooMany.structuredContent.error).toMatchObject({ code: "INVALID_INPUT", field: "limit" });
+
+    // Another workspace's id is FORBIDDEN, named in the error.
+    const foreign = await callTool(t, apiKey, "list_files", { workspace_id: "elsewhere" });
+    expect(foreign.structuredContent.error).toMatchObject({ code: "FORBIDDEN", workspace_id: "elsewhere" });
+
+    // There is no tool that decides or applies a context change.
+    const list = await mcpRequest(t, apiKey, "tools/list");
+    const names = list.body.result.tools.map((tool: { name: string }) => tool.name);
+    expect(names.filter((n: string) => /approve|decide|apply/.test(n))).toEqual([]);
+  });
+
+  it("has scopes and annotations on every tool (mcp.lint)", async () => {
+    const { mcp } = await import("./mcp");
+    expect(mcp.lint()).toEqual([]);
+  });
+});
+
+/** RFC 7636 S256 challenge for a verifier. */
+async function pkceChallenge(verifier: string) {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
+  );
+  let bin = "";
+  for (const b of digest) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+const CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
+
+/** What claude.ai does before the consent page: register, then start an authorization. */
+async function startOAuth(t: Test) {
+  const registered = await t.fetch("/mcp/oauth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_name: "Claude",
+      redirect_uris: [CLAUDE_CALLBACK],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+    }),
+  });
+  expect(registered.status).toBe(201);
+  const { client_id: clientId } = (await registered.json()) as { client_id: string };
+  const verifier = "v".repeat(20) + crypto.randomUUID();
+  const query = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: CLAUDE_CALLBACK,
+    code_challenge: await pkceChallenge(verifier),
+    code_challenge_method: "S256",
+    state: "state-123",
+    resource: MCP_URL,
+  });
+  const authorize = await t.fetch(`/mcp/oauth/authorize?${query}`, { method: "GET" });
+  expect(authorize.status).toBe(302);
+  const consent = new URL(authorize.headers.get("Location")!);
+  expect(`${consent.origin}${consent.pathname}`).toBe("https://tandem.example/oauth/consent");
+  return { clientId, verifier, requestId: consent.searchParams.get("request")! };
+}
+
+async function exchangeCode(t: Test, clientId: string, verifier: string, code: string) {
+  const res = await t.fetch("/mcp/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: CLAUDE_CALLBACK,
+      client_id: clientId,
+      code_verifier: verifier,
+      resource: MCP_URL,
+    }).toString(),
+  });
+  return { status: res.status, body: (await res.json()) as Record<string, string> };
+}
+
+describe("OAuth consent", () => {
+  it("binds claude.ai's grant to one workspace connection, attributes writes, and revokes it", async () => {
+    const { t, alex, alexId, workspaceId, otherWorkspaceId } = await setup();
+    const { clientId, verifier, requestId } = await startOAuth(t);
+
+    // Signed out: nothing is revealed.
+    expect(
+      await errorData(t.query(api.oauth.getConsentRequest, { requestId })),
+    ).toMatchObject({ code: "UNAUTHENTICATED" });
+
+    const request = await alex.query(api.oauth.getConsentRequest, { requestId });
+    expect(request).toMatchObject({
+      status: "pending",
+      clientName: "Claude",
+      redirectHost: "claude.ai",
+      suggestedClient: "claude",
+      workspaces: [{ id: workspaceId, name: "Demo", role: "owner" }],
+    });
+    expect(request?.scopes.map((s) => s.name)).toEqual(["tandem:read", "tandem:write"]);
+
+    // A workspace Alex isn't in is refused, and the request stays usable.
+    expect(
+      await errorData(
+        alex.action(api.oauth.decideConsent, {
+          requestId,
+          approve: true,
+          workspaceId: otherWorkspaceId,
+          client: "claude",
+        }),
+      ),
+    ).toMatchObject({ code: "FORBIDDEN" });
+    expect(await t.run((ctx) => ctx.db.query("agent_connections").take(10))).toEqual([]);
+
+    const { redirectUrl } = await alex.action(api.oauth.decideConsent, {
+      requestId,
+      approve: true,
+      workspaceId,
+      client: "claude",
+    });
+    const back = new URL(redirectUrl);
+    expect(`${back.origin}${back.pathname}`).toBe(CLAUDE_CALLBACK);
+    expect(back.searchParams.get("state")).toBe("state-123");
+    expect(back.searchParams.get("iss")).toBe(SITE);
+    const code = back.searchParams.get("code")!;
+    expect(code).toBeTruthy();
+
+    // The request is spent: a second decision can't mint another connection.
+    expect(
+      await errorData(
+        alex.action(api.oauth.decideConsent, { requestId, approve: true, workspaceId, client: "claude" }),
+      ),
+    ).toMatchObject({ code: "REQUEST_EXPIRED" });
+
+    const [connection] = await t.run((ctx) => ctx.db.query("agent_connections").take(10));
+    expect(connection).toMatchObject({
+      workspaceId,
+      userId: alexId,
+      client: "claude",
+      authKind: "oauth",
+      oauthClientName: "Claude",
+    });
+
+    const tokens = await exchangeCode(t, clientId, verifier, code);
+    expect(tokens.status).toBe(200);
+    expect(tokens.body.access_token).toMatch(/^mcp_at_/);
+    expect(tokens.body.refresh_token).toMatch(/^mcp_rt_/);
+    // Codes are single use.
+    expect((await exchangeCode(t, clientId, verifier, code)).status).toBe(400);
+
+    // The write shows as "Alex via Claude": the person plus the client.
+    const created = await callTool(t, tokens.body.access_token!, "create_document", {
+      name: "from-claude.md",
+      content: "hello",
+    });
+    expect(created.structuredContent.updated_by).toMatchObject({
+      actor_type: "agent",
+      user_id: alexId,
+      client: "claude",
+      agent_connection_id: connection!._id,
+    });
+    const history = await alex.query(api.files.getFileVersions, {
+      fileId: created.structuredContent.id,
+    });
+    expect(history[0]!.actor).toMatchObject({
+      type: "agent",
+      userId: alexId,
+      userName: "Alex",
+      client: "claude",
+      agentConnectionId: connection!._id,
+    });
+
+    const listed = await alex.query(api.agentConnections.listAgentConnections, { workspaceId });
+    expect(listed[0]).toMatchObject({ authKind: "oauth", oauthClientName: "Claude" });
+    expect(listed[0]!.lastMcpActionAt).toBeTypeOf("number");
+
+    // Revoking on the Assistants page kills the access and refresh tokens.
+    await alex.mutation(api.agentConnections.revokeAgentConnection, {
+      connectionId: connection!._id,
+    });
+    expect((await mcpRequest(t, tokens.body.access_token!, "tools/list")).status).toBe(401);
+    const refreshed = await t.fetch("/mcp/oauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: tokens.body.refresh_token!,
+        client_id: clientId,
+      }).toString(),
+    });
+    expect(refreshed.status).toBe(400);
+  });
+
+  it("sends a denial back to the assistant without creating a connection", async () => {
+    const { t, sam } = await setup();
+    const { requestId } = await startOAuth(t);
+    const { redirectUrl } = await sam.action(api.oauth.decideConsent, { requestId, approve: false });
+    const back = new URL(redirectUrl);
+    expect(back.searchParams.get("error")).toBe("access_denied");
+    expect(back.searchParams.get("code")).toBeNull();
+    expect(back.searchParams.get("state")).toBe("state-123");
+    expect(await t.run((ctx) => ctx.db.query("agent_connections").take(10))).toEqual([]);
+    // Signed-out callers can't decide.
+    const { requestId: second } = await startOAuth(t);
+    expect(
+      await errorData(t.action(api.oauth.decideConsent, { requestId: second, approve: false })),
+    ).toMatchObject({ code: "UNAUTHENTICATED" });
+  });
+
+  it("refuses an approval without a workspace or with an unknown client", async () => {
+    const { t, sam, workspaceId } = await setup();
+    const { requestId } = await startOAuth(t);
+    expect(
+      await errorData(sam.action(api.oauth.decideConsent, { requestId, approve: true })),
+    ).toMatchObject({ code: "INVALID_INPUT", field: "workspaceId" });
+    expect(
+      await errorData(
+        sam.action(api.oauth.decideConsent, { requestId, approve: true, workspaceId, client: "copilot" }),
+      ),
+    ).toMatchObject({ code: "INVALID_INPUT", field: "client" });
+    expect(await t.run((ctx) => ctx.db.query("agent_connections").take(10))).toEqual([]);
+  });
+
+  it("publishes discovery metadata on the convex.site origin", async () => {
+    const { t } = await setup();
+    const prm = await (await t.fetch("/.well-known/oauth-protected-resource/mcp", { method: "GET" })).json();
+    expect(prm).toMatchObject({ resource: MCP_URL, authorization_servers: [SITE] });
+    const asm = await (await t.fetch("/.well-known/oauth-authorization-server", { method: "GET" })).json();
+    expect(asm).toMatchObject({
+      issuer: SITE,
+      authorization_endpoint: `${MCP_URL}/oauth/authorize`,
+      token_endpoint: `${MCP_URL}/oauth/token`,
+      registration_endpoint: `${MCP_URL}/oauth/register`,
+      code_challenge_methods_supported: ["S256"],
+      scopes_supported: ["tandem:read", "tandem:write"],
+    });
+    expect(asm.device_authorization_endpoint).toBeUndefined();
   });
 });
