@@ -63,7 +63,7 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | `/w/<id>/assistants`: create API key, key shown once + copy + Claude Code command | PASS (mock), relabeled 2026-10-24 | server URL now comes from the backend (`getMcpServerUrl`), no `NEXT_PUBLIC_MCP_URL` |
 | `/oauth/consent?request=`: sign-in round trip, pick workspace + assistant, Allow/Deny, refuses to render framed | PASS (mock, browser 2026-10-24) | sign-in returned to the page with `?request=` intact; Allow landed on Assistants. Framing refusal not exercised in a browser. Data layer: unit tests and e2e step 10 |
 | Connections list "Last MCP action / Last sync", never "online"; revoke with confirmation | PASS (mock) | |
-| Against live `agentConnections` + MCP server | PASS (e2e, local deployment) | `tests/e2e` steps 2–10 through the dashboard's data layer; claude.ai itself needs a public deployment |
+| Against live `agentConnections` + MCP server | PASS (e2e, local deployment) | `tests/e2e` steps 2–10 through the dashboard's data layer; claude.ai itself: test on the Convex dev deployment + Vercel dashboard |
 
 ## Gate 6: live Convex integration
 

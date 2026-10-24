@@ -49,5 +49,5 @@ Each tool calls exactly one internal mutation in `convex/mcpTools.ts`, which che
 
 ## Still open
 
-1. **Live claude.ai check.** Connecting a claude.ai custom connector needs a public deployment (#20). Until then, the OAuth flow is verified by `convex/agent.test.ts` and step 10 of the e2e test, not by claude.ai itself.
+1. **Live claude.ai check.** The demo runs on the Convex dev deployment (`/mcp` at `https://<dev>.convex.site/mcp`) with the dashboard on Vercel; connect a claude.ai custom connector there once this branch is deployed to both. Until then, the OAuth flow is verified by `convex/agent.test.ts` and step 10 of the e2e test, not by claude.ai itself.
 2. **Human approval stays explicit.** Agents may propose goal, scope, major decision, or ownership changes. Only a permitted human may approve or reject them. Ordinary published findings must not silently mutate those fields.

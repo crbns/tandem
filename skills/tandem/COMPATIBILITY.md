@@ -18,7 +18,7 @@ limits.
 | Check | Result | Date | Tester | Notes |
 |---|---|---|---|---|
 | Connector added | pass | 2026-10-23 | user (manual) | Old Node dev server via no-auth tunnel (`TANDEM_DEV_ANON_USER`), not OAuth. That server is retired; recheck against Convex `/mcp` |
-| OAuth sign-in to Convex `/mcp` (consent page, pick workspace) | untested | | | Needs a public deployment (#20). The flow passes automated tests with a claude.ai-shaped client (`convex/agent.test.ts`, e2e step 10), not claude.ai itself |
+| OAuth sign-in to Convex `/mcp` (consent page, pick workspace) | untested | | | Test on the Convex dev deployment (`https://<dev>.convex.site/mcp`) with the dashboard on Vercel. The flow passes automated tests with a claude.ai-shaped client (`convex/agent.test.ts`, e2e step 10), not claude.ai itself |
 | Tool discovery (all exposed tools listed) | pass | 2026-10-23 | user (manual) | All 4 tools that existed then worked, including a `VERSION_CONFLICT` response. Later tools (11 total now) not rechecked on web |
 | `read_file` | untested | | | |
 | `create_document` | untested | | | |
