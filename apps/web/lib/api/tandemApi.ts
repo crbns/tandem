@@ -8,6 +8,7 @@ import type {
   AgentClient,
   AgentConnection,
   ConsentRequest,
+  ContextApproval,
   ContextProposal,
   NewAgentConnection,
   ProposalStatus,
@@ -67,6 +68,10 @@ export interface TandemApi {
   listPublishedWork(workspaceId: string, cursor?: string | null, pageSize?: number): Promise<PublishedWorkPage>;
   /** Every status, newest updatedAt first, at most 100. Read-only: assistants manage tasks over MCP. */
   listTasks(workspaceId: string): Promise<Task[]>;
+  /** "manual" (the default) holds every proposal for an owner or admin. */
+  getContextApproval(workspaceId: string): Promise<ContextApproval>;
+  /** Owner/admin humans only. Proposals already pending stay pending. */
+  setContextApproval(workspaceId: string, mode: ContextApproval): Promise<void>;
   /** Newest first, at most 100. Every member may read them. */
   listProposals(workspaceId: string, status?: ProposalStatus): Promise<ContextProposal[]>;
   /**

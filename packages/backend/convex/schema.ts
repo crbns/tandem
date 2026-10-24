@@ -55,6 +55,11 @@ export default defineSchema({
     name: v.string(),
     // Set only on the workspace seed:resetDemo builds, which a reset deletes.
     demoSeed: v.optional(v.boolean()),
+    // Whether context proposals wait for approval ("manual", the default when
+    // unset) or apply as soon as they're proposed ("automatic").
+    contextApproval: v.optional(
+      v.union(v.literal("manual"), v.literal("automatic")),
+    ),
     createdBy: v.id("users"),
     updatedBy: actor,
     revision: v.number(),
@@ -213,6 +218,10 @@ export default defineSchema({
     // re-checked on approval. proposedValue is the display form.
     ownerUserId: v.optional(v.id("users")),
     ownerArea: v.optional(v.string()),
+    // Resolve/remove proposals only: the constraint or open question entry
+    // they act on. Absent means an addition.
+    operation: v.optional(v.union(v.literal("resolve"), v.literal("remove"))),
+    entryId: v.optional(v.string()),
     status: v.union(
       v.literal("pending"),
       v.literal("applied"),

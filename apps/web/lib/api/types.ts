@@ -155,10 +155,15 @@ export type ContextField = "goal" | "scope" | "constraint" | "decision" | "owner
 export type ProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
 
 /** A proposed change to the project context, waiting on (or decided by) a person. */
+/** Whether context proposals wait in Approvals or apply as soon as they're made. */
+export type ContextApproval = "manual" | "automatic";
+
 export interface ContextProposal {
   id: string;
   workspaceId: string;
   field: ContextField;
+  /** resolve/remove act on an existing constraint or open question entry. */
+  operation: "add" | "resolve" | "remove";
   proposedValue: string;
   rationale: string;
   sourceFileIds: string[];

@@ -52,7 +52,7 @@ The identity plate (`components/common/ActorBadge.tsx`) renders an agent write a
 
 ## Context lifecycle
 
-Constraints and open questions are working context: proposals apply immediately and appear as **Recorded**, without approval buttons. Goal, scope, decision and ownership proposals stay pending for human approval.
+Each workspace's `contextApproval` setting (the dropdown on the Approvals page; owners and admins change it with `workspaces.setContextApproval`) decides what happens to proposals. `"manual"`, the default, holds every proposal for human approval: every field, plus resolve and remove (stored with `operation` and `entryId`, and marked stale on approval if the entry is gone). `"automatic"` applies every proposal at once, and it appears as **Recorded**. Owner/admin direct edits (`updateContextField`) always apply.
 
 Entries retain backend IDs through list edits. Open questions can be resolved with resolver attribution and time; resolved entries remain visible and can be removed by a human. Humans can remove constraints and open questions; both resolve and remove send `entryId` and `expectedVersion`, and conflicts refresh the page for review. Decision replacement uses `supersedes` and waits for approval before the old entry shows **Superseded**; compact context summaries include active entries only.
 
