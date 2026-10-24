@@ -345,6 +345,8 @@ export function toSyncResult(r: {
   pendingProposals: Pick<ProposalRow, "id" | "field" | "rationale" | "createdBy" | "createdAt">[];
   changedFiles: FileRow[];
   filesTruncated: boolean;
+  recentWork: Parameters<typeof toPublished>[0][];
+  workTruncated: boolean;
   events: EventRow[];
   eventsTruncated: boolean;
   cursorSeq: number;
@@ -362,6 +364,8 @@ export function toSyncResult(r: {
     })),
     changed_files: r.changedFiles.map(toFile),
     files_truncated: r.filesTruncated,
+    recent_work: r.recentWork.map(toPublished),
+    work_truncated: r.workTruncated,
     events: r.events.map((e) => ({
       seq: e.seq,
       workspace_id: r.workspace.id,

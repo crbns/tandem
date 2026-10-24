@@ -667,6 +667,203 @@ describe("sync cursor", () => {
   });
 });
 
+describe("sync published work", () => {
+  it("maps full publications, attribution, caps and continuation cursors over the MCP endpoint", async () => {
+    const { t, alex, sam, jordan, workspaceId, otherWorkspaceId } = await setup();
+    const publisher = await connect(alex, { workspaceId, client: "claude" });
+    const reader = await connect(sam, { workspaceId, client: "chatgpt" });
+    const outsider = await connect(jordan, { workspaceId: otherWorkspaceId, client: "gemini" });
+    const tool = async (key: string, name: string, args: Record<string, unknown> = {}) => {
+      const result = await callTool(t, key, name, args);
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
+      return result.structuredContent;
+    };
+    const file = await tool(publisher.apiKey, "create_document", { name: "finding.md", content: "Evidence" });
+    const before = await tool(reader.apiKey, "sync_workspace");
+    const { published } = await tool(publisher.apiKey, "publish_work", {
+      kind: "finding", title: "Latency", summary: "Full finding: p95 is 120ms; cache misses dominate.", file_ids: [file.id],
+    });
+    const after = await tool(reader.apiKey, "sync_workspace", { since: before.cursor });
+    expect(after.recent_work).toEqual([published]);
+    expect(after.work_truncated).toBe(false);
+    expect(published).toMatchObject({
+      workspace_id: workspaceId, kind: "finding", title: "Latency",
+      summary: "Full finding: p95 is 120ms; cache misses dominate.", file_ids: [file.id],
+      published_by: { actor_type: "agent", client: "claude", agent_connection_id: publisher.connectionId },
+      created_at: expect.any(String),
+    });
+    expect(new Date(published.created_at).toISOString()).toBe(published.created_at);
+    expect((await tool(outsider.apiKey, "sync_workspace")).recent_work).toEqual([]);
+    const forbidden = await callTool(t, outsider.apiKey, "sync_workspace", { workspace_id: workspaceId });
+    expect(forbidden.isError).toBe(true);
+    expect(forbidden.structuredContent.error.code).toBe("FORBIDDEN");
+
+    // A publication beyond this event page must wait for the continuation cursor.
+    for (let version = 1; version <= 50; version++) {
+      await t.mutation(internal.mcpTools.updateDocument, {
+        principal: publisher.token, fileId: file.id, expectedVersion: version, content: `Update ${version}`,
+      });
+    }
+    const backlogWork = (await tool(publisher.apiKey, "publish_work", {
+      kind: "deliverable", title: "After backlog", summary: "Full deliverable", file_ids: [file.id],
+    })).published;
+    const first = await tool(reader.apiKey, "sync_workspace", { since: after.cursor });
+    expect(first.events).toHaveLength(50);
+    expect(first.events_truncated).toBe(true);
+    expect(first.recent_work).toEqual([]);
+    const second = await tool(reader.apiKey, "sync_workspace", { since: first.cursor });
+    expect(second.events_truncated).toBe(false);
+    expect(second.recent_work).toEqual([backlogWork]);
+    const empty = await tool(reader.apiKey, "sync_workspace", { since: second.cursor });
+    expect(empty.recent_work).toEqual([]);
+    expect(empty.work_truncated).toBe(false);
+
+    const works = [];
+    for (let i = 0; i < 21; i++) {
+      works.push((await tool(publisher.apiKey, "publish_work", {
+        kind: "finding", title: `Finding ${i}`, summary: `Full summary ${i}`, file_ids: [file.id],
+      })).published);
+    }
+    const capped = await tool(reader.apiKey, "sync_workspace", { since: second.cursor });
+    expect(capped.recent_work).toEqual(works.slice(-20).reverse());
+    expect(capped.work_truncated).toBe(true);
+    const snapshot = await tool(reader.apiKey, "sync_workspace");
+    expect(snapshot.recent_work).toEqual(capped.recent_work);
+    expect(snapshot.work_truncated).toBe(true);
+  });
+
+  it("returns full findings since a teammate's cursor and isolates tenants", async () => {
+    const { t, alex, sam, jordan, workspaceId, otherWorkspaceId } = await setup();
+    const publisher = await connect(alex, {
+      workspaceId, client: "claude",
+    });
+    const reader = await connect(sam, {
+      workspaceId, client: "chatgpt",
+    });
+    const outsider = await connect(jordan, {
+      workspaceId: otherWorkspaceId, client: "claude",
+    });
+    const file = await t.mutation(internal.mcpTools.createDocument, {
+      principal: publisher.token, name: "latency.md", mimeType: "text/markdown", content: "p95",
+    });
+    const publish = (token: ReturnType<typeof principalFor>, title: string, fileIds: Id<"files">[] = []) =>
+      t.mutation(internal.mcpTools.publishWork, {
+        principal: token, kind: "finding", title, summary: "Full result: p95 is 120ms; cache misses dominate.", fileIds,
+      });
+    const old = await publish(publisher.token, "Before cursor");
+    const before = await t.mutation(internal.mcpTools.syncWorkspace, { principal: reader.token });
+    expect(before.recentWork).toEqual([old]);
+    expect(before.workTruncated).toBe(false);
+    await publish(outsider.token, "Private finding");
+    const work = await publish(publisher.token, "Latency", [file.id]);
+    const after = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: reader.token, sinceSeq: before.cursorSeq,
+    });
+    expect(after.recentWork).toEqual([work]);
+    expect(after.recentWork[0]).toMatchObject({
+      kind: "finding", title: "Latency", fileIds: [file.id],
+      summary: "Full result: p95 is 120ms; cache misses dominate.",
+      createdBy: { type: "agent", agentConnectionId: publisher.connectionId },
+      createdAt: expect.any(Number),
+    });
+    expect(after.workTruncated).toBe(false);
+    const empty = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: reader.token, sinceSeq: after.cursorSeq,
+    });
+    expect(empty.recentWork).toEqual([]);
+    expect(empty.workTruncated).toBe(false);
+    const snapshot = await t.mutation(internal.mcpTools.syncWorkspace, { principal: reader.token });
+    expect(snapshot.recentWork).toEqual([work, old]);
+    const other = await t.mutation(internal.mcpTools.syncWorkspace, { principal: outsider.token });
+    expect(other.recentWork.map((w) => w.title)).toEqual(["Private finding"]);
+    expect(await errorData(t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: outsider.token, workspaceId,
+    }))).toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("delivers work exactly once while draining event pages without gaps", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    const publisher = await connect(alex, {
+      workspaceId, client: "claude",
+    });
+    const reader = await connect(sam, {
+      workspaceId, client: "chatgpt",
+    });
+    const file = await t.mutation(internal.mcpTools.createDocument, {
+      principal: publisher.token, name: "backlog.md", mimeType: "text/markdown", content: "",
+    });
+    const before = await t.mutation(internal.mcpTools.syncWorkspace, { principal: reader.token });
+    for (let version = 1; version <= 50; version++) {
+      await t.mutation(internal.mcpTools.updateDocument, {
+        principal: publisher.token, fileId: file.id, expectedVersion: version, content: `Update ${version}`,
+      });
+    }
+    const published = await t.mutation(internal.mcpTools.publishWork, {
+      principal: publisher.token, kind: "finding", title: "After the backlog",
+      summary: "Full finding after 50 updates", fileIds: [file.id],
+    });
+    const first = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: reader.token, sinceSeq: before.cursorSeq,
+    });
+    expect(first.events).toHaveLength(50);
+    expect(first.eventsTruncated).toBe(true);
+    expect(first.cursorSeq).toBe(before.cursorSeq + 50);
+    expect(first.recentWork).toEqual([]);
+    expect(first.workTruncated).toBe(false);
+    const second = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: reader.token, sinceSeq: first.cursorSeq,
+    });
+    expect(second.eventsTruncated).toBe(false);
+    expect(second.recentWork).toEqual([published]);
+    expect(second.workTruncated).toBe(false);
+    expect([...first.events, ...second.events].map((e) => e.seq)).toEqual(
+      Array.from({ length: 51 }, (_, i) => before.cursorSeq + i + 1),
+    );
+    expect([...first.recentWork, ...second.recentWork]).toEqual([published]);
+    const empty = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: reader.token, sinceSeq: second.cursorSeq,
+    });
+    expect(empty.events).toEqual([]);
+    expect(empty.recentWork).toEqual([]);
+  });
+
+  it("caps snapshots and each incremental event page at the newest 20", async () => {
+    const { t, sam, workspaceId } = await setup();
+    const { token } = await connect(sam, {
+      workspaceId, client: "claude",
+    });
+    const before = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    expect(before.recentWork).toEqual([]);
+    expect(before.workTruncated).toBe(false);
+    const published = [];
+    for (let i = 0; i < 55; i++) {
+      published.push(await t.mutation(internal.mcpTools.publishWork, {
+        principal: token, kind: i % 2 ? "finding" : "deliverable", title: `Work ${i}`, summary: `Full summary ${i}`, fileIds: [],
+      }));
+      if (i === 19) {
+        const exact = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+        expect(exact.recentWork).toHaveLength(20);
+        expect(exact.workTruncated).toBe(false);
+      }
+    }
+    const expected = published.slice(-20).reverse();
+    const snapshot = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    expect(snapshot.recentWork).toEqual(expected);
+    expect(snapshot.workTruncated).toBe(true);
+    const incremental = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token, sinceSeq: before.cursorSeq });
+    expect(incremental.eventsTruncated).toBe(true);
+    expect(incremental.recentWork).toEqual(published.slice(30, 50).reverse());
+    expect(incremental.workTruncated).toBe(true);
+    const continuation = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: token, sinceSeq: incremental.cursorSeq,
+    });
+    expect(continuation.recentWork).toEqual(published.slice(50).reverse());
+    expect(continuation.eventsTruncated).toBe(false);
+    expect(continuation.workTruncated).toBe(false);
+  });
+});
+
 describe("ownership proposals (review M1)", () => {
   it("requires the proposed owner to be a current member, on propose and approve", async () => {
     const { t, alex, sam, samId, alexId, jordanId, workspaceId } = await setup();

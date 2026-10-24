@@ -74,6 +74,7 @@ Goal: ship the Tandem demo for Cal Hacks.
 
 /** Max files and events per sync_workspace call. */
 const SYNC_LIMIT = 50;
+const SYNC_WORK_LIMIT = 20;
 
 /** In-memory backend for local development and tests. State is lost on restart. */
 export class MockBackend implements TandemBackend {
@@ -368,6 +369,7 @@ export class MockBackend implements TandemBackend {
     const ws = this.workspaces.get(workspaceId)!;
     const headSeq = ws.events.length;
 
+    let sinceSeq = 0;
     let changed: FileMetadata[];
     let events: WorkspaceEvent[];
     let eventsTruncated: boolean;
@@ -381,6 +383,7 @@ export class MockBackend implements TandemBackend {
       cursorSeq = headSeq;
     } else {
       const since = decodeCursor(input.since, workspaceId, headSeq);
+      sinceSeq = since;
       const after = ws.events.filter((e) => e.seq > since);
       events = after.slice(0, SYNC_LIMIT);
       eventsTruncated = after.length > SYNC_LIMIT;
@@ -394,6 +397,11 @@ export class MockBackend implements TandemBackend {
     }
     changed.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 
+    const work = ws.events
+      .filter((e) => e.type === "work.published" && e.seq > sinceSeq && e.seq <= cursorSeq)
+      .reverse()
+      .map((e) => this.published.get(e.subject_id)!)
+      .slice(0, SYNC_WORK_LIMIT + 1);
     this.touch(actor, "last_synced_at");
     return {
       workspace: { id: workspaceId, name: ws.name },
@@ -410,6 +418,8 @@ export class MockBackend implements TandemBackend {
         })),
       changed_files: changed.slice(0, SYNC_LIMIT),
       files_truncated: changed.length > SYNC_LIMIT,
+      recent_work: structuredClone(work.slice(0, SYNC_WORK_LIMIT)),
+      work_truncated: work.length > SYNC_WORK_LIMIT,
       events: structuredClone(events),
       events_truncated: eventsTruncated,
       cursor: encodeCursor(workspaceId, cursorSeq),

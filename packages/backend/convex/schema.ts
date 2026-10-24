@@ -248,6 +248,7 @@ export default defineSchema({
   })
     .index("by_workspace_and_created", ["workspaceId", "createdAt"])
     .index("by_workspace_and_seq", ["workspaceId", "seq"])
+    .index("by_workspace_and_kind_and_seq", ["workspaceId", "kind", "seq"])
     .index("by_workspace_and_entity", [
       "workspaceId",
       "entityType",

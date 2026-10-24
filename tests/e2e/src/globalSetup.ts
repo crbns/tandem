@@ -5,6 +5,8 @@
 // (MCP_URL overrides it, e.g. for a deployed endpoint).
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { readFileSync, existsSync } from "node:fs";
+import { parseEnv } from "node:util";
 import type { TestProject } from "vitest/node";
 
 declare module "vitest" {
@@ -88,7 +90,11 @@ function stop(child: ChildProcess | undefined) {
 }
 
 export default async function setup(project: TestProject) {
-  const convexUrl = process.env.CONVEX_URL ?? "http://127.0.0.1:3210";
+  // Each worktree can have its own local backend ports. Read its configuration
+  // before falling back to the conventional port, so we test the right functions.
+  const envPath = `${backendDir}/.env.local`;
+  const backendEnv = existsSync(envPath) ? parseEnv(readFileSync(envPath, "utf8")) : {};
+  const convexUrl = process.env.CONVEX_URL ?? backendEnv.CONVEX_URL ?? backendEnv.VITE_CONVEX_URL ?? "http://127.0.0.1:3210";
   let convex: ChildProcess | undefined;
   if (!(await reachable(convexUrl))) {
     if (process.env.CONVEX_URL)

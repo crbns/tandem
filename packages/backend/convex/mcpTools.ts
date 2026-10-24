@@ -367,6 +367,8 @@ export const syncWorkspace = internalMutation({
     ),
     changedFiles: v.array(fileMetadataValidator),
     filesTruncated: v.boolean(),
+    recentWork: v.array(publishedWorkValidator),
+    workTruncated: v.boolean(),
     events: v.array(eventValidator),
     eventsTruncated: v.boolean(),
     headSeq: v.number(),
