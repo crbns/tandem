@@ -13,11 +13,30 @@ export function InviteDialog({ workspaceId }: { workspaceId: string }) {
   const api = useTandemApi();
   const load = useCallback(() => api.listWorkspaces(), [api]);
   const { resource } = useResource(load);
+  const role = resource.status === "ready" ? resource.data.find((w) => w.id === workspaceId)?.role : null;
+
+  if (role !== "owner" && role !== "admin") return null;
+  return (
+    <Dialog key={workspaceId}>
+      <DialogTrigger asChild><Button variant="outline" size="sm">Invite</Button></DialogTrigger>
+      <DialogContent className="grid gap-4">
+        <DialogHeader>
+          <DialogTitle>Invite a teammate</DialogTitle>
+          <DialogDescription>Anyone with this link can join as a member. It expires in seven days and can be used once.</DialogDescription>
+        </DialogHeader>
+        <InviteForm workspaceId={workspaceId} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// DialogContent unmounts this form on close; changing workspace also resets it.
+function InviteForm({ workspaceId }: { workspaceId: string }) {
+  const api = useTandemApi();
   const [link, setLink] = useState("");
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const role = resource.status === "ready" ? resource.data.find((w) => w.id === workspaceId)?.role : null;
 
   async function createInvite() {
     setCreating(true);
@@ -42,26 +61,19 @@ export function InviteDialog({ workspaceId }: { workspaceId: string }) {
     }
   }
 
-  if (role !== "owner" && role !== "admin") return null;
   return (
-    <Dialog>
-      <DialogTrigger asChild><Button variant="outline" size="sm">Invite</Button></DialogTrigger>
-      <DialogContent className="grid gap-4">
-        <DialogHeader>
-          <DialogTitle>Invite a teammate</DialogTitle>
-          <DialogDescription>Anyone with this link can join as a member. It expires in seven days and can be used once.</DialogDescription>
-        </DialogHeader>
-        {link ? (
-          <div className="grid gap-2">
-            <Label htmlFor="workspace-invite-link">Invite link</Label>
-            <Input id="workspace-invite-link" readOnly value={link} onFocus={(e) => e.target.select()} />
-            <Button onClick={copyLink}>{copied ? "Copied" : "Copy link"}</Button>
-          </div>
-        ) : (
-          <Button onClick={createInvite} disabled={creating}>{creating ? "Creating…" : "Create invite link"}</Button>
-        )}
-        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      </DialogContent>
-    </Dialog>
+    <>
+      {link ? (
+        <div className="grid gap-2">
+          <Label htmlFor="workspace-invite-link">Invite link</Label>
+          <Input id="workspace-invite-link" readOnly value={link} onFocus={(e) => e.target.select()} />
+          <Button onClick={copyLink}>{copied ? "Copied" : "Copy link"}</Button>
+          <Button variant="outline" onClick={createInvite} disabled={creating}>{creating ? "Creating…" : "Create another invite"}</Button>
+        </div>
+      ) : (
+        <Button onClick={createInvite} disabled={creating}>{creating ? "Creating…" : "Create invite link"}</Button>
+      )}
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    </>
   );
 }
