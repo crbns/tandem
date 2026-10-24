@@ -98,9 +98,35 @@ const MESSAGE_PATTERNS: ReadonlyArray<[RegExp, ApiErrorCode]> = [
   [/Failed to fetch|NetworkError|Connection lost|WebSocket/i, "NETWORK"],
 ];
 
+// The current backend throws `new Error("CODE")` / `new Error("VERSION_CONFLICT:
+// current version is N; …")`, which `convex dev` relays as "Uncaught Error: CODE".
+// Same dev-only caveat as above: deployed, these arrive as UNKNOWN until the
+// backend switches to ConvexError. Anchored on "Uncaught Error: " so a code
+// word inside file content or a user-supplied name can't match.
+const BACKEND_CODES: Readonly<Record<string, ApiErrorCode>> = {
+  VERSION_CONFLICT: "VERSION_CONFLICT",
+  FORBIDDEN: "FORBIDDEN",
+  FILE_NOT_FOUND: "FILE_NOT_FOUND",
+  UNAUTHENTICATED: "UNAUTHENTICATED",
+  INVALID_NAME: "INVALID_INPUT",
+  INVALID_PARENT_FOLDER: "INVALID_INPUT",
+};
+
+function fromBackendMessage(message: string): TandemApiError | null {
+  const match = /Uncaught Error: ([A-Z_]+)\b(.*)/.exec(message);
+  const code = match && BACKEND_CODES[match[1]!];
+  if (!code) return null;
+  const details: ApiErrorDetails = { cause: message };
+  const version = /current version is (\d+)/.exec(match[2] ?? "");
+  if (code === "VERSION_CONFLICT" && version) details.currentVersion = Number(version[1]);
+  return new TandemApiError(code, details);
+}
+
 function classify(err: unknown): TandemApiError {
   if (err instanceof ConvexError) return fromConvexError(err);
   if (err instanceof Error) {
+    const backend = fromBackendMessage(err.message);
+    if (backend) return backend;
     for (const [pattern, code] of MESSAGE_PATTERNS) {
       if (pattern.test(err.message)) return new TandemApiError(code, { cause: err.message });
     }

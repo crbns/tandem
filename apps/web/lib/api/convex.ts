@@ -1,32 +1,50 @@
 import type { ConvexReactClient } from "convex/react";
 import { makeFunctionReference } from "convex/server";
+import {
+  type BackendFile,
+  type BackendReadFile,
+  type BackendRevision,
+  type BackendWorkspace,
+  type BackendWorkspaceContext,
+  toFileDetail,
+  toFileSummary,
+  toProjectContext,
+  toRevisions,
+  toWorkspace,
+} from "./convexMappers";
 import { normalizeError, TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
-import type { FileDetail, FileSummary, ProjectContext, Revision, Workspace } from "./types";
 
-// `convex/_generated/api` doesn't exist yet (backend has only an empty schema),
-// so we reference functions by their agreed "module:export" names. When Person 2
-// lands them, swap these for `api.files.list` etc.; the call sites don't change.
-// Names and any mismatches are tracked in CONTRACT_NOTES.md.
+// The backend's real "module:export" names (codex/backend-convex-vultr). The
+// web app doesn't import its `_generated/api` yet, so they're referenced by
+// name; swap for `api.files.listFiles` etc. once it does. Return shapes are the
+// backend's and are mapped to the web types in `convexMappers.ts`, so
+// components never see them. Gaps are tracked in CONTRACT_NOTES.md.
 const fns = {
-  listWorkspaces: makeFunctionReference<"query", Record<string, never>, Workspace[]>(
-    "workspaces:mine",
+  listWorkspaces: makeFunctionReference<"query", Record<string, never>, BackendWorkspace[]>(
+    "workspaces:listWorkspaces",
   ),
-  listFiles: makeFunctionReference<"query", { workspaceId: string }, FileSummary[]>("files:list"),
-  createFile: makeFunctionReference<
+  listFiles: makeFunctionReference<"query", { workspaceId: string }, BackendFile[]>("files:listFiles"),
+  createDocument: makeFunctionReference<
     "mutation",
     // Spelled out: Convex arg types need an index signature, which interfaces lack.
     { workspaceId: string; name: string; mimeType: string; content: string },
-    { id: string; version: number }
-  >("files:create"),
-  readFile: makeFunctionReference<"query", { fileId: string }, FileDetail>("files:read"),
-  updateFileContent: makeFunctionReference<
+    BackendFile
+  >("files:createDocument"),
+  readFile: makeFunctionReference<"query", { fileId: string }, BackendReadFile>("files:readFile"),
+  updateDocument: makeFunctionReference<
     "mutation",
     { fileId: string; expectedVersion: number; content: string },
-    { version: number }
-  >("files:update"),
-  listRevisions: makeFunctionReference<"query", { fileId: string }, Revision[]>("revisions:list"),
-  getContext: makeFunctionReference<"query", { workspaceId: string }, ProjectContext | null>("context:get"),
+    BackendFile
+  >("files:updateDocument"),
+  getFileVersions: makeFunctionReference<"query", { fileId: string }, BackendRevision[]>(
+    "files:getFileVersions",
+  ),
+  getWorkspaceContext: makeFunctionReference<
+    "query",
+    { workspaceId: string },
+    BackendWorkspaceContext | null
+  >("workspaces:getWorkspaceContext"),
 };
 
 // The Convex client never rejects while disconnected: queries wait for the
@@ -52,14 +70,24 @@ export async function call<T>(run: () => Promise<T>, timeoutMs = CALL_TIMEOUT_MS
 /** One-shot query/mutation calls only; no reactive subscriptions in P0. */
 export function createConvexApi(convex: ConvexReactClient): TandemApi {
   return {
-    listWorkspaces: () => call(() => convex.query(fns.listWorkspaces, {})),
-    listFiles: (workspaceId) => call(() => convex.query(fns.listFiles, { workspaceId })),
+    listWorkspaces: () =>
+      call(async () => (await convex.query(fns.listWorkspaces, {})).map(toWorkspace)),
+    listFiles: (workspaceId) =>
+      call(async () => (await convex.query(fns.listFiles, { workspaceId })).map(toFileSummary)),
     createFile: (workspaceId, input) =>
-      call(() => convex.mutation(fns.createFile, { workspaceId, ...input })),
-    readFile: (fileId) => call(() => convex.query(fns.readFile, { fileId })),
+      call(async () => {
+        const file = await convex.mutation(fns.createDocument, { workspaceId, ...input });
+        return { id: file.id, version: file.version };
+      }),
+    readFile: (fileId) => call(async () => toFileDetail(await convex.query(fns.readFile, { fileId }))),
     updateFileContent: (fileId, update) =>
-      call(() => convex.mutation(fns.updateFileContent, { fileId, ...update })),
-    listRevisions: (fileId) => call(() => convex.query(fns.listRevisions, { fileId })),
-    getContext: (workspaceId) => call(() => convex.query(fns.getContext, { workspaceId })),
+      call(async () => {
+        const file = await convex.mutation(fns.updateDocument, { fileId, ...update });
+        return { version: file.version };
+      }),
+    listRevisions: (fileId) =>
+      call(async () => toRevisions(await convex.query(fns.getFileVersions, { fileId }))),
+    getContext: (workspaceId) =>
+      call(async () => toProjectContext(await convex.query(fns.getWorkspaceContext, { workspaceId }))),
   };
 }
