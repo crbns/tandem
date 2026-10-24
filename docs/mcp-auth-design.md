@@ -7,8 +7,9 @@ Labels: **[verified]** = stated in official docs or read in source. **[unverifie
 
 Use the Convex MCP component (`@convex-dev/mcp`, pinned to `0.1.0-alpha.7`) as both the MCP endpoint and the OAuth 2.1 authorization server, inside our Convex deployment. Users sign in on a Next.js consent page with their existing Convex Auth session. The component maps every connection to the Convex Auth `users` id (`getUserId: requireHuman`, §3) and hands each tool handler a verified `user`, which our internal functions use to check workspace membership. This removes the custom OAuth layer, the signing keys and the Node MCP container from the critical path. The gate is a one-day proof of concept (PoC) against claude.ai (§4). If the PoC fails, fall back to the custom design in §6.
 
-**Hosting decision (2026-10-24).** The MCP endpoint and the OAuth authorization server stay on the default Convex origin, `https://<deployment>.convex.site/mcp`, with `siteUrl` unset. Only the consent page (`/oauth/consent`) runs in `apps/web` on Vercel. This is the component's documented default and the lowest-risk layout: no proxy sits between claude.ai and Convex, Vercel previews, redeploys and domain changes can't invalidate connections, and a web outage only blocks new connections, not existing ones. Rejected for the demo:
-- **Vercel rewrites** (`siteUrl` set to the Vercel domain, Next.js rewrites forwarding `/mcp`, `/mcp/oauth/*` and the two `/.well-known/oauth-*` paths to `convex.site`). It gives a branded URL, but the component documents `siteUrl` only for a Convex custom domain, the proxy hop counts against the token endpoint's 10 s budget, and only one fixed domain works [unverified end to end].
+**Hosting decision (2026-10-24).** The MCP endpoint and the OAuth authorization server stay on the default Convex origin, `https://<deployment>.convex.site/mcp`, with `siteUrl` unset. Of the MCP/OAuth flow, only the consent page (`/oauth/consent`, in `apps/web`) runs on Vercel. This is the component's documented default and the lowest-risk layout: no proxy sits between claude.ai and Convex, Vercel previews, redeploys and domain changes can't invalidate connections, and a web outage only blocks new connections, not existing ones. Rejected for the demo:
+
+- **Vercel rewrites** (`siteUrl` set to the Vercel domain, Next.js rewrites forwarding `/mcp`, `/mcp/oauth/*` and the three `/.well-known/oauth-*` paths to `convex.site`). It gives a branded URL, but the component documents `siteUrl` only for a Convex custom domain, the proxy hop counts against the token endpoint's 10 s budget, and only one fixed domain works [unverified end to end].
 - **An OAuth server in Next.js on Vercel.** It is §6 moved to Vercel: about two more days, and Vercel would hold a signing key that can mint any user's token.
 
 If a branded URL is needed later, prefer a Convex custom domain plus `siteUrl` over Vercel rewrites, and decide before connecting demo accounts (§5.10).
@@ -121,8 +122,8 @@ The coordinator asked for a `get_workspace`-style tool. We name it `get_workspac
 
 Env vars on the Convex deployment (set by P2):
 - `JWT_PRIVATE_KEY` and `JWKS`, from the Convex Auth manual-setup script.
-- `SITE_URL`: the web origin.
-- `MCP_CONSENT_URL`: `<web origin>/oauth/consent`.
+- `SITE_URL`: the web origin (for the demo, the Vercel production domain, not a preview URL).
+- `MCP_CONSENT_URL`: `<web origin>/oauth/consent`, on the same production domain.
 - `CONVEX_SITE_URL` is built in.
 
 Web needs `NEXT_PUBLIC_CONVEX_URL`.
@@ -134,9 +135,9 @@ PoC acceptance:
 4. Repeat as B in a second claude.ai account and confirm B can't see A-only workspaces.
 5. `revokeConnection`, then the next call returns 401 and Claude asks to reconnect.
 
-Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every agent loads as overriding instructions. Until then, agents will keep building `apps/mcp` as a separately deployed MCP server. Changes:
+Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every agent loads as overriding instructions. The Hosting bullet was updated on 2026-10-24; the rest waits for the PoC, and until then the AGENTS.md MCP server bullet still describes the Node `apps/mcp`. Changes:
 - **Stack › MCP server:** the endpoint is `@convex-dev/mcp` in Convex HTTP actions at `https://<deployment>.convex.site/mcp`, replacing the Node.js MCP container. Replace "calling the same Convex functions as the dashboard" with "using the same authz helpers as the dashboard (`requireMember`, `requireHuman`)", because MCP tools call `internal*` functions in `convex/mcpTools.ts`, not the dashboard's public functions.
-- **Stack › Hosting:** updated 2026-10-24 to Vercel. Still to remove: the Vultr Docker/Caddy deploy files under `apps/*/deploy/` and the Vultr sections in `README.md`, `apps/web/README.md` and `apps/mcp/README.md`.
+- **Stack › Hosting:** updated 2026-10-24 to Vercel. Still to remove or rewrite: the Vultr/Docker/Caddy deploy artifacts (`apps/*/deploy/`, `apps/web/Dockerfile`, `apps/mcp/Dockerfile`, the standalone-output and "HSTS is set by Caddy" comments in `apps/web/next.config.js`, Docker comments in `apps/web/lib/api/convex.ts` and `apps/web/app/layout.tsx`) and the Vultr sections in `README.md`, `apps/web/README.md`, `apps/web/STATUS.md` and `apps/mcp/README.md`. Without Caddy, confirm HSTS is still set on the Vercel domain.
 - **Hard rules:** agent attribution is `connectionId` + `clientId` (§2.3); `clientName` is an unverified label.
 
 ## 5. Open questions and risks
@@ -159,6 +160,8 @@ Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every 
 ## 6. Fallback: custom OAuth AS in Convex HTTP actions plus the Node `apps/mcp`
 
 Use this only if the PoC fails. The fallback keeps the hard requirement literally: Convex sees the user through `ctx.auth`.
+
+Hosting: with Vultr dropped, this fallback has no host for `apps/mcp` yet. It needs a public HTTPS host that can serve the Node server (undecided; Vercel would require a stateless function handler).
 
 - **AS location:** Convex HTTP actions under issuer `${CONVEX_SITE_URL}/mcp-oauth`. That issuer is distinct from Convex Auth's issuer, and its metadata lives at `/.well-known/oauth-authorization-server/mcp-oauth`. Endpoints: `register` (DCR), `authorize`, `token`, `jwks`, plus metadata with `token_endpoint_auth_methods_supported: ["none"]`, S256, and `authorization_response_iss_parameter_supported`.
 - **Storage (P2):**
