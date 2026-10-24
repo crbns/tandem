@@ -42,6 +42,7 @@ const TOOL_SURFACE = [
 
 const INITIAL_GOAL = `Ship the Tandem P0 slice (${run})`;
 const NEW_GOAL = `Ship the P0 slice with two native clients (${run})`;
+const NEW_SCOPE = `Shared text documents and human-approved context (${run})`;
 const V1 = `# Proposal\n\nDrafted by A's assistant (${run}).\n`;
 const V2 = `# Proposal\n\nDrafted by A's assistant, edited by B in the dashboard (${run}).\n`;
 
@@ -69,6 +70,7 @@ type McpSync = {
   workspace: { id: string };
   context: {
     goal: string;
+    scope: string;
     open_questions: {
       id: string;
       text: string;
@@ -461,6 +463,42 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       eventsSinceCursor: sync.events.map(
         (e) => `${e.seq}:${e.type}:${e.actor.actor_type}`,
       ),
+    };
+  });
+
+  it("7-scope. agent proposes scope; human approves in dashboard; next MCP sync returns it", async () => {
+    const before = await agent.ok<McpSync>("sync_workspace");
+    const { proposal } = await agent.ok<{
+      proposal: { id: string; status: string; field: string };
+    }>("propose_context_change", {
+      field: "scope",
+      proposed_value: NEW_SCOPE,
+      rationale: "Demo step 6: limit the shared workspace scope",
+      source_ids: [fileId],
+    });
+    expect(proposal).toMatchObject({
+      field: "scope",
+      status: "pending",
+      proposed_value: NEW_SCOPE,
+      proposed_by: { actor_type: "agent", client: "claude" },
+    });
+    expect((await a.dashboard.getContext(workspaceId))?.scope).toBe(before.context.scope);
+    await a.dashboard.decideProposal({ id: proposal.id, workspaceId }, "approved");
+
+    // This is the first MCP sync after human approval, through the real endpoint.
+    const sync = await agent.ok<McpSync>("sync_workspace", { since: before.cursor });
+    expect(sync.context.scope).toBe(NEW_SCOPE);
+    expect(sync.context.goal).toBe(NEW_GOAL);
+    expect(sync.context_version).toBe(before.context_version + 1);
+    expect(sync.pending_proposals.map((p) => p.id)).not.toContain(proposal.id);
+    expect(sync.events.filter((e) => e.subject_id === proposal.id)
+      .map((e) => [e.type, e.actor.actor_type])).toEqual([
+      ["context.proposed", "agent"],
+      ["context.approved", "human"],
+    ]);
+    evidence.step7Scope = {
+      workspaceId, proposalId: proposal.id, scope: sync.context.scope,
+      contextVersion: sync.context_version,
     };
   });
 
