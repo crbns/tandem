@@ -36,4 +36,6 @@ pnpm --filter mcp build
 
 ## Deployment
 
-The web Docker image uses Next.js standalone output and is designed for Vultr. `NEXT_PUBLIC_CONVEX_URL` is embedded at build time. Convex functions are deployed separately from `packages/backend` with a deployment key. Do not point an unreviewed MCP server at shared or production data; the current MCP backend is mock-only.
+Vercel hosts `apps/web`. Set its root directory to `apps/web` and provide `NEXT_PUBLIC_CONVEX_URL` at build time. Set `NEXT_PUBLIC_USE_MOCKS=false` for shared data. The optional `NEXT_PUBLIC_CONVEX_SITE_URL` overrides the HTTP actions origin for local binary previews.
+
+Convex Cloud hosts the backend and MCP endpoint together. Deploy from `packages/backend` with `pnpm --filter @repo/backend deploy` and `CONVEX_DEPLOY_KEY`. Set the deployment's `SITE_URL` to the Vercel dashboard origin for auth redirects and OAuth consent. MCP stays at `<CONVEX_SITE_URL>/mcp`; it needs no separate server deployment. `apps/mcp` remains a local eval harness.

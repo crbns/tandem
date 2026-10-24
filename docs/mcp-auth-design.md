@@ -1,6 +1,6 @@
 # MCP auth design: claude.ai connectors on Convex Auth
 
-Status: proposal, 2026-10-23. Updated 2026-10-24: Vultr dropped; `apps/web` deploys to Vercel. **Implemented 2026-10-24 (issue #21); see [Implementation](#implementation-2026-10-24), which overrides the sections below where they differ.** Researched against the docs and source linked in [Sources](#sources).
+Status: proposal, 2026-10-23. Updated 2026-10-24: `apps/web` deploys to Vercel. **Implemented 2026-10-24 (issue #21); see [Implementation](#implementation-2026-10-24), which overrides the sections below where they differ.** Researched against the docs and source linked in [Sources](#sources).
 Labels: **[verified]** = stated in official docs or read in source. **[unverified]** = inferred, or a vendor claim we haven't tested.
 
 ## Implementation (2026-10-24)
@@ -152,7 +152,7 @@ PoC acceptance:
 
 Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every agent loads as overriding instructions. Done 2026-10-24 with the implementation: the MCP server and Hosting bullets now describe the Convex endpoint. The list below is the original plan:
 - **Stack › MCP server:** the endpoint is `@convex-dev/mcp` in Convex HTTP actions at `https://<deployment>.convex.site/mcp`, replacing the Node.js MCP container. Replace "calling the same Convex functions as the dashboard" with "using the same authz helpers as the dashboard (`requireMember`, `requireHuman`)", because MCP tools call `internal*` functions in `convex/mcpTools.ts`, not the dashboard's public functions.
-- **Stack › Hosting:** updated 2026-10-24 to Vercel. Still to remove or rewrite: the Vultr/Docker/Caddy deploy artifacts (`apps/*/deploy/`, `apps/web/Dockerfile`, `apps/mcp/Dockerfile`, the standalone-output and "HSTS is set by Caddy" comments in `apps/web/next.config.js`, Docker comments in `apps/web/lib/api/convex.ts` and `apps/web/app/layout.tsx`) and the Vultr sections in `README.md`, `apps/web/README.md`, `apps/web/STATUS.md` and `apps/mcp/README.md`. Without Caddy, confirm HSTS is still set on the Vercel domain.
+- **Stack › Hosting:** Vercel hosts the web dashboard; Convex Cloud hosts the backend and MCP. The remaining Docker/Caddy files are optional container examples. Verify response headers on the deployed Vercel domain separately; this design document does not record a production header check.
 - **Hard rules:** agent attribution is `connectionId` + `clientId` (§2.3); `clientName` is an unverified label.
 
 ## 5. Open questions and risks
@@ -176,7 +176,7 @@ Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every 
 
 Use this only if the PoC fails. The fallback keeps the hard requirement literally: Convex sees the user through `ctx.auth`.
 
-Hosting: with Vultr dropped, this fallback has no host for `apps/mcp` yet. It needs a public HTTPS host that can serve the Node server (undecided). Vercel is a candidate: it runs plain Node `http` servers, and `apps/mcp` is already stateless (`sessionIdGenerator: undefined`), but the entrypoint, build settings and request limits are untested there [unverified].
+Historical fallback only; it is not implemented or deployed. This fallback has no host for `apps/mcp`. It needs a public HTTPS host that can serve the Node server (undecided). Vercel is a candidate: it runs plain Node `http` servers, and `apps/mcp` is already stateless (`sessionIdGenerator: undefined`), but the entrypoint, build settings and request limits are untested there [unverified].
 
 - **AS location:** Convex HTTP actions under issuer `${CONVEX_SITE_URL}/mcp-oauth`. That issuer is distinct from Convex Auth's issuer, and its metadata lives at `/.well-known/oauth-authorization-server/mcp-oauth`. Endpoints: `register` (DCR), `authorize`, `token`, `jwks`, plus metadata with `token_endpoint_auth_methods_supported: ["none"]`, S256, and `authorization_response_iss_parameter_supported`.
 - **Storage (P2):**
