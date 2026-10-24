@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { ALL_MCP_SCOPES } from "./lib/mcpConfig";
+import { toToolError } from "./lib/mcpContract";
 import schema from "./schema";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -2459,14 +2460,14 @@ describe("file system tools (docs/filesystem.md)", () => {
         t.mutation(internal.mcpTools.moveFolder, { principal: token, folderId: a.id, expectedRevision: 1, toFolderPath: "/" }),
       ),
     ).toMatchObject({ code: "VERSION_CONFLICT", currentRevision: 2, expectedRevision: 1 });
-    // Moving to where it already is still bumps the revision.
+    // Moving to where it already is changes nothing (review L2).
     const same = await t.mutation(internal.mcpTools.moveFolder, {
       principal: token,
       folderId: a.id,
       expectedRevision: 2,
       toFolderPath: "/z",
     });
-    expect(same.revision).toBe(3);
+    expect(same.revision).toBe(2);
   });
 
   it("sync_workspace lists folders and paths, and folder events after since", async () => {
@@ -2582,5 +2583,286 @@ describe("file system tools (docs/filesystem.md)", () => {
     expect(sync.structuredContent.folders.map((f: { path: string }) => f.path)).toEqual(["/specs", "/specs/api"]);
     expect(sync.structuredContent.folders_truncated).toBe(false);
     expect(sync.structuredContent.changed_files[0].path).toBe("/specs/api/a.md");
+  });
+});
+
+describe("file system review fixes (PR #47)", () => {
+  async function fsSetup() {
+    const base = await setup();
+    const { token, apiKey } = await connect(base.sam, { workspaceId: base.workspaceId, client: "claude" });
+    const mk = (path: string) => base.t.mutation(internal.mcpTools.createFolder, { principal: token, path });
+    const doc = (folderPath: string | undefined, name: string) =>
+      base.t.mutation(internal.mcpTools.createDocument, {
+        principal: token,
+        folderPath,
+        name,
+        mimeType: "text/markdown",
+        content: name,
+      });
+    const list = (args: { path?: string; recursive?: boolean; query?: string }) =>
+      base.t.mutation(internal.mcpTools.listFiles, { principal: token, ...args });
+    const eventCount = () => base.t.run(async (ctx) => (await ctx.db.query("workspace_events").collect()).length);
+    return { ...base, token, apiKey, mk, doc, list, eventCount };
+  }
+
+  it("list_files query matches files and folders by one substring rule (M1)", async () => {
+    const { mk, doc, list } = await fsSetup();
+    await mk("/myspecs-dir");
+    await mk("/archive/Spec Notes");
+    await doc(undefined, "myspecs.md");
+    await doc(undefined, "specs-v2.md");
+    await doc("/archive", "readme.md");
+    const paths = async (args: { path?: string; query?: string; recursive?: boolean }) => {
+      const r = await list(args);
+      return { folders: r.folders.map((f) => f.path), files: r.files.map((f) => f.path) };
+    };
+
+    // "spec" is a word prefix of neither "myspecs" name; both still match.
+    expect(await paths({ query: "spec" })).toEqual({
+      folders: ["/archive/Spec Notes", "/myspecs-dir"],
+      files: ["/myspecs.md", "/specs-v2.md"],
+    });
+    expect(await paths({ query: "SPECS" })).toEqual({
+      folders: ["/myspecs-dir"],
+      files: ["/myspecs.md", "/specs-v2.md"],
+    });
+    // Every whitespace-separated term must appear, in any order.
+    expect(await paths({ query: "  v2   specs " })).toEqual({ folders: [], files: ["/specs-v2.md"] });
+    expect(await paths({ query: "notes spec" })).toEqual({ folders: ["/archive/Spec Notes"], files: [] });
+    // Scoped to a folder's subtree.
+    expect(await paths({ path: "/archive", query: "e" })).toEqual({
+      folders: ["/archive/Spec Notes"],
+      files: ["/archive/readme.md"],
+    });
+    // A blank query is no query: the plain root listing, or the subtree when recursive.
+    const root = { folders: ["/archive", "/myspecs-dir"], files: ["/myspecs.md", "/specs-v2.md"] };
+    expect(await paths({ query: "" })).toEqual(root);
+    expect(await paths({ query: "   " })).toEqual(root);
+    expect((await paths({ query: " ", recursive: true })).files).toHaveLength(3);
+  });
+
+  it("sync since a folder rename or move lists the files whose paths changed (M2)", async () => {
+    const { t, sam, token, mk, doc } = await fsSetup();
+    const { folder: specs } = await mk("/specs/api");
+    await doc("/specs/api", "endpoints.md");
+    await doc("/specs", "overview.md");
+    const outside = await doc(undefined, "readme.md");
+    const snapshot = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    const cursor = { sinceSeq: snapshot.cursorSeq, cursorWorkspaceId: snapshot.workspace.id };
+    const specsRow = snapshot.folders.find((f) => f.path === "/specs")!;
+
+    // A dashboard rename (folder.renamed).
+    await sam.mutation(api.folders.renameFolder, { folderId: specsRow.id, name: "design", expectedRevision: 1 });
+    const renamed = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token, ...cursor });
+    expect(renamed.events.map((e) => e.kind)).toEqual(["folder.renamed"]);
+    expect(renamed.changedFiles.map((f) => f.path).sort()).toEqual(["/design/api/endpoints.md", "/design/overview.md"]);
+    expect(renamed.changedFiles.map((f) => f.id)).not.toContain(outside.id);
+    expect(renamed.filesTruncated).toBe(false);
+
+    // An MCP move of a subfolder (folder.moved), over HTTP.
+    const { apiKey } = await connect(sam, { workspaceId: snapshot.workspace.id, client: "chatgpt" });
+    const before = await callTool(t, apiKey, "sync_workspace");
+    await callTool(t, apiKey, "move_folder", { folder_id: specs.id, expected_revision: 1, to_folder_path: "/" });
+    const moved = await callTool(t, apiKey, "sync_workspace", { since: before.structuredContent.cursor });
+    expect(moved.structuredContent.events.map((e: { type: string }) => e.type)).toEqual(["folder.moved"]);
+    expect(moved.structuredContent.changed_files.map((f: { path: string }) => f.path)).toEqual(["/api/endpoints.md"]);
+  });
+
+  it("caps folder-move changed_files at 50 with files_truncated", async () => {
+    const { t, token, mk, doc } = await fsSetup();
+    const { folder } = await mk("/bulk");
+    for (let i = 0; i < 52; i++) await doc("/bulk", `f${i}.md`);
+    const snapshot = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    await t.mutation(internal.mcpTools.moveFolder, {
+      principal: token,
+      folderId: folder.id,
+      expectedRevision: 1,
+      toFolderPath: "/",
+      newName: "moved",
+    });
+    const delta = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: token,
+      sinceSeq: snapshot.cursorSeq,
+      cursorWorkspaceId: snapshot.workspace.id,
+    });
+    expect(delta.changedFiles).toHaveLength(50);
+    expect(delta.changedFiles.every((f) => f.path.startsWith("/moved/"))).toBe(true);
+    expect(delta.filesTruncated).toBe(true);
+  });
+
+  it("finds legacy files without a nameKey by path and in collision checks (L1)", async () => {
+    const { t, sam, samId, workspaceId, token } = await fsSetup();
+    const actor = { type: "human" as const, userId: samId, label: "Sam" };
+    const legacyId = await t.run((ctx) =>
+      ctx.db.insert("files", {
+        workspaceId,
+        name: "Notes.md",
+        mimeType: "text/markdown",
+        content: "legacy",
+        version: 1,
+        createdBy: actor,
+        updatedBy: actor,
+        revision: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    const read = await t.mutation(internal.mcpTools.readFile, { principal: token, path: "/notes.md" });
+    expect(read).toMatchObject({ file: { id: legacyId, path: "/Notes.md" }, content: "legacy" });
+    expect(await errorData(sam.mutation(api.folders.createFolder, { workspaceId, name: "notes.md" }))).toMatchObject({
+      code: "NAME_EXISTS",
+      kind: "file",
+      fileId: legacyId,
+    });
+    expect(
+      await errorData(
+        t.mutation(internal.mcpTools.createDocument, {
+          principal: token,
+          name: "NOTES.md",
+          mimeType: "text/markdown",
+          content: "",
+        }),
+      ),
+    ).toMatchObject({ code: "NAME_EXISTS", kind: "file", fileId: legacyId });
+    // Moving it keeps working and stores its key.
+    const { folder } = await t.mutation(internal.mcpTools.createFolder, { principal: token, path: "/old" });
+    await t.mutation(internal.mcpTools.moveFile, { principal: token, fileId: legacyId, expectedVersion: 1, toFolderId: folder.id });
+    expect(await t.run(async (ctx) => (await ctx.db.get(legacyId))?.nameKey)).toBe("notes.md");
+  });
+
+  it("no-op moves return the file or folder unchanged, without a revision or event (L2)", async () => {
+    const { t, sam, token, mk, doc, eventCount } = await fsSetup();
+    const { folder: specs } = await mk("/specs");
+    await mk("/specs/api");
+    const file = await doc("/specs", "plan.md");
+    const events = await eventCount();
+    const revisions = () =>
+      t.run(async (ctx) =>
+        (await ctx.db.query("file_revisions").withIndex("by_file_and_version", (q) => q.eq("fileId", file.id)).collect()).length,
+      );
+
+    const same = await t.mutation(internal.mcpTools.moveFile, {
+      principal: token,
+      fileId: file.id,
+      expectedVersion: 1,
+      toFolderPath: "/specs",
+    });
+    expect(same).toMatchObject({ version: 1, path: "/specs/plan.md" });
+    const sameName = await t.mutation(internal.mcpTools.moveFile, {
+      principal: token,
+      fileId: file.id,
+      expectedVersion: 1,
+      toFolderId: specs.id,
+      newName: " plan.md ",
+    });
+    expect(sameName.version).toBe(1);
+    // The dashboard path is the same core.
+    expect(await sam.mutation(api.files.moveFile, { fileId: file.id, parentId: specs.id, expectedVersion: 1 })).toEqual({
+      version: 1,
+    });
+    const folderSame = await t.mutation(internal.mcpTools.moveFolder, {
+      principal: token,
+      folderId: specs.id,
+      expectedRevision: 1,
+      toFolderPath: "/",
+      newName: "specs",
+    });
+    expect(folderSame.revision).toBe(1);
+    expect(await eventCount()).toBe(events);
+    expect(await revisions()).toBe(1);
+    // A stale version is still a conflict, and a case-only rename is a real move.
+    expect(
+      await errorData(
+        t.mutation(internal.mcpTools.moveFile, { principal: token, fileId: file.id, expectedVersion: 2, toFolderPath: "/specs" }),
+      ),
+    ).toMatchObject({ code: "VERSION_CONFLICT", currentVersion: 1 });
+    const recased = await t.mutation(internal.mcpTools.moveFile, {
+      principal: token,
+      fileId: file.id,
+      expectedVersion: 1,
+      toFolderPath: "/specs",
+      newName: "Plan.md",
+    });
+    expect(recased).toMatchObject({ version: 2, name: "Plan.md" });
+  });
+
+  it("gives each tool a recovery hint that fits it (L3)", async () => {
+    const { t, apiKey } = await fsSetup();
+    await callTool(t, apiKey, "create_folder", { path: "/specs" });
+    const doc = await callTool(t, apiKey, "create_document", { name: "e.md", content: "", folder_path: "/specs" });
+    const fileId = doc.structuredContent.id as string;
+    await callTool(t, apiKey, "create_document", { name: "taken.md", content: "", folder_path: "/specs" });
+
+    const mkdir = await callTool(t, apiKey, "create_folder", { path: "/specs/e.md/sub" });
+    expect(mkdir.structuredContent.error).toMatchObject({ code: "NAME_EXISTS", kind: "file", name: "e.md" });
+    expect(mkdir.structuredContent.error.message).not.toMatch(/update_document/);
+    expect(mkdir.structuredContent.error.message).toMatch(/folder path/);
+
+    const clash = await callTool(t, apiKey, "move_file", {
+      file_id: fileId,
+      expected_version: 1,
+      to_folder_path: "/specs",
+      new_name: "TAKEN.md",
+    });
+    expect(clash.structuredContent.error).toMatchObject({ code: "NAME_EXISTS", kind: "file" });
+    expect(clash.structuredContent.error.message).not.toMatch(/update_document/);
+    expect(clash.structuredContent.error.message).toMatch(/new_name/);
+
+    const slash = await callTool(t, apiKey, "move_file", {
+      file_id: fileId,
+      expected_version: 1,
+      to_folder_path: "/",
+      new_name: "a/b.md",
+    });
+    expect(slash.structuredContent.error).toMatchObject({ code: "INVALID_INPUT", field: "name" });
+    expect(slash.structuredContent.error.message).toMatch(/to_folder_path/);
+    expect(slash.structuredContent.error.message).not.toMatch(/pass folder_path/);
+
+    const created = await callTool(t, apiKey, "create_document", { name: "a/b.md", content: "" });
+    expect(created.structuredContent.error.message).toMatch(/pass folder_path/);
+
+    const tooLarge = toToolError(new ConvexError({ code: "FOLDER_TOO_LARGE", limit: 2000 }), { tool: "move_folder" });
+    expect(tooLarge).toMatchObject({ code: "FOLDER_TOO_LARGE", details: { limit: 2000 } });
+    expect((tooLarge as Error).message).toMatch(/2000 folders/);
+    expect((tooLarge as Error).message).not.toMatch(/dashboard/);
+  });
+
+  it("uses one error code per path problem in every tool (L4)", async () => {
+    const { t, apiKey } = await fsSetup();
+    const doc = await callTool(t, apiKey, "create_document", { name: "a.md", content: "" });
+    const fileId = doc.structuredContent.id as string;
+    const folder = await callTool(t, apiKey, "create_folder", { path: "/f" });
+    const folderId = folder.structuredContent.folder.id as string;
+    const code = async (name: string, args: Record<string, unknown>) =>
+      (await callTool(t, apiKey, name, args)).structuredContent.error?.code;
+
+    for (const path of ["", "/a/​./b", "/a//b"]) {
+      expect(await code("read_file", { path })).toBe("INVALID_PATH");
+      expect(await code("create_folder", { path })).toBe("INVALID_PATH");
+      expect(await code("list_files", { path })).toBe("INVALID_PATH");
+      expect(await code("create_document", { name: "x.md", content: "", folder_path: path })).toBe("INVALID_PATH");
+      expect(await code("move_file", { file_id: fileId, expected_version: 1, to_folder_path: path })).toBe("INVALID_PATH");
+      expect(await code("move_folder", { folder_id: folderId, expected_revision: 1, to_folder_path: path })).toBe(
+        "INVALID_PATH",
+      );
+    }
+    const deep = (n: number) => "/" + Array.from({ length: n }, (_, i) => `d${i}`).join("/");
+    expect(await code("create_folder", { path: deep(33) })).toBe("FOLDER_TOO_DEEP");
+    expect(await code("create_folder", { path: deep(34) })).toBe("FOLDER_TOO_DEEP");
+    expect(await code("read_file", { path: deep(34) })).toBe("FOLDER_TOO_DEEP");
+    expect(await code("list_files", { path: deep(40) })).toBe("FOLDER_TOO_DEEP");
+    expect(await code("read_file", { path: deep(33) })).toBe("PATH_NOT_FOUND");
+
+    // An expected version or revision ahead of the current one is a conflict, not bad input.
+    expect(await code("move_file", { file_id: fileId, expected_version: 9, to_folder_path: "/f" })).toBe("VERSION_CONFLICT");
+    expect(await code("update_document", { file_id: fileId, expected_version: 9, content: "x" })).toBe("VERSION_CONFLICT");
+    expect(await code("move_folder", { folder_id: folderId, expected_revision: 9, to_folder_path: "/" })).toBe(
+      "VERSION_CONFLICT",
+    );
+    // A missing destination is reported before a stale version (Convex order).
+    expect(await code("move_file", { file_id: fileId, expected_version: 9, to_folder_path: "/nope" })).toBe("PATH_NOT_FOUND");
+
+    const blank = await callTool(t, apiKey, "search_files", { query: "   " });
+    expect(blank.structuredContent.error).toMatchObject({ code: "INVALID_INPUT", field: "query" });
   });
 });

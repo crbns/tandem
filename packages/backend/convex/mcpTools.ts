@@ -51,6 +51,7 @@ import {
   toFolderRow,
   type FolderIndex,
 } from "./lib/fs";
+import { matchesQuery, queryTerms } from "./lib/names";
 import {
   actorValidator,
   contextFieldValidator,
@@ -63,7 +64,7 @@ import {
 } from "./lib/validators";
 
 const LIST_LIMIT = 500;
-// Name-search hits read before scoping them to a folder's subtree.
+// Live files a list_files query scans in the folder's subtree.
 const LIST_SEARCH_SCAN = 1000;
 const SYNC_FOLDER_LIMIT = 200;
 const MEMBER_LIMIT = 100;
@@ -241,7 +242,8 @@ export const getWorkspaceInfo = internalMutation({
 /**
  * list_files: a folder's immediate children (root by default), its whole
  * subtree flattened when `recursive`, or name matches within the subtree when
- * `query` is given. Children sort by name; subtrees and matches by path.
+ * `query` has a term (see matchesQuery; a blank query is no query). Children
+ * sort by name; subtrees and matches by path.
  */
 export const listFiles = internalMutation({
   args: {
@@ -264,9 +266,9 @@ export const listFiles = internalMutation({
     const folder = await folderArg(ctx, workspaceId, { id: args.folderId, path: args.path }, "path");
     const rootId = folder?._id ?? null;
     const base = await folderPath(ctx, rootId);
-    const needle = args.query?.trim();
+    const terms = queryTerms(args.query ?? "");
 
-    if (!needle && !args.recursive) {
+    if (terms.length === 0 && !args.recursive) {
       const folders = await listChildFolders(ctx, workspaceId, folder?._id, LIST_LIMIT + 1);
       const files = await listChildFiles(ctx, workspaceId, folder?._id, LIST_LIMIT + 1);
       return {
@@ -285,35 +287,45 @@ export const listFiles = internalMutation({
 
     const index = await loadFolderIndex(ctx, workspaceId);
     let folders = index.folders.filter((f) => isWithin(index, f.parentId, rootId));
+    const subtreeFolderIds = folders.map((f) => f._id);
+    /** Up to `limit` + 1 live files in the folder's subtree. */
+    const filesInScope = async (limit: number) => {
+      if (!rootId)
+        return await ctx.db
+          .query("files")
+          .withIndex("by_workspace_and_deleted_at_and_parent", (q) =>
+            q.eq("workspaceId", workspaceId).eq("deletedAt", undefined),
+          )
+          .take(limit + 1);
+      const found: Doc<"files">[] = [];
+      for (const id of [rootId, ...subtreeFolderIds]) {
+        if (found.length > limit) break;
+        found.push(...(await listChildFiles(ctx, workspaceId, id, limit + 1 - found.length)));
+      }
+      return found;
+    };
     let files: Doc<"files">[];
     let truncated = index.truncated;
-    if (needle) {
-      const lower = needle.toLowerCase();
-      folders = folders.filter((f) => f.name.toLowerCase().includes(lower));
-      // Name search runs through the search index, so `truncated` means more
-      // files matched than were returned.
-      const scan = rootId ? LIST_SEARCH_SCAN : LIST_LIMIT + 1;
+    if (terms.length > 0) {
+      // One rule for folders and files (lib/names.ts matchesQuery), applied
+      // to a bounded scan of the subtree; `truncated` also means the scan
+      // stopped early. Name-index hits add word matches beyond the scan.
+      folders = folders.filter((f) => matchesQuery(f.name, terms));
+      const scanned = await filesInScope(LIST_SEARCH_SCAN);
+      if (scanned.length > LIST_SEARCH_SCAN) truncated = true;
       const hits = await ctx.db
         .query("files")
         .withSearchIndex("search_name", (q) =>
-          q.search("name", needle).eq("workspaceId", workspaceId).eq("deletedAt", undefined),
-        )
-        .take(scan);
-      files = hits.filter((f) => isWithin(index, f.parentId, rootId));
-      if (rootId && hits.length >= scan) truncated = true;
-    } else if (!rootId) {
-      files = await ctx.db
-        .query("files")
-        .withIndex("by_workspace_and_deleted_at_and_parent", (q) =>
-          q.eq("workspaceId", workspaceId).eq("deletedAt", undefined),
+          // A few terms are plenty for candidates; search queries are capped.
+          q.search("name", terms.slice(0, 8).join(" ")).eq("workspaceId", workspaceId).eq("deletedAt", undefined),
         )
         .take(LIST_LIMIT + 1);
+      const byId = new Map([...scanned.slice(0, LIST_SEARCH_SCAN), ...hits].map((f) => [f._id, f] as const));
+      files = [...byId.values()].filter(
+        (f) => isWithin(index, f.parentId, rootId) && matchesQuery(f.name, terms),
+      );
     } else {
-      files = [];
-      for (const id of [rootId, ...folders.map((f) => f._id)]) {
-        if (files.length > LIST_LIMIT) break;
-        files.push(...(await listChildFiles(ctx, workspaceId, id, LIST_LIMIT + 1 - files.length)));
-      }
+      files = await filesInScope(LIST_LIMIT);
     }
     const folderRows = folders
       .map((f) => toFolderRow(f, index.folderPath(f._id)))

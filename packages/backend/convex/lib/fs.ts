@@ -99,7 +99,8 @@ export function joinPath(parentPath: string, name: string): string {
 /**
  * Path segments (stored names) of a workspace path; "/" is root ([]). The
  * leading "/" is optional and one trailing "/" is ignored. "", empty
- * segments ("//"), "." and ".." are INVALID_PATH, as in the apps/mcp mock.
+ * segments ("//"), "." and ".." are INVALID_PATH, and a path below more than
+ * MAX_FOLDER_DEPTH folders is FOLDER_TOO_DEEP, as in the apps/mcp mock.
  */
 export function splitPath(path: string): string[] {
   if (path === "") throw new ConvexError({ code: "INVALID_PATH", path });
@@ -108,16 +109,19 @@ export function splitPath(path: string): string[] {
   const segments = (body.endsWith("/") ? body.slice(0, -1) : body)
     .split("/")
     .map(storedName);
-  if (
-    segments.length > MAX_FOLDER_DEPTH + 1 ||
-    segments.some((s) => nameKey(s) === "" || s === "." || s === "..")
-  )
+  if (segments.some((s) => nameKey(s) === "" || s === "." || s === ".."))
     throw new ConvexError({ code: "INVALID_PATH", path });
+  if (segments.length > MAX_FOLDER_DEPTH + 1)
+    throw new ConvexError({ code: "FOLDER_TOO_DEEP", maxDepth: MAX_FOLDER_DEPTH });
   return segments;
 }
 
 function folderKey(folder: Doc<"folders">): string {
   return folder.nameKey ?? nameKey(folder.name);
+}
+
+function fileKey(file: Doc<"files">): string {
+  return file.nameKey ?? nameKey(file.name);
 }
 
 /** The live folder named `key` directly under `parentId` (root when undefined). */
@@ -156,12 +160,25 @@ export async function findChildFile(
   parentId: FolderId | undefined,
   key: string,
 ): Promise<Doc<"files"> | null> {
-  return await ctx.db
+  const keyed = await ctx.db
     .query("files")
     .withIndex("by_workspace_and_parent_and_name_key", (q) =>
       q.eq("workspaceId", workspaceId).eq("parentId", parentId).eq("nameKey", key),
     )
     .first();
+  if (keyed) return keyed;
+  // Legacy files have no stored key either; same live-only scan as folders.
+  const unkeyed = await ctx.db
+    .query("files")
+    .withIndex("by_workspace_and_parent_and_name_key_and_deleted_at", (q) =>
+      q
+        .eq("workspaceId", workspaceId)
+        .eq("parentId", parentId)
+        .eq("nameKey", undefined)
+        .eq("deletedAt", undefined),
+    )
+    .take(LEGACY_SCAN_LIMIT);
+  return unkeyed.find((f) => fileKey(f) === key) ?? null;
 }
 
 /**
@@ -328,6 +345,25 @@ export async function listChildFiles(
     .take(limit);
 }
 
+/** Up to `limit` live files anywhere below `folder`, breadth first. */
+export async function listSubtreeFiles(
+  ctx: ReadCtx,
+  folder: Doc<"folders">,
+  limit: number,
+): Promise<Doc<"files">[]> {
+  const files: Doc<"files">[] = [];
+  const queue = [folder._id];
+  for (let i = 0; i < queue.length && files.length < limit; i++) {
+    files.push(...(await listChildFiles(ctx, folder.workspaceId, queue[i], limit - files.length)));
+    const room = MAX_INDEXED_FOLDERS - queue.length;
+    if (room > 0)
+      queue.push(
+        ...(await listChildFolders(ctx, folder.workspaceId, queue[i], room)).map((f) => f._id),
+      );
+  }
+  return files;
+}
+
 export type FolderIndex = Awaited<ReturnType<typeof loadFolderIndex>>;
 
 /**
@@ -394,6 +430,21 @@ function checkFolderRevision(folder: Doc<"folders">, expectedRevision: number) {
       currentRevision: folder.revision,
       expectedRevision,
     });
+}
+
+/**
+ * A move into the current parent that keeps the stored name changes nothing:
+ * the caller returns the row as it is (no version, revision or event).
+ */
+function isNoOpMove(
+  row: { parentId?: FolderId; name: string },
+  dest: Doc<"folders"> | null,
+  newName: string | undefined,
+): boolean {
+  return (
+    dest?._id === row.parentId &&
+    (newName === undefined || storedName(newName) === row.name)
+  );
 }
 
 /**
@@ -577,6 +628,7 @@ export async function moveFolderCore(
   const { workspaceId } = folder;
   checkFolderRevision(folder, args.expectedRevision);
   const dest = await requireParentFolder(ctx, workspaceId, args.parentId);
+  if (isNoOpMove(folder, dest, args.name)) return folder;
   const destChain = dest ? await ancestry(ctx, dest) : [];
   if (destChain.some((f) => f._id === folder._id))
     throw new ConvexError({ code: "INVALID_MOVE", folderId: folder._id });
@@ -680,6 +732,7 @@ export async function deleteFolderCore(
 /**
  * Like renameFileCore: version N+1 with a revision row carrying the same
  * content, and a `file.moved` event. Destination collisions are NAME_EXISTS.
+ * A no-op move (same folder, same name) returns the file unchanged.
  */
 export async function moveFileCore(
   ctx: MutationCtx,
@@ -694,10 +747,11 @@ export async function moveFileCore(
   const { file, actor } = args;
   checkFileVersion(file, args.expectedVersion);
   const dest = await requireParentFolder(ctx, file.workspaceId, args.parentId);
+  if (isNoOpMove(file, dest, args.name)) return file;
   const { name, key } =
     args.name !== undefined
       ? requireValidName(args.name)
-      : { name: file.name, key: file.nameKey ?? nameKey(file.name) };
+      : { name: file.name, key: fileKey(file) };
   await assertNameFree(ctx, file.workspaceId, dest?._id, key, { fileId: file._id });
   const destPath = await folderPath(ctx, dest?._id);
   const now = Date.now();

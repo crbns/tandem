@@ -245,6 +245,27 @@ describe("folder helpers", () => {
     expect(moveTargets(TREE, { kind: "folder", id: "f_z", parentId: null })[0]).toMatchObject({ id: null, disabled: true, reason: "current" });
   });
 
+  it("lists move targets as a tree, each folder directly under its parent", () => {
+    // ICU collation puts " " and "-" before "/", so sorting paths would put
+    // "specs v2" and "specs-old" between "/specs" and "/specs/api".
+    const tree = [
+      folder("f_old", null, "/specs-old"),
+      folder("f_api", "f_specs", "/specs/api"),
+      folder("f_v2", null, "/specs v2"),
+      folder("f_specs", null, "/specs"),
+      folder("f_v1", "f_api", "/specs/api/v1"),
+    ];
+    const targets = moveTargets(tree, { kind: "file", id: "file_1", parentId: null });
+    expect(targets.map((t) => [t.path, t.depth])).toEqual([
+      ["/", 0],
+      ["/specs", 1],
+      ["/specs/api", 2],
+      ["/specs/api/v1", 3],
+      ["/specs v2", 1],
+      ["/specs-old", 1],
+    ]);
+  });
+
   it("counts what a folder delete removes", () => {
     const files = [{ parentId: "f_c" }, { parentId: "f_a" }, { parentId: "f_z" }, { parentId: null }];
     expect(subtreeCounts("f_a", TREE, files)).toEqual({ folders: 3, files: 2 });

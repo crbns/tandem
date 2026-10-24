@@ -67,10 +67,36 @@ export function moveTargets(
   };
   return [
     target(null, ROOT_LABEL, "/", 0),
-    ...[...tree]
-      .sort((a, b) => a.path.localeCompare(b.path))
-      .map((folder) => target(folder.id, folder.name, folder.path, folder.path.split("/").length - 1)),
+    ...treeOrder(tree).map(({ folder, depth }) => target(folder.id, folder.name, folder.path, depth)),
   ];
+}
+
+/**
+ * Depth-first from the root, siblings by name, so every folder sits directly
+ * under its parent. Sorting path strings can't do this: "/specs v2" and
+ * "/specs-old" collate between "/specs" and "/specs/api".
+ */
+export function treeOrder(tree: readonly FolderSummary[]): { folder: FolderSummary; depth: number }[] {
+  const ids = new Set(tree.map((folder) => folder.id));
+  const children = new Map<string | null, FolderSummary[]>();
+  for (const folder of tree) {
+    // A parent missing from the tree (shouldn't happen) lists the folder at the root.
+    const parent = folder.parentId !== null && ids.has(folder.parentId) ? folder.parentId : null;
+    children.set(parent, [...(children.get(parent) ?? []), folder]);
+  }
+  const out: { folder: FolderSummary; depth: number }[] = [];
+  const seen = new Set<string>();
+  const walk = (parentId: string | null, depth: number) => {
+    const siblings = [...(children.get(parentId) ?? [])].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    for (const folder of siblings) {
+      if (seen.has(folder.id)) continue;
+      seen.add(folder.id);
+      out.push({ folder, depth });
+      walk(folder.id, depth + 1);
+    }
+  };
+  walk(null, 1);
+  return out;
 }
 
 /** What deleting a folder removes: the folder, its subfolders and every file in them. */

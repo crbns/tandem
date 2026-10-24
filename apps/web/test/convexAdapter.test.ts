@@ -1,11 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import type { ConvexReactClient } from "convex/react";
 import { getFunctionName, type FunctionReference, type FunctionReturnType } from "convex/server";
 import type { api } from "@repo/backend/convex/_generated/api.js";
 import type { Id } from "@repo/backend/convex/_generated/dataModel.js";
 import { createConvexApi } from "@/lib/api/convex";
-import { normalizeError } from "@/lib/api/errors";
+import { normalizeError, type TandemApiError } from "@/lib/api/errors";
+import { CREATE_ERROR_COPY, describeError, FOLDER_ERROR_COPY } from "@/lib/api/errorCopy";
 import { performSave } from "@/lib/editor/performSave";
 
 // Fixtures are typed from the backend's generated function types, so a backend
@@ -277,7 +278,7 @@ describe("createConvexApi", () => {
     ["FILE_NOT_FOUND", "FILE_NOT_FOUND"],
     ["UNAUTHENTICATED", "UNAUTHENTICATED"],
     ["INVALID_NAME", "INVALID_NAME"],
-    ["INVALID_PARENT_FOLDER", "INVALID_INPUT"],
+    ["INVALID_PARENT_FOLDER", "FOLDER_NOT_FOUND"],
     ["WORKSPACE_NOT_FOUND", "FORBIDDEN"],
     ["CONTEXT_NOT_INITIALIZED", "UNKNOWN"],
   ])("maps the backend's ConvexError %s to %s", (backendCode, code) => {
@@ -362,6 +363,40 @@ describe("folder adapter (docs/filesystem.md Dashboard API)", () => {
       { name: "files:moveFile", args: { fileId: "files_1", parentId: "folders_1", expectedVersion: 3 } },
       { name: "files:createDocument", args: { workspaceId: "workspaces_1", name: "n.md", mimeType: "text/markdown", content: "", parentId: "folders_1" } },
     ]);
+  });
+
+  it("reports a missing destination or parent folder as FOLDER_NOT_FOUND, like the mock", async () => {
+    const gone = new ConvexError({ code: "INVALID_PARENT_FOLDER", folderId: "folders_9" });
+    const { client } = fakeConvex({
+      "folders:moveFolder": gone,
+      "folders:createFolder": gone,
+      "files:moveFile": gone,
+      "files:createDocument": gone,
+    });
+    const tandem = createConvexApi(client);
+    const errors = await Promise.all([
+      tandem.moveFolder("folders_2", "folders_9", 1),
+      tandem.createFolder("workspaces_1", { name: "x", parentId: "folders_9" }),
+      tandem.moveFile("files_1", "folders_9", 3),
+      tandem.createFile("workspaces_1", { name: "n.md", mimeType: "text/markdown", content: "", parentId: "folders_9" }),
+    ].map((p) => p.then(() => null, (e: TandemApiError) => e)));
+    expect(errors.map((e) => e?.code)).toEqual(["FOLDER_NOT_FOUND", "FOLDER_NOT_FOUND", "FOLDER_NOT_FOUND", "FOLDER_NOT_FOUND"]);
+    expect(describeError(errors[0]!, FOLDER_ERROR_COPY)).toBe(FOLDER_ERROR_COPY.FOLDER_NOT_FOUND);
+    expect(describeError(errors[3]!, CREATE_ERROR_COPY)).toBe(CREATE_ERROR_COPY.FOLDER_NOT_FOUND);
+  });
+
+  it("treats a ?folder= id that fails argument validation as FOLDER_NOT_FOUND", async () => {
+    const invalid = new Error('ArgumentValidationError: Value does not match validator.\nPath: .folderId\nValidator: v.id("folders")');
+    const { client } = fakeConvex({ "folders:listDirectory": invalid });
+    const tandem = createConvexApi(client);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(tandem.listDirectory("workspaces_1", "files_1")).rejects.toMatchObject({ code: "FOLDER_NOT_FOUND" });
+    await expect(tandem.listDirectory("workspaces_1", "not-an-id")).rejects.toMatchObject({ code: "FOLDER_NOT_FOUND" });
+    // The root listing has no folder id to blame, and other errors keep their codes.
+    await expect(tandem.listDirectory("workspaces_1", null)).rejects.toMatchObject({ code: "UNKNOWN" });
+    const offline = fakeConvex({ "folders:listDirectory": new Error("Failed to fetch") });
+    await expect(createConvexApi(offline.client).listDirectory("workspaces_1", "folders_1")).rejects.toMatchObject({ code: "NETWORK" });
+    vi.restoreAllMocks();
   });
 
   it("surfaces folder errors with their own codes and details", async () => {

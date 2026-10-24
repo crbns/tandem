@@ -38,3 +38,17 @@ export function nameKey(name: string): string {
     .toUpperCase()
     .toLowerCase();
 }
+
+/**
+ * list_files `query` terms: the query's collision key split on whitespace, so
+ * terms compare like names. A blank query has no terms (plain listing).
+ */
+export function queryTerms(query: string): string[] {
+  return nameKey(query).split(" ").filter(Boolean);
+}
+
+/** list_files match rule: every term is a substring of the name's collision key. */
+export function matchesQuery(name: string, terms: string[]): boolean {
+  const key = nameKey(name);
+  return terms.every((term) => key.includes(term));
+}

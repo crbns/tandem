@@ -7,7 +7,7 @@ import { HistoryIcon } from "lucide-react";
 import { TandemApiError, useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
 import { belongsToWorkspace, isTextMimeType } from "@/lib/files";
-import { folderTrail } from "@/lib/folders";
+import { useFolderTrail } from "@/lib/api/useFolderTrail";
 import { BinaryPreview } from "@/components/files/BinaryPreview";
 import { useWorkspaceRefresh } from "@/lib/api/useWorkspace";
 import { FileEditor } from "@/components/editor/FileEditor";
@@ -29,13 +29,7 @@ export default function FilePage() {
   useWorkspaceRefresh(workspaceId, reload);
   const fileHref = `/w/${workspaceId}/files/${fileId}`;
   // The folder trail for the breadcrumbs; refetched when the file moves.
-  const parentId = resource.status === "ready" ? resource.data.parentId : null;
-  const loadTrail = useCallback(
-    async () => (parentId ? folderTrail(await api.listDirectory(workspaceId, parentId)) : []),
-    [api, workspaceId, parentId],
-  );
-  const { resource: trail, reload: reloadTrail } = useResource(loadTrail);
-  useWorkspaceRefresh(workspaceId, reloadTrail);
+  const folders = useFolderTrail(workspaceId, resource.status === "ready" ? resource.data.parentId : null);
 
   if (resource.status === "loading") {
     return (
@@ -63,7 +57,7 @@ export default function FilePage() {
         fileId={file.id}
         name={file.name}
         mimeType={file.mimeType}
-        folders={trail.status === "ready" ? trail.data : []}
+        folders={folders}
       />
       <FileActions file={file} onChanged={reload} redirectAfterDelete />
       {isTextMimeType(file.mimeType) && file.content !== null ? (

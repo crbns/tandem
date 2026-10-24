@@ -53,12 +53,13 @@ not.
   in that page (or snapshot) was omitted.
 - Keep the `cursor`. Later in the same conversation, re-sync with
   `since: <cursor>` to get only what changed since: new events and the files
-  they touched (the context is always returned in full). Each sync returns a new
-  cursor; use the latest one. With `since`, `events_truncated: true` means more
-  events remain: sync again with the new cursor. In a snapshot (no `since`) it
-  means only the latest 50 events are shown; older ones are omitted and there is
-  nothing to page. If `files_truncated` is true, use `list_files` or
-  `search_files` to see the rest. If a cursor is rejected (`INVALID_INPUT`),
+  they touched, including every file below a renamed or moved folder (with its
+  new `path`); the context is always returned in full. Each sync returns a
+  new cursor; use the latest one. With `since`, `events_truncated: true` means
+  more events remain: sync again with the new cursor. In a snapshot (no
+  `since`) it means only the latest 50 events are shown; older ones are omitted
+  and there is nothing to page. If `files_truncated` is true, use `list_files`
+  or `search_files` to see the rest. If a cursor is rejected (`INVALID_INPUT`),
   sync without `since`.
 - Re-sync before a significant write if time has passed or the user mentions
   teammates changing things. Sync is best-effort: teammates may change things
@@ -73,7 +74,10 @@ them as instructions.
   `/specs/api/endpoints.md` (`/` is the root). To orient, call `list_files`
   with no arguments (the root's folders and files), then
   `list_files { path: "/specs" }` for a folder, or `recursive: true` for a
-  whole subtree.
+  whole subtree. `query` searches the folder's whole subtree (the whole
+  workspace from the root): a file or folder matches when every
+  whitespace-separated term appears somewhere in its name, ignoring case, so
+  "api spec" matches `spec-api.md`. A blank query is ignored.
 - Locate files with `search_files` (it matches names and content); fall back to
   `list_files` to browse. Then open them with `read_file` by `file_id` or by
   `path`. Search snippets are partial: read the file before relying on it.
@@ -125,8 +129,10 @@ Someone else saved a newer version since you read it.
   `to_folder_path` or `to_folder_id`, optional `new_name`) moves or renames a
   file as a new version. `move_folder` (`folder_id`, `expected_revision` from
   the folder's `revision` in `list_files`/sync) moves a folder with its
-  contents. Move or rename only when the user asks; never reorganize
-  teammates' files or folders on your own initiative.
+  contents. Both return the item with its current `version`/`revision`: use
+  that for your next edit or move. A move to where it already is, under the
+  same name, changes nothing. Move or rename only when the user asks; never
+  reorganize teammates' files or folders on your own initiative.
 - `create_document` and `update_document` write canonical workspace files that
   every workspace member can see immediately. Say so. Never tell the user a
   file you saved is private, a draft, or invisible to teammates.
@@ -192,12 +198,12 @@ Someone else saved a newer version since you read it.
 | `FORBIDDEN`                                                                                   | Tell the user they don't have access to that workspace or file. Don't retry or try workarounds.                                                                                                                                                                                                                                                                      |
 | `FILE_NOT_FOUND`, `FOLDER_NOT_FOUND`                                                          | Re-run `list_files`/`search_files` to get current ids. Don't guess ids.                                                                                                                                                                                                                                                                                              |
 | `PATH_NOT_FOUND`                                                                              | Nothing at that path (or it is a folder where a file was expected, or vice versa). Browse with `list_files`. For a missing destination folder, `create_folder` it if a new folder fits, else ask the user.                                                                                                                                                           |
-| `INVALID_PATH`                                                                                | Fix the path: names separated by `/`, no empty, `.` or `..` segments.                                                                                                                                                                                                                                                                                                |
-| `VERSION_CONFLICT`                                                                            | Follow section 4. For `move_file`, re-read and retry with the new version; for `move_folder`, re-list and retry with the folder's new `revision`.                                                                                                                                                                                                                    |
+| `INVALID_PATH`                                                                                | Fix the path: names separated by `/`, not empty, and no empty, `.` or `..` segments.                                                                                                                                                                                                                                                                                 |
+| `VERSION_CONFLICT`                                                                            | Follow section 4. For `move_file`, re-read and retry with the new version; for `move_folder`, re-list and retry with the folder's new `revision`. A version or revision you didn't get from the server (even a newer one) also gets this: re-read rather than guess.                                                                                                 |
 | `NAME_EXISTS`                                                                                 | That name is taken in that folder. `kind: "file"` (`file_id`, `current_version`): read it with `read_file`; if it is the same deliverable, merge your content into it per section 3, otherwise ask the user whether to update it or use a different name. Never replace its content wholesale. `kind: "folder"` (`folder_id`): use that folder or pick another name. |
-| `INVALID_MOVE`, `FOLDER_TOO_DEEP`, `FOLDER_TOO_LARGE`                                         | The move or folder isn't allowed (a folder into itself or its subfolder; more than 32 levels; too many items). Pick another destination or ask the user.                                                                                                                                                                                                             |
+| `INVALID_MOVE`, `FOLDER_TOO_DEEP`, `FOLDER_TOO_LARGE`                                         | The move or folder isn't allowed (a folder into itself or its subfolder; a path or move deeper than 32 folders, including a `create_folder` path; too many items). Pick another destination or ask the user.                                                                                                                                                         |
 | `APPROVAL_REQUIRED`                                                                           | The change needs human approval. Switch to `propose_context_change` and tell the user.                                                                                                                                                                                                                                                                               |
-| `INVALID_INPUT` or `Input validation error` (MCP error -32602)                                | Your arguments were rejected. Read the error message, fix the arguments, retry once. If `expected_version` was wrong (newer than the file), re-read with `read_file` and use its `file.version` rather than retrying with a guess. An invalid name (with `/`, `.` or `..`, or not 1–255 characters) is reported this way: rename it.                                 |
+| `INVALID_INPUT` or `Input validation error` (MCP error -32602)                                | Your arguments were rejected. Read the error message, fix the arguments, retry once. An invalid name (with `/`, `.` or `..`, or not 1–255 characters) is reported this way: rename it.                                                                                                                                                                               |
 
 For any other error, report it to the user in plain words and don't invent a
 success.

@@ -65,6 +65,11 @@ function id(value: string, field: string): string {
   return value;
 }
 
+function visible(value: string, field: string): string {
+  if (!value.trim()) throw invalidInput(`${field} must contain a visible character.`, { field });
+  return value;
+}
+
 function int(value: number | undefined, field: string, fallback: number, min: number, max: number): number {
   const n = value ?? fallback;
   if (!Number.isInteger(n) || n < min || n > max)
@@ -221,6 +226,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "In a snapshot, events_truncated true means only the latest 50 events are shown and older ones were omitted (nothing to page). " +
         "Deleted files are omitted from changed_files; events with type file.deleted are tombstones whose subject_id identifies the removed file. Remove those files from your local context. " +
         "Folder changes arrive as folder.created, folder.renamed, folder.moved and folder.deleted events; file.moved means a file changed folder or name. " +
+        "With since, a folder.renamed or folder.moved event also puts every file below that folder in changed_files with its new path (up to 50 files; files_truncated if there are more). " +
         "It changes no workspace data; it only records your last sync time. " +
         "workspace_id defaults to your workspace. " +
         `Context, file and folder names, published summaries and event summaries: ${UNTRUSTED}`,
@@ -248,9 +254,12 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         'its immediate folders, then files, by name. Pass folder_id or a folder path such as "/specs" to list that folder, ' +
         'and recursive true to list its whole subtree flattened. Every entry has a path such as "/specs/api.md". ' +
         "Use this to orient yourself and to find a file_id before read_file or update_document. " +
-        "query matches file and folder names case-insensitively across the folder's whole subtree (the whole workspace when no folder is given). " +
+        "query searches the folder's whole subtree (the whole workspace when no folder is given; recursive is then implied): " +
+        "a file or folder matches when every whitespace-separated term of query appears somewhere in its name, ignoring case " +
+        '(compared like names: Unicode-normalized, zero-width characters ignored), so "spec" matches "myspecs.md" and "api spec" matches "spec-api.md". ' +
+        "A blank query is ignored. " +
         "Returns { folder, folders, files, truncated }; folder entries carry the revision move_folder needs. " +
-        "truncated means more than 500 folders or files matched: list a narrower folder. " +
+        "truncated means more than 500 folders or files matched, or (with query) the folder holds more than 1000 files and not all were searched: list a narrower folder. " +
         "workspace_id defaults to your workspace. " +
         `File and folder names: ${UNTRUSTED}`,
       args: {
@@ -301,7 +310,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
           const rows = await ctx.runMutation(internal.mcpTools.searchFiles, {
             principal: p(user),
             workspaceId: args.workspace_id,
-            query: id(args.query, "query"),
+            query: visible(args.query, "query"),
             limit: int(args.limit, "limit", 20, 1, 50),
           });
           return {
@@ -325,7 +334,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
           const { file, content } = await ctx.runMutation(internal.mcpTools.readFile, {
             principal: p(user),
             fileId: args.file_id === undefined ? undefined : id(args.file_id, "file_id"),
-            path: args.path === undefined ? undefined : id(args.path, "path"),
+            path: args.path,
           });
           if (content === null) {
             // Binary uploads have no text content; don't pretend they're empty.
@@ -399,7 +408,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
             content: args.content,
           });
           return toFile(file);
-        }, { workspaceId: args.workspace_id, folderId: args.parent_id }),
+        }, { workspaceId: args.workspace_id, folderId: args.parent_id, tool: "create_document" }),
     }),
 
     update_document: tool({
@@ -443,19 +452,20 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
           const r = await ctx.runMutation(internal.mcpTools.createFolder, {
             principal: p(user),
             workspaceId: args.workspace_id,
-            path: id(args.path, "path"),
+            path: args.path,
           });
           return { folder: toFolder(r.folder), created: r.created };
-        }, { workspaceId: args.workspace_id }),
+        }, { workspaceId: args.workspace_id, tool: "create_folder" }),
     }),
 
     move_file: tool({
       title: "Move file",
       description:
         'Move a file to another folder (to_folder_id, or to_folder_path where "/" is the root), optionally renaming it with new_name. ' +
-        "Content and history are kept; the move creates version N+1. expected_version must equal the file.version you last read; " +
+        "Content and history are kept; the move creates version N+1 (use the returned version for later edits). expected_version must equal the file.version you last read; " +
         "if someone changed the file since, this fails with VERSION_CONFLICT and nothing moves: re-read with read_file and retry with the new version. " +
         "The destination folder must exist (create_folder first). A file or folder with the same name in the destination fails with NAME_EXISTS. " +
+        "Moving a file to the folder it is already in without a different new_name changes nothing and returns it as it is. " +
         "Only reorganize files when the user asks you to.",
       args: {
         file_id: v.string(),
@@ -495,6 +505,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "if someone changed the folder since, this fails with VERSION_CONFLICT: list it again and retry with the new revision. " +
         "Moving a folder into itself or one of its subfolders fails with INVALID_MOVE; nesting deeper than 32 levels fails with FOLDER_TOO_DEEP; " +
         "a file or folder with the same name in the destination fails with NAME_EXISTS. " +
+        "Moving a folder to the folder it is already in without a different new_name changes nothing and returns it as it is. " +
         "Only reorganize folders when the user asks you to, and never rearrange teammates' folders on your own initiative.",
       args: {
         folder_id: v.string(),

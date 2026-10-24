@@ -238,6 +238,12 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         folders: listing.folders.map(toFolderSummary),
         files: listing.files.map(toFileSummary),
       };
+    }).catch((err: TandemApiError) => {
+      // A hand-edited `?folder=` id (truncated, or another table's id) fails
+      // `v.id("folders")` argument validation, which arrives as UNKNOWN (the
+      // message is redacted in production). Treat it like any unknown folder.
+      if (folderId && err.code === "UNKNOWN") throw new TandemApiError("FOLDER_NOT_FOUND", err.details);
+      throw err;
     }),
     listFolderTree: (workspaceId) => call(async () => {
       const folders = await convex.query(api.folders.listFolderTree, { workspaceId: workspaceId as Id<"workspaces"> });

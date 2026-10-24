@@ -115,6 +115,22 @@ when a reread follows the error, one retry succeeds, the final head includes
 both edits, and revision history contains the teammate revision and new head.
 Overlapping edits and repeated conflicts are separate, unmeasured branches.
 
+## Folders
+
+In the same functionality chat (it assumes the workspace has no `/client-check`
+folder yet):
+
+```text
+Create a folder /client-check/[client] and save a shared document named
+notes.md in it with content "Folder test". You have my permission to save
+it for the team. Then read it back by its path and report the path and version.
+```
+
+Pass: `create_folder` with that path (one call creates both levels), then
+`create_document` with `folder_path` (or the new folder's id), then `read_file`
+with `path: "/client-check/[client]/notes.md"`. Repeating `create_folder`
+returns `created: false`. The dashboard shows the file inside the new folder.
+
 For **every write**, record whether the client showed a confirmation prompt,
 its exact wording/options, which option was chosen, and whether approval applies
 to a single call, tool, chat or account. Explicit user authorization in the prompt

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { normalizeError, useTandemApi } from "@/lib/api";
 import type { FileSummary } from "@/lib/api/types";
 import { describeError } from "@/lib/api/errorCopy";
+import { folderHref } from "@/lib/folders";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -54,7 +55,7 @@ export function FileActions({
       setAction(null);
       onChanged?.();
       if (action === "delete" && redirectAfterDelete)
-        router.push(`/w/${file.workspaceId}`);
+        router.push(folderHref(file.workspaceId, file.parentId));
     } catch (err) {
       const normalized = normalizeError(err);
       if (normalized.code === "VERSION_CONFLICT") onChanged?.();

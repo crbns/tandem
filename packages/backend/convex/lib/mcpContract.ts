@@ -152,8 +152,11 @@ export interface ErrorHint {
   folderId?: string;
   expectedVersion?: number;
   workspaceId?: string;
-  /** The tool to retry in a VERSION_CONFLICT message (default update_document). */
-  tool?: "update_document" | "move_file" | "move_folder";
+  /**
+   * The tool that failed, so recovery hints name a next step it fits
+   * (VERSION_CONFLICT retries default to update_document).
+   */
+  tool?: "update_document" | "create_document" | "create_folder" | "move_file" | "move_folder";
 }
 
 function codeOf(err: ConvexError<Value>): string | undefined {
@@ -219,13 +222,16 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
       );
     }
     case "NAME_EXISTS": {
+      const moving = hint.tool === "move_file" || hint.tool === "move_folder";
       if (str("kind") === "folder") {
         const folderId = str("folderId") ?? "";
         const name = str("name") ?? "";
         return new ToolError(
           "NAME_EXISTS",
           `A folder named ${JSON.stringify(name)} already exists there (folder_id ${folderId}). ` +
-            `Choose a different name, or use that folder.`,
+            (moving
+              ? `Pass a different new_name or destination, or ask the user.`
+              : `Choose a different name, or use that folder.`),
           { kind: "folder", folder_id: folderId, name },
         );
       }
@@ -236,8 +242,12 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
       return new ToolError(
         "NAME_EXISTS",
         `A file named ${JSON.stringify(name)} already exists (file_id ${fileId}, version ${current}). ` +
-          `Read it with read_file. If it is the same document, merge your changes into it with update_document; ` +
-          `otherwise choose a different name or ask the user.`,
+          (hint.tool === "create_folder"
+            ? `A folder can't share a name with a file in the same folder: choose a different folder path, or ask the user.`
+            : moving
+              ? `Pass a different new_name or destination, or ask the user.`
+              : `Read it with read_file. If it is the same document, merge your changes into it with update_document; ` +
+                `otherwise choose a different name or ask the user.`),
         { kind: "file", file_id: fileId, name, current_version: current },
       );
     }
@@ -247,13 +257,18 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
       return invalidCursor();
     case "INVALID_NAME": {
       // MCP reports invalid names as INVALID_INPUT (docs/filesystem.md), saying why.
+      const moving = hint.tool === "move_file" || hint.tool === "move_folder";
       const why =
         str("reason") === "slash"
-          ? 'it contains "/". To put a file in a folder, pass folder_path (create the folder first with create_folder)'
+          ? moving
+            ? 'it contains "/". new_name is only the name: pass the destination folder as to_folder_path (create it first with create_folder)'
+            : 'it contains "/". To put a file in a folder, pass folder_path (create the folder first with create_folder)'
           : str("reason") === "dot"
             ? 'it is "." or ".."'
             : str("reason") === "length"
-              ? "it is empty or longer than 255 characters"
+              ? hint.tool === "create_folder"
+                ? "a folder name in the path is longer than 255 characters"
+                : "it is empty or longer than 255 characters"
               : undefined;
       return invalidInput(
         `Invalid name${why ? `: ${why}.` : "."} A name is 1–255 visible characters, without "/", and not "." or "..".`,
@@ -269,7 +284,7 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
       return new ToolError(
         "INVALID_PATH",
         `Invalid path ${JSON.stringify(path)}. Write paths like "/specs/api/endpoints.md": ` +
-          `names separated by "/", without empty, "." or ".." segments, at most 32 folders deep.`,
+          `names separated by "/", without empty, "." or ".." segments.`,
         { path },
       );
     }
@@ -298,9 +313,18 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
         { max_depth: num("maxDepth") ?? 32 },
       );
     case "FOLDER_TOO_LARGE":
+      // MCP can only hit the move limit (folders in the moved subtree); the
+      // delete limit (folders and files) is dashboard-only.
+      if (hint.tool === "move_folder")
+        return new ToolError(
+          "FOLDER_TOO_LARGE",
+          `That folder has more than ${num("limit") ?? 2000} folders inside it, too many to move at once. ` +
+            `Move its subfolders one at a time, or ask the user.`,
+          { limit: num("limit") ?? 2000 },
+        );
       return new ToolError(
         "FOLDER_TOO_LARGE",
-        `That folder holds more than ${num("limit") ?? 500} items, too many for one operation. Ask the user to do it in the dashboard.`,
+        `That folder holds more than ${num("limit") ?? 500} items, too many for one operation. Ask the user.`,
         { limit: num("limit") ?? 500 },
       );
     case "INVALID_INPUT":

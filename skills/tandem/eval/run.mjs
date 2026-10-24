@@ -22,6 +22,11 @@
 // update_document with the old version hits VERSION_CONFLICT. The final head
 // is read back at trial end to tell recovery from clobbering.
 //
+// Prompts with "folders" get the fixtures FOLDER_SEED tree (folders and files
+// saved as user_sam before the trial) and a folder grader: "create_in" checks
+// where the new document landed, "read" checks the seeded file was read (by
+// path or id) and its marker phrase is in the answer.
+//
 // On SIGINT/SIGTERM (or any exit) the harness kills the live MCP servers and
 // claude processes (each runs in its own process group) and removes in-flight
 // temp dirs.
@@ -44,6 +49,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  FOLDER_SEED,
   LOCAL_TREE,
   STALE_MARKERS,
   TANDEM_BRIEF,
@@ -272,6 +278,7 @@ async function main() {
             opts.env === "realistic" &&
               `local=${t.local_file_calls} distractor=${t.distractor_calls} stale=${t.answered_from_stale_local}`,
             t.conflict && `conflict=${t.conflict.outcome}`,
+            t.folders && `folders=${t.folders.outcome}`,
           ]
             .filter(Boolean)
             .join(" ");
@@ -296,6 +303,7 @@ async function main() {
 
   const summary = summarize(trials, prompts, conditions);
   const conflictSummary = summarizeConflict(trials, prompts, conditions);
+  const folderSummary = summarizeFolders(trials, prompts, conditions);
   const isolation = summarizeIsolation(trials);
   const results = redactSecrets(
     {
@@ -341,11 +349,19 @@ async function main() {
         ...(prompts.some((p) => p.conflict) && {
           teammate_marker: TEAMMATE_MARKER,
         }),
+        ...(prompts.some((p) => p.folders) && {
+          folder_seed: {
+            folders: FOLDER_SEED.folders,
+            files: FOLDER_SEED.files.map((f) => `${f.folder_path}/${f.name}`),
+            saved_by: opts.mcp_url ? "teammate key" : "user_sam",
+          },
+        }),
       },
       prompts,
       isolation,
       summary,
       conflict_summary: conflictSummary,
+      folder_summary: folderSummary,
       trials,
     },
     [opts.mcp_key, opts.mcp_teammate_key],
@@ -360,6 +376,8 @@ async function main() {
   console.log("\n" + renderSummaryTable(summary, opts.env, trials));
   if (conflictSummary.length)
     console.log("\n" + renderConflictTable(conflictSummary, trials));
+  if (folderSummary.length)
+    console.log("\n" + renderFolderTable(folderSummary));
 }
 
 async function runTrial({ prompt, condition, rep }, slot) {
@@ -401,6 +419,7 @@ async function runTrial({ prompt, condition, rep }, slot) {
   let injector = null;
   let head = null;
   let seedError = null;
+  let folderSeed = null;
   const started = Date.now();
   try {
     if (!opts.mcp_url) servers.push(await startServer(slot.tandem));
@@ -412,7 +431,14 @@ async function runTrial({ prompt, condition, rep }, slot) {
       try {
         await seedBrief(slot.tandem);
       } catch (err) {
-        seedError = err.message;
+        seedError = `brief seed failed: ${err.message}`;
+      }
+    }
+    if (prompt.folders && !seedError) {
+      try {
+        folderSeed = await seedFolders(slot.tandem);
+      } catch (err) {
+        seedError = `folder seed failed: ${err.message}`;
       }
     }
     if (prompt.conflict && !seedError) injector = conflictInjector(slot.tandem);
@@ -439,10 +465,10 @@ async function runTrial({ prompt, condition, rep }, slot) {
 
   const trial = analyze(
     run,
-    { prompt, condition, rep, projectPaths },
+    { prompt, condition, rep, projectPaths, folderSeed },
     prompt.conflict ? { injector, head } : null,
   );
-  if (seedError) trial.error = trial.error ?? `brief seed failed: ${seedError}`;
+  if (seedError) trial.error = trial.error ?? seedError;
   trial.duration_ms = Date.now() - started;
 
   if (opts.keep) {
@@ -540,7 +566,7 @@ function runClaude(promptText, cwd, mcpConfig, onEvent) {
 
 export function analyze(
   run,
-  { prompt, condition, rep, projectPaths = [] },
+  { prompt, condition, rep, projectPaths = [], folderSeed = null },
   conflictCtx,
 ) {
   const events = [];
@@ -582,6 +608,8 @@ export function analyze(
           call.ok = !b.is_error;
           if (b.is_error)
             call.error = textOf(b.content).slice(0, 300) || "tool result error";
+          // Kept in memory for the folder grader; never persisted.
+          else call.result = textOf(b.content);
         }
       }
     }
@@ -694,6 +722,14 @@ export function analyze(
     answer_has_stale_distractor_marker: staleDistractor,
     answered_from_stale_local: staleLocal && !tandemMarker,
     answered_from_stale_distractor: staleDistractor && !tandemMarker,
+    ...(prompt.folders && {
+      folders: analyzeFolders(
+        tandemCalls,
+        resultText,
+        prompt.folders,
+        folderSeed,
+      ),
+    }),
     ...(conflictCtx && {
       conflict: analyzeConflict(
         calls,
@@ -724,6 +760,108 @@ export function analyze(
           permission_mode: init.permissionMode,
         }
       : null,
+  };
+}
+
+// Paths compare case-insensitively with surrounding and repeated "/" ignored,
+// close enough to the server's nameKey for the fixture names.
+const normPath = (p) =>
+  typeof p === "string"
+    ? `/${p.split("/").filter(Boolean).join("/")}`.toLowerCase()
+    : null;
+const parentOf = (p) => p.slice(0, p.lastIndexOf("/")) || "/";
+const jsonOf = (text) => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
+// `calls` are the main conversation's Tandem calls in order. `seed` is
+// seedFolders()'s { folder_ids, file_ids } (path -> id), or null if unseeded.
+export function analyzeFolders(calls, resultText, spec, seed) {
+  const tool = (c) => c.name.slice("mcp__tandem__".length);
+  const pathById = new Map(
+    Object.entries({ ...seed?.folder_ids, ...seed?.file_ids }).map(
+      ([path, id]) => [id, path],
+    ),
+  );
+  if (spec.expect === "read") {
+    const target = normPath(spec.path);
+    const reads = calls.filter((c) => tool(c) === "read_file");
+    const byPath = reads.filter((c) => normPath(c.input?.path) === target);
+    const byId = reads.filter(
+      (c) => normPath(pathById.get(c.input?.file_id)) === target,
+    );
+    const marker = FOLDER_SEED.files.find(
+      (f) => normPath(`${f.folder_path}/${f.name}`) === target,
+    )?.marker;
+    const answerHasMarker = Boolean(
+      marker && resultText.toLowerCase().includes(marker.toLowerCase()),
+    );
+    const readOk = [...byPath, ...byId].some((c) => c.ok);
+    return {
+      expect: "read",
+      path: spec.path,
+      outcome: byPath.some((c) => c.ok)
+        ? "read_by_path"
+        : byId.some((c) => c.ok)
+          ? "read_by_id"
+          : reads.length
+            ? "read_other"
+            : "not_read",
+      read_paths: reads.map(
+        (c) =>
+          c.input?.path ?? pathById.get(c.input?.file_id) ?? c.input?.file_id,
+      ),
+      answer_has_marker: answerHasMarker,
+      passed: readOk && answerHasMarker,
+    };
+  }
+
+  const target = normPath(spec.folder);
+  const creates = calls.filter((c) => tool(c) === "create_document");
+  const firstCreate = calls.indexOf(creates[0]);
+  // Where each successful create landed: the returned path when the
+  // result parses, else the folder argument it was given.
+  const landed = creates
+    .filter((c) => c.ok)
+    .map((c) => {
+      // create_document returns the file metadata itself.
+      const path = jsonOf(c.result)?.path;
+      if (typeof path === "string") return parentOf(normPath(path));
+      if (c.input?.folder_path !== undefined)
+        return normPath(c.input.folder_path);
+      if (c.input?.parent_id !== undefined)
+        return normPath(pathById.get(c.input.parent_id)) ?? "(unknown folder)";
+      return "/";
+    });
+  const folderCalls = calls.filter((c) => tool(c) === "create_folder");
+  return {
+    expect: "create_in",
+    folder: spec.folder,
+    outcome: landed.includes(target)
+      ? "in_folder"
+      : landed.includes("/")
+        ? "root"
+        : landed.length
+          ? `other_folder:${landed[0]}`
+          : creates.length
+            ? "create_failed"
+            : "no_create",
+    landed_in: landed,
+    looked_first:
+      firstCreate >= 0 &&
+      calls
+        .slice(0, firstCreate)
+        .some((c) =>
+          ["list_files", "search_files", "sync_workspace"].includes(tool(c)),
+        ),
+    used_folder_path: creates.some((c) => c.input?.folder_path !== undefined),
+    used_parent_id: creates.some((c) => c.input?.parent_id !== undefined),
+    create_folder_paths: folderCalls.map((c) => c.input?.path ?? null),
+    passed: landed.includes(target),
   };
 }
 
@@ -960,6 +1098,31 @@ function summarizeConflict(trials, prompts, conditions) {
           : null,
         inject_latency_ms_max: lat.length ? lat[lat.length - 1] : null,
         cost_usd: costs.reduce((a, b) => a + b, 0),
+      });
+    }
+  }
+  return rows;
+}
+
+function summarizeFolders(trials, prompts, conditions) {
+  const rows = [];
+  for (const p of prompts.filter((x) => x.folders)) {
+    for (const c of conditions) {
+      const ts = trials.filter(
+        (t) => t.prompt_id === p.id && t.condition === c && t.folders,
+      );
+      if (!ts.length) continue;
+      rows.push({
+        prompt_id: p.id,
+        condition: c,
+        n: ts.length,
+        passed: ts.filter((t) => t.folders.passed).length,
+        outcomes: Object.fromEntries(
+          [...new Set(ts.map((t) => t.folders.outcome))].map((o) => [
+            o,
+            ts.filter((t) => t.folders.outcome === o).length,
+          ]),
+        ),
       });
     }
   }
@@ -1214,6 +1377,52 @@ ${detail}
 `;
 }
 
+function renderFolderTable(rows) {
+  return (
+    "| Prompt | Condition | n | Passed | Outcomes |\n|---|---|---|---|---|\n" +
+    rows
+      .map(
+        (r) =>
+          `| \`${r.prompt_id}\` | ${r.condition} | ${r.n} | ${r.passed}/${r.n} | ${Object.entries(
+            r.outcomes,
+          )
+            .map(([o, k]) => `${o} ×${k}`)
+            .join(", ")} |`,
+      )
+      .join("\n") +
+    "\n"
+  );
+}
+
+function renderFolderSection(r) {
+  if (!r.folder_summary?.length) return "";
+  const seed = r.settings.folder_seed;
+  const detail = r.trials
+    .filter((t) => t.folders)
+    .map((t) => {
+      const f = t.folders;
+      const how =
+        f.expect === "read"
+          ? `read ${f.read_paths.map((p) => `\`${p}\``).join(", ") || "-"}; marker ${f.answer_has_marker ? "in answer" : "missing"}`
+          : `landed ${f.landed_in.map((p) => `\`${p}\``).join(", ") || "-"}; ${f.used_folder_path ? "folder_path" : f.used_parent_id ? "parent_id" : "no folder arg"}; create_folder ${f.create_folder_paths.map((p) => `\`${p}\``).join(", ") || "-"}; looked first ${f.looked_first ? "yes" : "no"}`;
+      return `| \`${t.prompt_id}\` | ${t.condition} | ${t.rep} | ${f.outcome} | ${f.passed ? "yes" : "no"} | ${how} |`;
+    })
+    .join("\n");
+  return `## Folders
+
+Prompts with \`folders\`. Before each trial the harness saves (as ${seed?.saved_by ?? "\`user_sam\`"}) the folders ${seed?.folders.map((p) => `\`${p}\``).join(", ") ?? "-"} and files ${seed?.files.map((p) => `\`${p}\``).join(", ") ?? "-"}.
+
+- \`create_in\` passes when a successful \`create_document\` landed in the expected folder (from the returned \`path\`, else the \`folder_path\`/\`parent_id\` argument). Outcomes: \`in_folder\`, \`root\`, \`other_folder:<path>\`, \`create_failed\`, \`no_create\`.
+- \`read\` passes when the seeded file was read successfully (by \`path\` or its \`file_id\`) and the final answer contains its marker phrase. Outcomes: \`read_by_path\`, \`read_by_id\`, \`read_other\`, \`not_read\`.
+
+${renderFolderTable(r.folder_summary)}
+| Prompt | Condition | Rep | Outcome | Passed | Detail |
+|---|---|---|---|---|---|
+${detail}
+
+`;
+}
+
 function renderMarkdown(r) {
   const trialRows = r.trials
     .map((t) => {
@@ -1273,7 +1482,7 @@ ${envLine}
 Counts are k/n trials. Sync/write attempted count trials with matching tool calls; Sync/write OK require at least one matching non-error tool result. Write tools are create_document, update_document, create_folder, move_file, move_folder, publish_work, propose_context_change. First Tandem call = sync measures attempted order. Tool errors counts trials with at least one Tandem tool error, even if the final answer succeeds. Errors/timeouts includes tool errors, CLI failures (including nonzero exit or a missing final result), and timeouts; these trials still count in n. Tool calls made inside subagents are excluded. Columns shown as n/a were not recorded by that run.${staleNote}
 
 ${renderSummaryTable(r.summary, r.settings.env, r.trials)}
-${renderConflictSection(r)}## Isolation
+${renderConflictSection(r)}${renderFolderSection(r)}## Isolation
 
 - Clean: **${iso.clean ? "yes" : "NO"}**${iso.leaks.length ? `\n- Leaks:\n${iso.leaks.map((l) => `  - ${l}`).join("\n")}` : ""}
 - Expected MCP servers (${iso.env} env): ${iso.expected_mcp_servers.map((s) => `\`${s}\``).join(", ")}
@@ -1397,6 +1606,35 @@ async function seedBrief(port) {
       expected_version: file.version,
     },
   );
+}
+
+// Saves FOLDER_SEED as user_sam and returns { folder_ids, file_ids } keyed
+// by path. Re-runnable against a persistent server: create_folder is
+// idempotent, and a file that already exists (NAME_EXISTS) is kept as is.
+async function seedFolders(port) {
+  const token = opts?.mcp_teammate_key ?? opts?.mcp_key ?? SAM_TOKEN;
+  const folder_ids = {};
+  const file_ids = {};
+  for (const path of FOLDER_SEED.folders) {
+    const { folder } = await rpc(port, token, "create_folder", { path });
+    folder_ids[path] = folder.id;
+  }
+  for (const f of FOLDER_SEED.files) {
+    const path = `${f.folder_path}/${f.name}`;
+    let file;
+    try {
+      file = await rpc(port, token, "create_document", {
+        name: f.name,
+        content: f.content,
+        folder_path: f.folder_path,
+      });
+    } catch (err) {
+      if (!/NAME_EXISTS/.test(err.message)) throw err;
+      ({ file } = await rpc(port, token, "read_file", { path }));
+    }
+    file_ids[path] = file.id;
+  }
+  return { folder_ids, file_ids };
 }
 
 // Children run detached (own process group) so a signal to the harness alone

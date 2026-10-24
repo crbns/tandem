@@ -9,6 +9,7 @@ import {
   assertNameFree,
   checkFileVersion,
   insertMetadataRevision,
+  listSubtreeFiles,
   requireParentFolder,
   requireValidName,
   toFileMetadata,
@@ -737,16 +738,34 @@ export async function syncCore(
     events = after.slice(0, SYNC_LIMIT);
     cursorSeq = events.at(-1)?.seq ?? sinceSeq;
     const fileIds = new Set<string>();
-    for (const event of events)
+    const movedFolderIds = new Set<string>();
+    for (const event of events) {
       if (event.entityType === "file") fileIds.add(event.entityId);
+      // A renamed or moved folder changes the path of every file below it.
+      else if (event.kind === "folder.renamed" || event.kind === "folder.moved")
+        movedFolderIds.add(event.entityId);
+    }
     changedFiles = [];
     for (const raw of fileIds) {
       const id = ctx.db.normalizeId("files", raw);
       const file = id ? await ctx.db.get(id) : null;
       if (file && file.deletedAt === undefined && file.workspaceId === workspaceId) changedFiles.push(file);
     }
+    const seen = new Set(changedFiles.map((f) => f._id));
+    for (const raw of movedFolderIds) {
+      if (changedFiles.length > SYNC_LIMIT) break;
+      const id = ctx.db.normalizeId("folders", raw);
+      const folder = id ? await ctx.db.get(id) : null;
+      if (!folder || folder.deletedAt !== undefined || folder.workspaceId !== workspaceId) continue;
+      for (const file of await listSubtreeFiles(ctx, folder, SYNC_LIMIT + 1)) {
+        if (seen.has(file._id)) continue;
+        seen.add(file._id);
+        changedFiles.push(file);
+      }
+    }
     changedFiles.sort((a, b) => b.updatedAt - a.updatedAt);
-    filesTruncated = false;
+    filesTruncated = changedFiles.length > SYNC_LIMIT;
+    changedFiles = changedFiles.slice(0, SYNC_LIMIT);
   }
   let work: Doc<"published_work">[];
   if (sinceSeq === undefined) {

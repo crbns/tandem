@@ -409,7 +409,7 @@ describe("Tandem MCP server", () => {
     await Promise.all([alex.close(), jordan.close()]);
   });
 
-  it("rejects expected_version ahead of the file as INVALID_INPUT", async () => {
+  it("rejects expected_version ahead of the file as VERSION_CONFLICT, as Convex does", async () => {
     const client = await connect("alex-token");
     const created = await call(client, "create_document", {
       name: "ahead.md",
@@ -430,7 +430,7 @@ describe("Tandem MCP server", () => {
     expect(ahead.isError).toBe(true);
     expect(ahead.structuredContent).toMatchObject({
       error: {
-        code: "INVALID_INPUT",
+        code: "VERSION_CONFLICT",
         file_id: id,
         current_version: 2,
         expected_version: 99,
@@ -1803,8 +1803,8 @@ describe("file system", () => {
     expect(
       snapshot.events.filter((e) => e.type === "folder.created"),
     ).toEqual([
-      expect.objectContaining({ subject_id: parent.folder.id, summary: "Created folder /specs" }),
-      expect.objectContaining({ subject_id: first.folder.id, summary: "Created folder /specs/api" }),
+      expect.objectContaining({ subject_id: parent.folder.id, summary: "Created folder specs" }),
+      expect.objectContaining({ subject_id: first.folder.id, summary: "Created folder api" }),
     ]);
 
     const jordan = await connect("jordan-token");
@@ -1818,9 +1818,7 @@ describe("file system", () => {
     const alex = await connect("alex-token");
     for (const path of ["/a//b", "/a/../b", "./a", "//", ""]) {
       const result = await call(alex, "create_folder", { path });
-      expect(result.isError).toBe(true);
-      // "" fails the schema's min(1) before reaching the backend.
-      if (path !== "") expect(errorCode(result)).toBe("INVALID_PATH");
+      expect(errorCode(result)).toBe("INVALID_PATH");
     }
     expect(errorCode(await call(alex, "create_folder", { path: "/" }))).toBe(
       "INVALID_PATH",
@@ -2069,7 +2067,7 @@ describe("file system", () => {
       expect.objectContaining({ id: draft.id, path: "/plan.md", version: 4 }),
     ]);
     expect(changes.events.filter((e) => e.type === "file.moved").map((e) => e.summary)).toEqual([
-      "Moved plan.md to /archive",
+      "Moved draft.md to /archive as plan.md",
       "Moved plan.md to /",
     ]);
     await Promise.all([alex.close(), sam.close()]);
@@ -2154,9 +2152,191 @@ describe("file system", () => {
       {},
     );
     expect(events.events.filter((e) => e.type === "folder.moved").map((e) => e.summary)).toEqual([
-      "Moved folder specs-2025 to /archive",
+      "Moved folder specs to /archive as specs-2025",
     ]);
     await alex.close();
+  });
+
+  describe("parity with Convex (PR #47 review)", () => {
+    const paths = (r: Listing) => ({
+      folders: r.folders.map((f) => f.path),
+      files: r.files.map((f) => f.path),
+    });
+
+    it("list_files query: every term is a substring of the name, for files and folders alike", async () => {
+      const alex = await connect("alex-token");
+      await mkdir(alex, "/myspecs-dir");
+      await mkdir(alex, "/archive/Spec Notes");
+      await ok(alex, "create_document", { name: "myspecs.md", content: "x" });
+      await ok(alex, "create_document", { name: "specs-v2.md", content: "x" });
+      await ok(alex, "create_document", { name: "readme.md", content: "x", folder_path: "/archive" });
+      const list = async (args: Record<string, unknown>) =>
+        paths(await ok<Listing>(alex, "list_files", args));
+
+      expect(await list({ query: "spec" })).toEqual({
+        folders: ["/archive/Spec Notes", "/myspecs-dir"],
+        files: ["/myspecs.md", "/specs-v2.md"],
+      });
+      expect(await list({ query: "  v2   specs " })).toEqual({ folders: [], files: ["/specs-v2.md"] });
+      expect(await list({ query: "notes spec" })).toEqual({ folders: ["/archive/Spec Notes"], files: [] });
+      expect(await list({ query: "brief " })).toEqual({ folders: [], files: ["/brief.md"] });
+      // A blank query is no query: the root's immediate children.
+      const root = {
+        folders: ["/archive", "/myspecs-dir"],
+        files: ["/brief.md", "/myspecs.md", "/specs-v2.md"],
+      };
+      expect(await list({ query: "" })).toEqual(root);
+      expect(await list({ query: "   " })).toEqual(root);
+
+      const blank = await call(alex, "search_files", { query: "   " });
+      expect(blank.structuredContent).toMatchObject({
+        error: { code: "INVALID_INPUT", field: "query" },
+      });
+      await alex.close();
+    });
+
+    it("sync since a folder move lists the files below it with their new paths", async () => {
+      const alex = await connect("alex-token");
+      const { folder: specs } = await mkdir(alex, "/specs/api");
+      await ok(alex, "create_document", { name: "endpoints.md", content: "x", folder_path: "/specs/api" });
+      await mkdir(alex, "/archive");
+      const start = await ok<{ cursor: string }>(alex, "sync_workspace", {});
+      await ok(alex, "move_folder", {
+        folder_id: specs.id,
+        expected_revision: 1,
+        to_folder_path: "/archive",
+      });
+      const delta = await ok<{
+        changed_files: File[];
+        files_truncated: boolean;
+        events: { type: string }[];
+      }>(alex, "sync_workspace", { since: start.cursor });
+      expect(delta.events.map((e) => e.type)).toEqual(["folder.moved"]);
+      expect(delta.changed_files.map((f) => f.path)).toEqual(["/archive/api/endpoints.md"]);
+      expect(delta.files_truncated).toBe(false);
+      await alex.close();
+    });
+
+    it("no-op moves change nothing: no new version, revision or event", async () => {
+      const alex = await connect("alex-token");
+      const { folder } = await mkdir(alex, "/specs");
+      const file = await ok<File>(alex, "create_document", { name: "plan.md", content: "x", folder_path: "/specs" });
+      const start = await ok<{ cursor: string }>(alex, "sync_workspace", {});
+
+      const same = await ok<File>(alex, "move_file", { file_id: file.id, expected_version: 1, to_folder_path: "/specs" });
+      expect(same.version).toBe(1);
+      const sameName = await ok<File>(alex, "move_file", {
+        file_id: file.id,
+        expected_version: 1,
+        to_folder_id: folder.id,
+        new_name: " plan.md ",
+      });
+      expect(sameName.version).toBe(1);
+      const sameFolder = await ok<Folder>(alex, "move_folder", {
+        folder_id: folder.id,
+        expected_revision: 1,
+        to_folder_path: "/",
+      });
+      expect(sameFolder.revision).toBe(1);
+      const delta = await ok<{ events: unknown[] }>(alex, "sync_workspace", { since: start.cursor });
+      expect(delta.events).toEqual([]);
+      const versions = await ok<{ versions: unknown[] }>(alex, "get_file_versions", { file_id: file.id });
+      expect(versions.versions).toHaveLength(1);
+      // A case-only rename is a real move.
+      const recased = await ok<File>(alex, "move_file", {
+        file_id: file.id,
+        expected_version: 1,
+        to_folder_path: "/specs",
+        new_name: "Plan.md",
+      });
+      expect(recased).toMatchObject({ version: 2, name: "Plan.md" });
+      await alex.close();
+    });
+
+    it("reports path, depth and version problems with Convex's codes and order", async () => {
+      const alex = await connect("alex-token");
+      const { folder } = await mkdir(alex, "/f");
+      const code = async (name: string, args: Record<string, unknown>) =>
+        errorCode(await call(alex, name, args));
+
+      for (const path of ["", "/a/​./b", "/a//b"]) {
+        expect(await code("read_file", { path })).toBe("INVALID_PATH");
+        expect(await code("create_folder", { path })).toBe("INVALID_PATH");
+        expect(await code("list_files", { path })).toBe("INVALID_PATH");
+        expect(await code("create_document", { name: "x.md", content: "", folder_path: path })).toBe("INVALID_PATH");
+        expect(await code("move_file", { file_id: "file_brief", expected_version: 1, to_folder_path: path })).toBe(
+          "INVALID_PATH",
+        );
+        expect(await code("move_folder", { folder_id: folder.id, expected_revision: 1, to_folder_path: path })).toBe(
+          "INVALID_PATH",
+        );
+      }
+      const deep = (n: number) => "/" + Array.from({ length: n }, (_, i) => `d${i}`).join("/");
+      expect(await code("create_folder", { path: deep(33) })).toBe("FOLDER_TOO_DEEP");
+      expect(await code("create_folder", { path: deep(34) })).toBe("FOLDER_TOO_DEEP");
+      expect(await code("read_file", { path: deep(34) })).toBe("FOLDER_TOO_DEEP");
+      expect(await code("list_files", { path: deep(40) })).toBe("FOLDER_TOO_DEEP");
+      expect(await code("read_file", { path: deep(33) })).toBe("PATH_NOT_FOUND");
+
+      expect(await code("move_file", { file_id: "file_brief", expected_version: 9, to_folder_path: "/f" })).toBe(
+        "VERSION_CONFLICT",
+      );
+      expect(await code("move_folder", { folder_id: folder.id, expected_revision: 9, to_folder_path: "/" })).toBe(
+        "VERSION_CONFLICT",
+      );
+      // The destination is resolved before the version is checked.
+      expect(await code("move_file", { file_id: "file_brief", expected_version: 9, to_folder_path: "/nope" })).toBe(
+        "PATH_NOT_FOUND",
+      );
+      await alex.close();
+    });
+
+    it("sends Convex's error details and tool-specific recovery hints", async () => {
+      const alex = await connect("alex-token");
+      const { folder: a } = await mkdir(alex, "/a");
+      await mkdir(alex, "/a/b");
+      const errorOf = async (name: string, args: Record<string, unknown>) =>
+        (await call(alex, name, args)).structuredContent as { error: Record<string, unknown> };
+
+      const { error: tooDeep } = await errorOf("create_folder", {
+        path: "/" + Array.from({ length: 33 }, (_, i) => `d${i}`).join("/"),
+      });
+      expect(tooDeep).toEqual({ code: "FOLDER_TOO_DEEP", message: expect.any(String), max_depth: 32 });
+      const { error: cycle } = await errorOf("move_folder", {
+        folder_id: a.id,
+        expected_revision: 1,
+        to_folder_path: "/a/b",
+      });
+      expect(cycle).toEqual({ code: "INVALID_MOVE", message: expect.any(String), folder_id: a.id });
+
+      const { error: badName } = await errorOf("create_document", { name: "a/b.md", content: "" });
+      expect(badName).toMatchObject({ code: "INVALID_INPUT", field: "name" });
+      expect(badName.message).toMatch(/pass folder_path/);
+      const { error: badNewName } = await errorOf("move_file", {
+        file_id: "file_brief",
+        expected_version: 1,
+        to_folder_path: "/",
+        new_name: "x/y.md",
+      });
+      expect(badNewName).toMatchObject({ code: "INVALID_INPUT", field: "name" });
+      expect(badNewName.message).toMatch(/to_folder_path/);
+      expect(badNewName.message).not.toMatch(/pass folder_path/);
+
+      const { error: throughFile } = await errorOf("create_folder", { path: "/brief.md/sub" });
+      expect(throughFile).toMatchObject({ code: "NAME_EXISTS", kind: "file" });
+      expect(throughFile.message).not.toMatch(/update_document/);
+      await ok(alex, "create_document", { name: "taken.md", content: "", folder_path: "/a" });
+      const { error: moveClash } = await errorOf("move_file", {
+        file_id: "file_brief",
+        expected_version: 1,
+        to_folder_path: "/a",
+        new_name: "TAKEN.md",
+      });
+      expect(moveClash).toMatchObject({ code: "NAME_EXISTS", kind: "file" });
+      expect(moveClash.message).toMatch(/new_name/);
+      expect(moveClash.message).not.toMatch(/update_document/);
+      await alex.close();
+    });
   });
 });
 
