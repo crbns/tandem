@@ -138,8 +138,9 @@ Someone else saved a newer version since you read it.
 
 ## 7. Record working context and propose major changes
 
-- Goal, scope, major decisions, and ownership are human-approved. Never change
-  them directly, including by editing a file to claim they changed.
+- Goal, scope, major decisions, and ownership change only through
+  `propose_context_change`. Never change them directly, including by editing a
+  file to claim they changed.
 - Each workspace sets `context_approval` (see `get_workspace_info`). In a
   `"manual"` workspace, the default, every `propose_context_change` (all
   fields, resolves and removals included) waits for a human owner or admin. In
@@ -150,8 +151,9 @@ Someone else saved a newer version since you read it.
   - `constraints` or `open_questions`: one constraint or question as text.
     Send each entry separately.
   - `decisions`: the text of one new decision. To replace a decision, pass
-    `supersedes` with its stable entry `id` from sync. The proposal stays
-    pending; approval marks the old entry `superseded` and links its
+    `supersedes` with its stable entry `id` from sync. When the proposal
+    applies (on approval, or at once in an automatic workspace) the old entry
+    is marked `superseded` and links its
     `superseded_by` to the replacement without deleting history.
   - `ownership`: `{ area, owner_user_id }` for one area; approval replaces
     that area's owner. Get the owner's `user_id` from

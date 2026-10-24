@@ -909,6 +909,7 @@ export async function syncCore(
     pendingProposals: pending.map((p) => ({
       id: p._id,
       field: p.field,
+      operation: p.operation ?? ("add" as const),
       rationale: p.rationale,
       proposedValue: p.proposedValue,
       supersedes: p.supersedes ?? null,

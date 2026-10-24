@@ -55,8 +55,8 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
         edit entries directly. Every other change, including every
         assistant&apos;s,{" "}
         {resource.status === "ready" && resource.data.contextApproval === "automatic"
-          ? "apply as soon as they're proposed"
-          : "wait for approval"}
+          ? "applies as soon as it's proposed"
+          : "waits for approval"}
         ; switch this in{" "}
         <Link
           href={`/w/${workspaceId}/approvals`}

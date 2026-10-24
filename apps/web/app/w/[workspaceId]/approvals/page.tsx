@@ -159,7 +159,13 @@ export default function ApprovalsPage() {
 
 function OutcomeAlert({ outcome, onDismiss }: { outcome: Outcome; onDismiss: () => void }) {
   const { code } = outcome.error;
-  const copy = DECIDE_ERROR_COPY[code] ?? ERROR_COPY[code];
+  const copy =
+    code === "VERSION_CONFLICT" && outcome.proposal.operation !== "add"
+      ? {
+          title: "The entry changed since this was proposed",
+          description: `It's already ${outcome.proposal.operation === "resolve" ? "resolved or removed" : "removed"}, so there's nothing to apply. It's now marked stale.`,
+        }
+      : (DECIDE_ERROR_COPY[code] ?? ERROR_COPY[code]);
   // A stale approval is contested work (ochre), not a failure.
   const contested = code === "VERSION_CONFLICT";
   return (

@@ -369,7 +369,7 @@ function toContext(c: ContextRow) {
 type SyncRow = {
   workspace: { id: string; name: string };
   context: ContextRow;
-  pendingProposals: Pick<ProposalRow, "id" | "field" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt">[];
+  pendingProposals: Pick<ProposalRow, "id" | "field" | "operation" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt">[];
   changedFiles: FileRow[];
   filesTruncated: boolean;
   recentWork: Parameters<typeof toPublished>[0][];
@@ -456,6 +456,7 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
       status: "pending" as const,
       id: p.id,
       field: toProposalField(p.field),
+      operation: p.operation ?? "add",
       rationale: p.rationale,
       proposed_by: toAttribution(p.createdBy),
       created_at: iso(p.createdAt),

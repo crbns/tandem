@@ -9,7 +9,7 @@ import { useWorkspaceRefresh } from "@/lib/api/useWorkspace";
 
 const DESCRIPTIONS: Record<ContextApproval, string> = {
   manual: "Every context change, from people or assistants, waits here for an owner or admin.",
-  automatic: "Context changes apply as soon as they're proposed. Nothing waits here.",
+  automatic: "Context changes apply as soon as they're proposed. Only proposals made before the switch still wait here.",
 };
 
 /**

@@ -115,7 +115,9 @@ export function DecidedProposal({ proposal }: { proposal: ContextProposal }) {
     <li className="flex flex-col gap-1 border-b px-4 py-3 text-sm last:border-b-0">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className={cn("label-caps w-18 shrink-0", status.className)}>{status.label}</span>
-        <span className="label-caps text-muted-foreground">{FIELD_LABELS[proposal.field]}</span>
+        <span className="label-caps text-muted-foreground">
+          {proposal.operation === "add" ? FIELD_LABELS[proposal.field] : `${proposal.operation === "resolve" ? "Resolve" : "Remove"} ${FIELD_LABELS[proposal.field].toLowerCase()}`}
+        </span>
         <span className="min-w-0 flex-1 truncate font-medium">{proposal.proposedValue}</span>
         <span className="text-xs text-muted-foreground" title={formatAbsolute(at)}>
           {formatRelative(at, now)}
@@ -130,7 +132,9 @@ export function DecidedProposal({ proposal }: { proposal: ContextProposal }) {
             <ActorBadge actor={proposal.decidedBy} />
           </>
         ) : (
-          proposal.status === "stale" && <span>· the field changed before it was approved</span>
+          proposal.status === "stale" && (
+            <span>· {proposal.operation === "add" ? "the field changed" : "the entry was already gone"} before it was approved</span>
+          )
         )}
       </p>
     </li>

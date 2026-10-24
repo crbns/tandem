@@ -363,6 +363,7 @@ export const syncWorkspace = internalMutation({
       v.object({
         id: v.id("context_proposals"),
         field: contextFieldValidator,
+        operation: v.union(v.literal("add"), v.literal("resolve"), v.literal("remove")),
         rationale: v.string(),
         proposedValue: v.string(),
         supersedes: v.union(v.string(), v.null()),

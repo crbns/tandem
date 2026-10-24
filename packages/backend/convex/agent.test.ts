@@ -1913,6 +1913,8 @@ describe("context approval setting", () => {
       expectedVersion: before.revision, rationale: "Answered", sourceFileIds: [],
     });
     expect(resolve.proposal).toMatchObject({ status: "pending", operation: "resolve", proposedValue: "Who reviews?" });
+    const synced = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
+    expect(synced.pending_proposals.map((p: { operation: string }) => p.operation).sort()).toEqual(["add", "resolve"]);
     const unchanged = await alex.query(api.context.getDetails, { workspaceId });
     expect(unchanged.revision).toBe(before.revision);
     expect(unchanged.constraints).toEqual([]);
