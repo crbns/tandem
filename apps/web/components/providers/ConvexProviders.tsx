@@ -1,12 +1,14 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import { ConvexReactClient, useConvexAuth } from "convex/react";
+import { ConvexReactClient, useConvex, useConvexAuth } from "convex/react";
 import { ConvexAuthNextjsProvider } from "@convex-dev/auth/nextjs";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { CONVEX_URL } from "@/lib/config";
 import { SessionContext, InvalidCredentialsError, type Session } from "@/lib/auth/useSession";
 import { useStoredValue, writeStored } from "@/lib/storage";
+import { TandemApiContext } from "@/lib/api";
+import { createConvexApi } from "@/lib/api/convex";
 
 // Convex Auth doesn't hand us a profile, so remember the email we signed in with
 // for the header. Replace with a `users.viewer` query once Person 2 ships one.
@@ -40,6 +42,12 @@ function ConvexSessionBridge({ children }: { children: ReactNode }) {
   return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
 }
 
+function ConvexApiProvider({ children }: { children: ReactNode }) {
+  const convex = useConvex();
+  const api = useMemo(() => createConvexApi(convex), [convex]);
+  return <TandemApiContext.Provider value={api}>{children}</TandemApiContext.Provider>;
+}
+
 export function ConvexProviders({ children }: { children: ReactNode }) {
   const [client] = useState(() => {
     if (!CONVEX_URL) {
@@ -52,7 +60,9 @@ export function ConvexProviders({ children }: { children: ReactNode }) {
 
   return (
     <ConvexAuthNextjsProvider client={client}>
-      <ConvexSessionBridge>{children}</ConvexSessionBridge>
+      <ConvexSessionBridge>
+        <ConvexApiProvider>{children}</ConvexApiProvider>
+      </ConvexSessionBridge>
     </ConvexAuthNextjsProvider>
   );
 }

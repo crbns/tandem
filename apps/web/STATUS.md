@@ -12,3 +12,11 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | Sign-in/out in mock mode | PASS | bad password shows "Email or password is incorrect."; sign-out returns to `/sign-in`; `/w/*` signed out → `/sign-in?next=…` |
 | Real-mode providers + proxy compile | PASS (typecheck) | Functional check is `PENDING (backend)`: no Convex Auth config yet |
 | Typecheck + lint | PASS | |
+
+## Gate 2: API layer + mock adapter
+
+| Check | Status | Notes |
+|---|---|---|
+| Tests pass | PASS | `pnpm --filter web test`: errors + mock API suites |
+| Function mapping and gaps in `CONTRACT_NOTES.md` | PASS | every function is "requested from Person 2" |
+| Convex adapter against a live deployment | PENDING (backend) | no functions exist yet |

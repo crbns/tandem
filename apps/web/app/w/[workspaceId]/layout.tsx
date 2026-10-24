@@ -1,10 +1,29 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useCallback, useEffect, type ReactNode } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useSession } from "@/lib/auth/useSession";
+import { useTandemApi } from "@/lib/api";
+import { useResource } from "@/lib/api/useResource";
 import { AppShell } from "@/components/shell/AppShell";
 import { FullPageSpinner } from "@/components/common/FullPageSpinner";
+
+function WorkspaceShell({ workspaceId, children }: { workspaceId: string; children: ReactNode }) {
+  const api = useTandemApi();
+  const loadName = useCallback(async () => {
+    const workspaces = await api.listWorkspaces();
+    return workspaces.find((w) => w.id === workspaceId)?.name ?? "Workspace";
+  }, [api, workspaceId]);
+  const { resource } = useResource(loadName);
+  // The name is cosmetic: a failed lookup falls back instead of blocking the app.
+  const name = resource.status === "ready" ? resource.data : "Workspace";
+
+  return (
+    <AppShell workspaceId={workspaceId} workspaceName={name}>
+      {children}
+    </AppShell>
+  );
+}
 
 export default function WorkspaceLayout({ children }: { children: ReactNode }) {
   const { workspaceId } = useParams<{ workspaceId: string }>();
@@ -21,10 +40,5 @@ export default function WorkspaceLayout({ children }: { children: ReactNode }) {
   }, [status, pathname, router]);
 
   if (status !== "authenticated") return <FullPageSpinner />;
-
-  return (
-    <AppShell workspaceId={workspaceId} workspaceName="Workspace">
-      {children}
-    </AppShell>
-  );
+  return <WorkspaceShell workspaceId={workspaceId}>{children}</WorkspaceShell>;
 }

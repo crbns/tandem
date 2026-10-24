@@ -1,9 +1,11 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { SessionContext, InvalidCredentialsError, type Session, type SessionUser } from "@/lib/auth/useSession";
 import { findMockUser } from "@/lib/auth/mockUsers";
 import { useStoredValue, writeStored } from "@/lib/storage";
+import { MockApiContext, TandemApiContext, type Actor } from "@/lib/api";
+import { createMockApi } from "@/lib/api/mock";
 
 const SESSION_KEY = "tandem.mock.session";
 
@@ -27,12 +29,25 @@ function parseUser(raw: string | null): SessionUser | null {
   return null;
 }
 
+function actorFor(user: SessionUser | null): Actor {
+  return user
+    ? { actorType: "human", actorId: `user_${user.email}`, actorName: user.name }
+    : { actorType: "human", actorId: "user_anonymous", actorName: "Unknown" };
+}
+
 export function MockProviders({ children }: { children: ReactNode }) {
   const raw = useStoredValue(SESSION_KEY);
+  const user = useMemo(() => (raw === undefined ? null : parseUser(raw)), [raw]);
 
-  const session = useMemo<Session>(() => {
-    const user = raw === undefined ? null : parseUser(raw);
-    return {
+  // The mock store lives as long as this provider (i.e. until a full reload).
+  const actorRef = useRef<Actor>(actorFor(null));
+  const [api] = useState(() => createMockApi({ getActor: () => actorRef.current }));
+  useEffect(() => {
+    actorRef.current = actorFor(user);
+  }, [user]);
+
+  const session = useMemo<Session>(
+    () => ({
       status: raw === undefined ? "loading" : user ? "authenticated" : "unauthenticated",
       user,
       async signIn(email, password) {
@@ -44,8 +59,15 @@ export function MockProviders({ children }: { children: ReactNode }) {
       async signOut() {
         writeStored(SESSION_KEY, null);
       },
-    };
-  }, [raw]);
+    }),
+    [raw, user],
+  );
 
-  return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
+  return (
+    <SessionContext.Provider value={session}>
+      <TandemApiContext.Provider value={api}>
+        <MockApiContext.Provider value={api}>{children}</MockApiContext.Provider>
+      </TandemApiContext.Provider>
+    </SessionContext.Provider>
+  );
 }
