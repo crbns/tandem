@@ -19,6 +19,7 @@ import {
   toPublishedWork,
   proposeContextChangeCore,
   applyApprovedProposal,
+  entryTargetMissing,
   normalizeContext,
   toProposal,
 } from "./lib/ops";
@@ -287,6 +288,7 @@ export async function decideProposalCore(
         )
       : null;
     const stale =
+      entryTargetMissing(context, proposal) ||
       (proposal.supersedes !== undefined &&
         (!supersededTarget ||
           (supersededTarget.status !== undefined &&

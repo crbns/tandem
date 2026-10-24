@@ -32,11 +32,12 @@ export async function loadContextPage(
   workspaceId: string,
   pageCount: number,
 ) {
-  const [context, files, members, first] = await Promise.all([
+  const [context, files, members, first, contextApproval] = await Promise.all([
     api.getContextDetails(workspaceId),
     api.listFiles(workspaceId),
     api.listWorkspaceMembers(workspaceId),
     api.listPublishedWork(workspaceId),
+    api.getContextApproval(workspaceId),
   ]);
   let result = first;
   const work = [...result.page];
@@ -52,6 +53,7 @@ export async function loadContextPage(
     context,
     files,
     members,
+    contextApproval,
     work,
     hasMore: !result.isDone,
     loadedPages: pageCount,

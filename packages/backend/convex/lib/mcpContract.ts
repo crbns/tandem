@@ -34,6 +34,7 @@ interface ProposalRow {
   id: string;
   workspaceId: string;
   field: Field;
+  operation?: "add" | "resolve" | "remove";
   proposedValue: string;
   rationale: string;
   sourceFileIds: string[];
@@ -71,6 +72,21 @@ interface ContextRow {
   updatedBy: Actor;
 }
 
+interface TaskRow {
+  id: string;
+  title: string;
+  description: string;
+  status: "open" | "in_progress" | "done";
+  ownerId: string | null;
+  ownerName: string | null;
+  version: number;
+  createdBy: Actor;
+  updatedBy: Actor;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+}
+
 interface EventRow {
   seq: number;
   kind: string;
@@ -95,7 +111,11 @@ export type ToolErrorCode =
   | "FOLDER_NOT_FOUND"
   | "INVALID_MOVE"
   | "FOLDER_TOO_DEEP"
-  | "FOLDER_TOO_LARGE";
+  | "FOLDER_TOO_LARGE"
+  | "TASK_NOT_FOUND"
+  | "TASK_ALREADY_CLAIMED"
+  | "TASK_NOT_OWNER"
+  | "TASK_DONE";
 
 /** A domain error that tool handlers turn into an `isError` tool result. */
 export class ToolError extends Error {
@@ -150,6 +170,7 @@ export function approvalRequired(field: string) {
 export interface ErrorHint {
   fileId?: string;
   folderId?: string;
+  taskId?: string;
   expectedVersion?: number;
   workspaceId?: string;
   /**
@@ -208,6 +229,18 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
           { folder_id: folderId, current_revision: current, expected_revision: expected },
         );
       }
+      const taskId = str("taskId");
+      if (taskId) {
+        const current = num("currentVersion") ?? 0;
+        const expected = num("expectedVersion") ?? hint.expectedVersion ?? 0;
+        return new ToolError(
+          "VERSION_CONFLICT",
+          `Task ${taskId} is at version ${current}, not ${expected}; someone else changed it. ` +
+            `Call manage_task with operation "list" to re-read it; if it is still open, retry with ` +
+            `expected_version=${current}, otherwise pick another task.`,
+          { task_id: taskId, current_version: current, expected_version: expected },
+        );
+      }
       const fileId = str("fileId") ?? hint.fileId ?? "(unknown)";
       const current = num("currentVersion") ?? 0;
       const expected = num("expectedVersion") ?? hint.expectedVersion ?? 0;
@@ -249,6 +282,44 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
               : `Read it with read_file. If it is the same document, merge your changes into it with update_document; ` +
                 `otherwise choose a different name or ask the user.`),
         { kind: "file", file_id: fileId, name, current_version: current },
+      );
+    }
+    case "TASK_NOT_FOUND": {
+      const taskId = str("taskId") ?? hint.taskId ?? "(unknown)";
+      return new ToolError(
+        "TASK_NOT_FOUND",
+        `No task with id ${taskId} in this workspace. Call manage_task with operation "list" to find the correct task_id.`,
+        { task_id: taskId },
+      );
+    }
+    case "TASK_ALREADY_CLAIMED":
+    case "TASK_NOT_OWNER": {
+      const taskId = str("taskId") ?? hint.taskId ?? "(unknown)";
+      const ownerId = str("ownerUserId");
+      const owner = ownerId ? { user_id: ownerId, name: str("ownerName") ?? "Workspace member" } : null;
+      const current = num("currentVersion") ?? 0;
+      // The owner's name is workspace data, so quote it rather than splicing it into the sentence.
+      const by = owner ? ` by ${JSON.stringify(owner.name)} (user_id ${owner.user_id})` : "";
+      return code === "TASK_ALREADY_CLAIMED"
+        ? new ToolError(
+            "TASK_ALREADY_CLAIMED",
+            `Task ${taskId} is already claimed${by} (status ${str("status") ?? "unknown"}, version ${current}). ` +
+              `Don't work on it: call manage_task with operation "list" and status "open", then claim another task.`,
+            { task_id: taskId, owner, status: str("status") ?? null, current_version: current },
+          )
+        : new ToolError(
+            "TASK_NOT_OWNER",
+            `Task ${taskId} is claimed${by}, not by your user. Only its owner can update or complete it; ` +
+              `pick another open task, or ask the user to coordinate with the owner.`,
+            { task_id: taskId, owner, current_version: current },
+          );
+    }
+    case "TASK_DONE": {
+      const taskId = str("taskId") ?? hint.taskId ?? "(unknown)";
+      return new ToolError(
+        "TASK_DONE",
+        `Task ${taskId} is already done and can't be changed. Create a new task if more work is needed.`,
+        { task_id: taskId, current_version: num("currentVersion") ?? 0 },
       );
     }
     case "APPROVAL_REQUIRED":
@@ -331,7 +402,7 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
     case "PROPOSAL_NOT_FOUND":
     case "PROPOSAL_ALREADY_DECIDED":
     case "CONTEXT_NOT_INITIALIZED":
-      return invalidInput(`Invalid request (${code}).`, data);
+      return invalidInput(str("message") ?? `Invalid request (${code}).`, data);
     default:
       return err;
   }
@@ -433,6 +504,7 @@ export function toProposal(p: ProposalRow, contextRevision: number) {
     id: p.id,
     workspace_id: p.workspaceId,
     field: toProposalField(p.field),
+    operation: p.operation ?? "add",
     proposed_value:
       p.field === "ownership" && p.ownerUserId !== null && p.ownerArea !== null
         ? { area: p.ownerArea, owner_user_id: p.ownerUserId }
@@ -503,21 +575,94 @@ function toContext(c: ContextRow) {
   };
 }
 
-export function toSyncResult(r: {
+type SyncRow = {
   workspace: { id: string; name: string };
   context: ContextRow;
-  pendingProposals: Pick<ProposalRow, "id" | "field" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt">[];
+  pendingProposals: Pick<ProposalRow, "id" | "field" | "operation" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt">[];
   changedFiles: FileRow[];
   filesTruncated: boolean;
   folders: FolderRow[];
   foldersTruncated: boolean;
   recentWork: Parameters<typeof toPublished>[0][];
   workTruncated: boolean;
+  tasks: TaskRow[];
+  tasksTruncated: boolean;
   events: EventRow[];
   eventsTruncated: boolean;
   cursorSeq: number;
-}) {
+};
+
+/** Cap on each list in the sync brief. */
+export const BRIEF_LIMIT = 10;
+
+/**
+ * What an assistant should read first: the goal, what's decided, what's
+ * blocking, and what just changed. Built only from the sync result; `truncated`
+ * says a list was capped at BRIEF_LIMIT (the full lists are in context,
+ * pending_proposals and events).
+ */
+function toSyncBrief(r: SyncRow) {
+  const active = (entries: ContextEntry[]) => entries.filter((e) => e.status === "active");
+  const decisions = active(r.context.decisions);
+  const questions = active(r.context.openQuestions);
   return {
+    goal: r.context.goal?.text ?? "",
+    scope: r.context.scope?.text ?? "",
+    // Newest last in context, so keep the tail.
+    active_decisions: decisions.slice(-BRIEF_LIMIT).map((e) => ({ id: e.id, text: e.text })),
+    blockers: {
+      open_questions: questions.slice(-BRIEF_LIMIT).map((e) => ({ id: e.id, text: e.text })),
+      pending_approvals: r.pendingProposals.slice(0, BRIEF_LIMIT).map((p) => ({
+        id: p.id,
+        field: toProposalField(p.field),
+        proposed_value: p.proposedValue,
+      })),
+    },
+    // Events arrive oldest first; the brief lists the newest first.
+    recent_changes: r.events.slice(-BRIEF_LIMIT).reverse().map((e) => ({
+      type: e.kind,
+      subject_id: e.entityId,
+      summary: e.summary,
+      actor: e.actor.label,
+      at: iso(e.createdAt),
+    })),
+    changed_file_count: r.changedFiles.length,
+    truncated:
+      decisions.length > BRIEF_LIMIT ||
+      questions.length > BRIEF_LIMIT ||
+      r.pendingProposals.length > BRIEF_LIMIT ||
+      r.events.length > BRIEF_LIMIT,
+  };
+}
+
+/**
+ * `detail: "full"` keeps the whole contract with `brief` first; `"brief"`
+ * drops context, proposals and events and trims files to id/name/version.
+ */
+export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
+  const brief = toSyncBrief(r);
+  const cursor = encodeCursor(r.workspace.id, r.cursorSeq);
+  if (detail === "brief")
+    return {
+      brief,
+      workspace: r.workspace,
+      context_version: r.context.revision,
+      changed_files: r.changedFiles.map((f) => ({ id: f.id, name: f.name, path: f.path, version: f.version })),
+      // The cursor acknowledges the whole event page, not just recent_changes.
+      // Preserve every tombstone even when the brief's ten-event list is capped.
+      deleted_file_ids: r.events.filter((e) => e.kind === "file.deleted").map((e) => e.entityId),
+      files_truncated: r.filesTruncated,
+      // Full publications: the cursor acknowledges them and no tool reads one by id.
+      recent_work: r.recentWork.map(toPublished),
+      work_truncated: r.workTruncated,
+      // Full tasks too: they are small and the cursor acknowledges their changes.
+      tasks: r.tasks.map(toTask),
+      tasks_truncated: r.tasksTruncated,
+      events_truncated: r.eventsTruncated,
+      cursor,
+    };
+  return {
+    brief,
     workspace: r.workspace,
     context: toContext(r.context),
     context_version: r.context.revision,
@@ -527,6 +672,7 @@ export function toSyncResult(r: {
       status: "pending" as const,
       id: p.id,
       field: toProposalField(p.field),
+      operation: p.operation ?? "add",
       rationale: p.rationale,
       proposed_by: toAttribution(p.createdBy),
       created_at: iso(p.createdAt),
@@ -537,6 +683,8 @@ export function toSyncResult(r: {
     folders_truncated: r.foldersTruncated,
     recent_work: r.recentWork.map(toPublished),
     work_truncated: r.workTruncated,
+    tasks: r.tasks.map(toTask),
+    tasks_truncated: r.tasksTruncated,
     events: r.events.map((e) => ({
       seq: e.seq,
       workspace_id: r.workspace.id,
@@ -547,7 +695,23 @@ export function toSyncResult(r: {
       summary: e.summary,
     })),
     events_truncated: r.eventsTruncated,
-    cursor: encodeCursor(r.workspace.id, r.cursorSeq),
+    cursor,
+  };
+}
+
+export function toTask(t: TaskRow) {
+  return {
+    id: t.id,
+    title: t.title,
+    description: t.description,
+    status: t.status,
+    owner: t.ownerId === null ? null : { user_id: t.ownerId, name: t.ownerName ?? "Workspace member" },
+    version: t.version,
+    created_by: toAttribution(t.createdBy),
+    updated_by: toAttribution(t.updatedBy),
+    created_at: iso(t.createdAt),
+    updated_at: iso(t.updatedAt),
+    completed_at: t.completedAt === null ? null : iso(t.completedAt),
   };
 }
 

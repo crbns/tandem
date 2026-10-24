@@ -186,10 +186,15 @@ export type ContextField = "goal" | "scope" | "constraint" | "decision" | "owner
 export type ProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
 
 /** A proposed change to the project context, waiting on (or decided by) a person. */
+/** Whether context proposals wait in Approvals or apply as soon as they're made. */
+export type ContextApproval = "manual" | "automatic";
+
 export interface ContextProposal {
   id: string;
   workspaceId: string;
   field: ContextField;
+  /** resolve/remove act on an existing constraint or open question entry. */
+  operation: "add" | "resolve" | "remove";
   proposedValue: string;
   rationale: string;
   sourceFileIds: string[];
@@ -248,6 +253,28 @@ export interface PublishedWorkPage {
   page: PublishedWork[];
   isDone: boolean;
   continueCursor: string;
+}
+
+export type TaskStatus = "open" | "in_progress" | "done";
+
+/**
+ * Shared work an assistant created or claimed through MCP (`manage_task`). The
+ * dashboard only shows tasks. The owner is the person doing it, not context
+ * ownership. Title and description are untrusted workspace text.
+ */
+export interface Task {
+  id: string;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  ownerId: string | null;
+  ownerName: string | null;
+  version: number;
+  createdBy: Actor;
+  updatedBy: Actor;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
 }
 
 export interface WorkspaceMember {

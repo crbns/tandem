@@ -128,6 +128,21 @@ describe("seed:rebuildDemoWorkspace", () => {
       mimeType: "text/markdown",
       content: "draft",
     });
+    await t.run((ctx) => {
+      const actor = { type: "system" as const, label: "test" };
+      return ctx.db.insert("tasks", {
+        workspaceId: first.workspaceId,
+        title: "Leftover",
+        description: "",
+        status: "open",
+        version: 1,
+        createdBy: actor,
+        updatedBy: actor,
+        revision: 1,
+        createdAt: 0,
+        updatedAt: 0,
+      });
+    });
 
     const second = await rebuild();
     expect(second.workspaceId).not.toBe(first.workspaceId);
@@ -148,6 +163,7 @@ describe("seed:rebuildDemoWorkspace", () => {
       ...(await ctx.db.query("workspace_members").withIndex("by_workspace_and_user", (q) => q.eq("workspaceId", old)).collect()),
       ...(await ctx.db.query("agent_connections").withIndex("by_workspace_and_user", (q) => q.eq("workspaceId", old)).collect()),
       ...(await ctx.db.query("workspace_events").withIndex("by_workspace_and_seq", (q) => q.eq("workspaceId", old)).collect()),
+      ...(await ctx.db.query("tasks").withIndex("by_workspace_and_updated_at", (q) => q.eq("workspaceId", old)).collect()),
       ...(await ctx.db.query("outbox_events").withIndex("by_status_and_created", (q) => q.eq("status", "pending")).collect())
         .filter((row) => row.workspaceId === old),
     ]);

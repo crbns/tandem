@@ -10,8 +10,11 @@ import {
   type ContextDetails,
   type ContextEntry,
   type PublishedWork,
+  type Task,
   type Actor,
   type AgentConnection,
+  type ContextApproval,
+  type ContextField,
   type ContextProposal,
   type FileDetail,
   type FileSummary,
@@ -195,6 +198,28 @@ export function createMockApi({
     summary: "Keep a recorded fallback ready for venue Wi-Fi.", fileIds: ["file_proposal"],
     createdBy: { ...CLAUDE }, createdAt: Date.now() - 3 * MINUTE,
   }];
+  const now = Date.now();
+  const SAM: Actor = { actorType: "human", userId: "user_sam", userName: "Sam" };
+  const tasks: Array<Task & { workspaceId: string }> = [
+    {
+      id: "task_seed_open", workspaceId: MOCK_WORKSPACE_ID, title: "Record the demo fallback video",
+      description: "Two minutes, covering the MCP save and the version conflict.", status: "open",
+      ownerId: null, ownerName: null, version: 1, createdBy: { ...CLAUDE }, updatedBy: { ...CLAUDE },
+      createdAt: now - 20 * MINUTE, updatedAt: now - 20 * MINUTE, completedAt: null,
+    },
+    {
+      id: "task_seed_claimed", workspaceId: MOCK_WORKSPACE_ID, title: "Draft the judging pitch",
+      description: "", status: "in_progress", ownerId: ALEX.userId, ownerName: "Alex", version: 2,
+      createdBy: { ...DEMO }, updatedBy: { ...CLAUDE },
+      createdAt: now - 40 * MINUTE, updatedAt: now - 5 * MINUTE, completedAt: null,
+    },
+    {
+      id: "task_seed_done", workspaceId: MOCK_WORKSPACE_ID, title: "Connect a second assistant",
+      description: "ChatGPT through the OAuth consent page.", status: "done", ownerId: SAM.userId, ownerName: "Sam",
+      version: 3, createdBy: { ...CLAUDE }, updatedBy: { ...SAM },
+      createdAt: now - 90 * MINUTE, updatedAt: now - 30 * MINUTE, completedAt: now - 30 * MINUTE,
+    },
+  ];
   let nextId = 1;
   const invites = new Map<string, WorkspaceInvite & { token: string }>();
   const memberships = new Map<string, Map<string, "owner" | "admin" | "member">>();
@@ -265,11 +290,34 @@ export function createMockApi({
     }
     refreshSummary(workspaceId, actor);
   };
+  /** An addition, plus the decision it supersedes; throws VERSION_CONFLICT when that decision moved on. */
+  const applyAddition = (workspaceId: string, input: ContextChangeInput & { supersedes?: string | null }, actor: Actor) => {
+    const ctx = details.get(workspaceId)!;
+    const target = input.supersedes ? ctx.decisions.find((entry) => entry.id === input.supersedes) : undefined;
+    if (input.supersedes && target?.status !== "active") throw new TandemApiError("VERSION_CONFLICT");
+    applyChange(workspaceId, input, actor);
+    if (target) Object.assign(target, { status: "superseded", supersededBy: ctx.decisions.at(-1)!.id });
+    // The compact summary exposes only active decisions.
+    contexts.get(workspaceId)!.decisions = ctx.decisions.filter((entry) => entry.status === "active").map((entry) => entry.text);
+  };
+  /** Resolves or removes a constraint or open question; false when the entry is gone or already resolved. */
+  const applyEntryOperation = (workspaceId: string, field: ContextField, operation: "resolve" | "remove", entryId: string, actor: Actor) => {
+    const ctx = details.get(workspaceId)!;
+    const entries = field === "constraint" ? ctx.constraints : ctx.openQuestions;
+    const index = entries.findIndex((entry) => entry.id === entryId && (operation === "remove" || entry.status === "active"));
+    if (index < 0) return false;
+    if (operation === "remove") entries.splice(index, 1);
+    else Object.assign(entries[index]!, { status: "resolved", resolvedBy: { ...actor }, resolvedAt: Date.now() });
+    refreshSummary(workspaceId, actor);
+    return true;
+  };
   const memberNames = new Map<string, string>();
   // Proposals keep the value they were based on (goal/scope only), like the
   // backend's baseValue, so a mock approval can go stale.
-  type StoredProposal = ContextProposal & { baseValue?: string; ownerUserId?: string; ownerArea?: string };
+  type StoredProposal = ContextProposal & { baseValue?: string; ownerUserId?: string; ownerArea?: string; entryId?: string };
   const proposals: StoredProposal[] = seedProposals(Date.now(), context);
+  // Unset means "manual", like the backend's default.
+  const contextApprovals = new Map<string, ContextApproval>();
   type StoredConnection = AgentConnection & { workspaceId: string };
   const connections: StoredConnection[] = [
     {
@@ -291,7 +339,7 @@ export function createMockApi({
   // Async like a backend push, so a watcher never runs inside the write itself.
   const notify = (workspaceId: string) =>
     watchers.get(workspaceId)?.forEach((listener) => queueMicrotask(listener));
-  const cloneProposal = ({ baseValue: _baseValue, ownerUserId: _ownerUserId, ownerArea: _ownerArea, ...p }: StoredProposal): ContextProposal => ({
+  const cloneProposal = ({ baseValue: _baseValue, ownerUserId: _ownerUserId, ownerArea: _ownerArea, entryId: _entryId, ...p }: StoredProposal): ContextProposal => ({
     ...p,
     sourceFileIds: [...p.sourceFileIds],
     createdBy: { ...p.createdBy },
@@ -815,19 +863,15 @@ export function createMockApi({
       }
       const id = `proposal_${nextId++}`;
       const area = proposedValue.trim();
-      const status = working ? "applied" as const : "pending" as const;
-      if (working) {
-        if (operation === "add") applyChange(workspaceId, { ...input, proposedValue }, actor);
-        else {
-          const entries = input.field === "constraint" ? ctx.constraints : ctx.openQuestions;
-          const index = entries.findIndex((entry) => entry.id === input.entryId);
-          if (operation === "remove") entries.splice(index, 1);
-          else Object.assign(entries[index]!, { status: "resolved", resolvedBy: { ...actor }, resolvedAt: Date.now() });
-          refreshSummary(workspaceId, actor);
-        }
+      const apply = contextApprovals.get(workspaceId) === "automatic";
+      const status = apply ? "applied" as const : "pending" as const;
+      if (apply) {
+        if (operation === "add") applyAddition(workspaceId, { ...input, proposedValue }, actor);
+        else applyEntryOperation(workspaceId, input.field, operation, input.entryId!, actor);
       }
       proposals.push({
-        id, workspaceId, field: input.field, rationale: input.rationale, sourceFileIds: [...input.sourceFileIds],
+        id, workspaceId, field: input.field, operation, rationale: input.rationale, sourceFileIds: [...input.sourceFileIds],
+        ...(operation !== "add" ? { entryId: input.entryId } : {}),
         supersedes: input.supersedes ?? null,
         proposedValue: input.field === "ownership" ? `${area}: ${memberNames.get(input.ownerUserId!) ?? "Workspace member"}` : proposedValue,
         ...(input.field === "ownership" ? { ownerArea: area, ownerUserId: input.ownerUserId } : {}),
@@ -849,6 +893,30 @@ export function createMockApi({
       return { page: structuredClone(rows.slice(offset, end)), isDone: end >= rows.length, continueCursor: String(end) };
     },
 
+    async listTasks(workspaceId) {
+      await delay();
+      requireMember(workspaceId);
+      return tasks
+        .filter((task) => task.workspaceId === workspaceId)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 100)
+        .map(({ workspaceId: _workspaceId, ...task }) => structuredClone(task));
+    },
+
+    async getContextApproval(workspaceId) {
+      await delay();
+      requireMember(workspaceId);
+      return contextApprovals.get(workspaceId) ?? "manual";
+    },
+
+    async setContextApproval(workspaceId, mode) {
+      await delay();
+      requireAdmin(workspaceId);
+      if (mode !== "manual" && mode !== "automatic") throw new TandemApiError("INVALID_INPUT");
+      contextApprovals.set(workspaceId, mode);
+      notify(workspaceId);
+    },
+
     async listProposals(workspaceId, status) {
       await delay();
       membersFor(workspaceId);
@@ -868,7 +936,13 @@ export function createMockApi({
       const actor = getActor();
       const now = Date.now();
       const ctx = contexts.get(workspaceId);
-      if (decision === "approved") {
+      if (decision === "approved" && proposal.operation !== "add") {
+        if (!applyEntryOperation(workspaceId, proposal.field, proposal.operation, proposal.entryId!, actor)) {
+          proposal.status = "stale";
+          notify(workspaceId);
+          throw new TandemApiError("VERSION_CONFLICT");
+        }
+      } else if (decision === "approved") {
         const current = proposal.field === "goal" ? ctx?.goal : proposal.field === "scope" ? ctx?.scope : undefined;
         if (current !== undefined && current !== proposal.baseValue) {
           proposal.status = "stale";
@@ -878,17 +952,13 @@ export function createMockApi({
         const input = { ...proposal, proposedValue: proposal.ownerArea ?? proposal.proposedValue };
         // Sources were accepted when proposed; deletion must not strand approval.
         validateChange(workspaceId, input, proposal.sourceFileIds);
-        const target = proposal.supersedes ? details.get(workspaceId)!.decisions.find((entry) => entry.id === proposal.supersedes) : undefined;
-        if (proposal.supersedes && target?.status !== "active") {
+        try {
+          applyAddition(workspaceId, input, actor);
+        } catch (err) {
           proposal.status = "stale";
           notify(workspaceId);
-          throw new TandemApiError("VERSION_CONFLICT");
+          throw err;
         }
-        applyChange(workspaceId, input, actor);
-        if (target) Object.assign(target, { status: "superseded", supersededBy: details.get(workspaceId)!.decisions.at(-1)!.id });
-        // The compact summary exposes only active decisions.
-        const summary = contexts.get(workspaceId)!;
-        summary.decisions = details.get(workspaceId)!.decisions.filter((entry) => entry.status === "active").map((entry) => entry.text);
       }
       Object.assign(proposal, { status: decision, decidedBy: { ...actor }, decidedAt: now });
       notify(workspaceId);
@@ -1004,7 +1074,7 @@ export function createMockApi({
 }
 
 function seedProposals(now: number, context: ProjectContext): Array<ContextProposal & { baseValue?: string }> {
-  const base = { supersedes: null, workspaceId: MOCK_WORKSPACE_ID, decidedBy: null, decidedAt: null, status: "pending" as const };
+  const base = { operation: "add" as const, supersedes: null, workspaceId: MOCK_WORKSPACE_ID, decidedBy: null, decidedAt: null, status: "pending" as const };
   return [
     {
       ...base,

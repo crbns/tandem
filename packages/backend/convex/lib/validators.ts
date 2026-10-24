@@ -35,6 +35,11 @@ export const contextFieldValidator = v.union(
   v.literal("open_question"),
 );
 
+export const contextApprovalValidator = v.union(
+  v.literal("manual"),
+  v.literal("automatic"),
+);
+
 export const proposalStatusValidator = v.union(
   v.literal("pending"),
   v.literal("applied"),
@@ -47,6 +52,7 @@ export const proposalValidator = v.object({
   id: v.id("context_proposals"),
   workspaceId: v.id("workspaces"),
   field: contextFieldValidator,
+  operation: v.union(v.literal("add"), v.literal("resolve"), v.literal("remove")),
   proposedValue: v.string(),
   supersedes: v.union(v.string(), v.null()),
   rationale: v.string(),
@@ -104,6 +110,28 @@ export const eventValidator = v.object({
   summary: v.string(),
   actor: actorValidator,
   createdAt: v.number(),
+});
+
+export const taskStatusValidator = v.union(
+  v.literal("open"),
+  v.literal("in_progress"),
+  v.literal("done"),
+);
+
+/** lib/ops.ts toTask; also the dashboard's tasks:listTasks row. */
+export const taskValidator = v.object({
+  id: v.id("tasks"),
+  title: v.string(),
+  description: v.string(),
+  status: taskStatusValidator,
+  ownerId: v.union(v.id("users"), v.null()),
+  ownerName: v.union(v.string(), v.null()),
+  version: v.number(),
+  createdBy: actorValidator,
+  updatedBy: actorValidator,
+  createdAt: v.number(),
+  updatedAt: v.number(),
+  completedAt: v.union(v.number(), v.null()),
 });
 
 export const publishedWorkValidator = v.object({

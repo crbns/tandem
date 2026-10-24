@@ -301,6 +301,77 @@ export function normalizeContext(context: Doc<"structured_context">) {
   };
 }
 
+/**
+ * Whether context proposals apply as soon as they're made ("automatic") or
+ * wait in Approvals ("manual", the default). An owner's or admin's direct
+ * dashboard edit is already a decision and doesn't go through here.
+ */
+export async function appliesImmediately(
+  ctx: ReadCtx,
+  workspaceId: Id<"workspaces">,
+): Promise<boolean> {
+  const workspace = await ctx.db.get(workspaceId);
+  if (!workspace) throw new ConvexError({ code: "WORKSPACE_NOT_FOUND" });
+  return workspace.contextApproval === "automatic";
+}
+
+/** Resolves or removes one constraint or open question entry. */
+async function applyEntryOperation(
+  ctx: MutationCtx,
+  stored: Doc<"structured_context">,
+  change: {
+    field: ContextField;
+    operation: "resolve" | "remove";
+    entryId: string;
+  },
+  actor: Actor,
+  now: number,
+) {
+  const normalized = normalizeContext(stored);
+  const key = change.field === "constraint" ? "constraints" : "openQuestions";
+  const entries =
+    change.operation === "remove"
+      ? normalized[key].filter((e) => e.id !== change.entryId)
+      : normalized[key].map((e) =>
+          e.id === change.entryId
+            ? {
+                ...e,
+                status: "resolved" as const,
+                resolvedBy: actor,
+                resolvedAt: now,
+              }
+            : e,
+        );
+  await ctx.db.patch(stored._id, {
+    constraints: normalized.constraints,
+    decisions: normalized.decisions,
+    ownership: normalized.ownership,
+    openQuestions: normalized.openQuestions,
+    [key]: entries,
+    revision: stored.revision + 1,
+    updatedBy: actor,
+    updatedAt: now,
+  });
+}
+
+/**
+ * Whether a pending resolve/remove proposal's entry is gone or, for a
+ * resolve, already resolved. Additions always have a target.
+ */
+export function entryTargetMissing(
+  context: Doc<"structured_context">,
+  proposal: Pick<Doc<"context_proposals">, "field" | "operation" | "entryId">,
+): boolean {
+  if (!proposal.operation) return false;
+  const key = proposal.field === "constraint" ? "constraints" : "openQuestions";
+  const target = normalizeContext(context)[key].find(
+    (e) => e.id === proposal.entryId,
+  );
+  return (
+    !target || (proposal.operation === "resolve" && target.status === "resolved")
+  );
+}
+
 export async function proposeContextChangeCore(
   ctx: MutationCtx,
   args: {
@@ -378,40 +449,25 @@ export async function proposeContextChangeCore(
   const sourceFileIds = await checkSourceFiles(
     ctx, workspaceId, args.sourceFileIds, existing?.sourceFileIds,
   );
-  if (operation !== "add") {
-    const key = field === "constraint" ? "constraints" : "openQuestions";
-    const target = normalized[key].find((e) => e.id === args.entryId);
+  const apply = await appliesImmediately(ctx, workspaceId);
+  const entryOperation =
+    operation !== "add" ? { operation, entryId: args.entryId! } : undefined;
+  if (entryOperation) {
+    const target = normalized[targetKey].find((e) => e.id === args.entryId);
     if (!target || (operation === "resolve" && target.status === "resolved"))
       throw new ConvexError({ code: "INVALID_INPUT", field: "entryId" });
-    const now = Date.now();
-    const entries =
-      operation === "remove"
-        ? normalized[key].filter((e) => e.id !== args.entryId)
-        : normalized[key].map((e) =>
-            e.id === args.entryId
-              ? {
-                  ...e,
-                  status: "resolved" as const,
-                  resolvedBy: actor,
-                  resolvedAt: now,
-                }
-              : e,
-          );
-    await ctx.db.patch(context._id, {
-      constraints: normalized.constraints,
-      decisions: normalized.decisions,
-      ownership: normalized.ownership,
-      openQuestions: normalized.openQuestions,
-      [key]: entries,
-      revision: context.revision + 1,
-      updatedBy: actor,
-      updatedAt: now,
-    });
+    if (apply)
+      await applyEntryOperation(
+        ctx, context, { field, ...entryOperation }, actor, Date.now(),
+      );
     proposedValue = target.text;
-  } else if (working) {
+  } else if (apply) {
     await applyApprovedProposal(
       ctx,
-      { workspaceId, field, proposedValue, sourceFileIds },
+      {
+        workspaceId, field, proposedValue, sourceFileIds, ...owner,
+        supersedes: args.supersedes,
+      },
       actor,
       Date.now(),
     );
@@ -429,11 +485,12 @@ export async function proposeContextChangeCore(
     proposedValue,
     rationale: args.rationale,
     sourceFileIds,
-    contextRevision: context.revision + (working ? 1 : 0),
+    contextRevision: context.revision + (apply ? 1 : 0),
     ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
     ...(currentField !== undefined ? { baseValue: currentField } : {}),
     ...owner,
-    status: working ? "applied" : "pending",
+    ...entryOperation,
+    status: apply ? "applied" : "pending",
     createdBy: actor,
     createdAt: now,
     updatedBy: actor,
@@ -442,12 +499,12 @@ export async function proposeContextChangeCore(
   });
   await recordWorkspaceEvent(ctx, {
     workspaceId,
-    kind: working
+    kind: apply
       ? `context.${operation === "add" ? "recorded" : operation === "resolve" ? "resolved" : "removed"}`
       : "context.proposed",
     entityType: "context_proposal",
     entityId: proposalId,
-    summary: `${working ? "Applied" : "Proposed"} ${operation} to ${field.replaceAll("_", " ")}`,
+    summary: `${apply ? "Applied" : "Proposed"} ${operation} to ${field.replaceAll("_", " ")}`,
     actor,
   });
   const proposal = await ctx.db.get(proposalId);
@@ -460,6 +517,7 @@ export function toProposal(proposal: Doc<"context_proposals">) {
     id: proposal._id,
     workspaceId: proposal.workspaceId,
     field: proposal.field,
+    operation: proposal.operation ?? ("add" as const),
     proposedValue: proposal.proposedValue,
     supersedes: proposal.supersedes ?? null,
     rationale: proposal.rationale,
@@ -665,6 +723,328 @@ export function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+// ---- Tasks ----------------------------------------------------------------
+
+export type TaskStatus = Doc<"tasks">["status"];
+
+const MAX_TASK_TITLE = 200;
+const MAX_TASK_DESCRIPTION = 4000;
+
+function memberName(user: Doc<"users"> | null): string {
+  return user?.name ?? user?.email ?? "Workspace member";
+}
+
+export async function toTask(ctx: ReadCtx, task: Doc<"tasks">) {
+  const owner = task.ownerId ? await ctx.db.get(task.ownerId) : null;
+  return {
+    id: task._id,
+    title: task.title,
+    description: task.description,
+    status: task.status,
+    ownerId: task.ownerId ?? null,
+    ownerName: task.ownerId ? memberName(owner) : null,
+    version: task.version,
+    createdBy: task.createdBy,
+    updatedBy: task.updatedBy,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    completedAt: task.completedAt ?? null,
+  };
+}
+
+/** Like getFileInWorkspace: missing, malformed and other-tenant ids are all TASK_NOT_FOUND. */
+export async function getTaskInWorkspace(
+  ctx: ReadCtx,
+  taskId: string,
+  workspaceId: Id<"workspaces">,
+): Promise<Doc<"tasks">> {
+  const id = ctx.db.normalizeId("tasks", taskId);
+  const task = id ? await ctx.db.get(id) : null;
+  if (!task || task.workspaceId !== workspaceId)
+    throw new ConvexError({ code: "TASK_NOT_FOUND", taskId });
+  return task;
+}
+
+/** Newest updatedAt first; status undefined lists every status. */
+export async function listTasks(
+  ctx: ReadCtx,
+  workspaceId: Id<"workspaces">,
+  status: TaskStatus | undefined,
+  limit: number,
+): Promise<Doc<"tasks">[]> {
+  return status
+    ? await ctx.db
+        .query("tasks")
+        .withIndex("by_workspace_and_status_and_updated_at", (q) =>
+          q.eq("workspaceId", workspaceId).eq("status", status),
+        )
+        .order("desc")
+        .take(limit)
+    : await ctx.db
+        .query("tasks")
+        .withIndex("by_workspace_and_updated_at", (q) =>
+          q.eq("workspaceId", workspaceId),
+        )
+        .order("desc")
+        .take(limit);
+}
+
+/** The index order of by_workspace_and_updated_at, descending. */
+function newestTaskFirst(a: Doc<"tasks">, b: Doc<"tasks">): number {
+  return b.updatedAt - a.updatedAt || b._creationTime - a._creationTime;
+}
+
+/** Up to `limit` open and in-progress tasks, merged newest first. */
+export async function listActiveTasks(
+  ctx: ReadCtx,
+  workspaceId: Id<"workspaces">,
+  limit: number,
+): Promise<Doc<"tasks">[]> {
+  const open = await listTasks(ctx, workspaceId, "open", limit);
+  const active = await listTasks(ctx, workspaceId, "in_progress", limit);
+  return [...open, ...active].sort(newestTaskFirst).slice(0, limit);
+}
+
+function taskTitle(value: string): string {
+  const title = value.trim();
+  if (!title || title.length > MAX_TASK_TITLE)
+    throw new ConvexError({ code: "INVALID_INPUT", field: "title" });
+  return title;
+}
+
+function taskDescription(value: string): string {
+  const description = value.trim();
+  if (description.length > MAX_TASK_DESCRIPTION)
+    throw new ConvexError({ code: "INVALID_INPUT", field: "description" });
+  return description;
+}
+
+async function ownerDetails(ctx: ReadCtx, task: Doc<"tasks">) {
+  const owner = task.ownerId ? await ctx.db.get(task.ownerId) : null;
+  return {
+    taskId: task._id,
+    ownerUserId: task.ownerId ?? null,
+    ownerName: task.ownerId ? memberName(owner) : null,
+    status: task.status,
+    currentVersion: task.version,
+  };
+}
+
+function checkTaskVersion(task: Doc<"tasks">, expectedVersion: number) {
+  if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
+    throw new ConvexError({ code: "INVALID_INPUT", field: "expectedVersion" });
+  if (task.version !== expectedVersion)
+    throw new ConvexError({
+      code: "VERSION_CONFLICT",
+      taskId: task._id,
+      currentVersion: task.version,
+      expectedVersion,
+    });
+}
+
+/** Done tasks are final; an owned task changes only for its owner. */
+async function checkTaskWritable(
+  ctx: ReadCtx,
+  task: Doc<"tasks">,
+  userId: Id<"users">,
+) {
+  if (task.status === "done")
+    throw new ConvexError({
+      code: "TASK_DONE",
+      taskId: task._id,
+      currentVersion: task.version,
+    });
+  if (task.ownerId !== undefined && task.ownerId !== userId)
+    throw new ConvexError({
+      code: "TASK_NOT_OWNER",
+      ...(await ownerDetails(ctx, task)),
+    });
+}
+
+/** Patches version N+1 and records exactly one task.* event. */
+async function commitTask(
+  ctx: MutationCtx,
+  task: Doc<"tasks">,
+  fields: Partial<Pick<Doc<"tasks">, "title" | "description" | "status" | "ownerId" | "completedAt">>,
+  kind: "task.claimed" | "task.updated" | "task.completed",
+  verb: string,
+  actor: Actor,
+): Promise<Doc<"tasks">> {
+  const version = task.version + 1;
+  await ctx.db.patch(task._id, {
+    ...fields,
+    version,
+    revision: version,
+    updatedBy: actor,
+    updatedAt: Date.now(),
+  });
+  await recordWorkspaceEvent(ctx, {
+    workspaceId: task.workspaceId,
+    kind,
+    entityType: "task",
+    entityId: task._id,
+    summary: `${verb} task: ${truncate(fields.title ?? task.title, 80)}`,
+    actor,
+  });
+  return (await ctx.db.get(task._id))!;
+}
+
+export async function createTaskCore(
+  ctx: MutationCtx,
+  args: {
+    workspaceId: Id<"workspaces">;
+    title: string;
+    description: string;
+    actor: Actor;
+  },
+): Promise<Doc<"tasks">> {
+  const title = taskTitle(args.title);
+  const now = Date.now();
+  const taskId = await ctx.db.insert("tasks", {
+    workspaceId: args.workspaceId,
+    title,
+    description: taskDescription(args.description),
+    status: "open",
+    version: 1,
+    createdBy: args.actor,
+    updatedBy: args.actor,
+    revision: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await recordWorkspaceEvent(ctx, {
+    workspaceId: args.workspaceId,
+    kind: "task.created",
+    entityType: "task",
+    entityId: taskId,
+    summary: `Created task: ${truncate(title, 80)}`,
+    actor: args.actor,
+  });
+  return (await ctx.db.get(taskId))!;
+}
+
+/**
+ * Claims an open, unowned task for `userId`. The read-check-write runs in one
+ * mutation, and Convex mutations are serializable (OCC): of two concurrent
+ * claims, the second retries against the first's write and fails with
+ * TASK_ALREADY_CLAIMED, so both can never succeed. Re-claiming a task the
+ * person already owns is a no-op that returns it unchanged.
+ */
+export async function claimTaskCore(
+  ctx: MutationCtx,
+  args: {
+    task: Doc<"tasks">;
+    expectedVersion: number;
+    userId: Id<"users">;
+    actor: Actor;
+  },
+): Promise<Doc<"tasks">> {
+  const { task } = args;
+  if (task.status === "done")
+    throw new ConvexError({
+      code: "TASK_DONE",
+      taskId: task._id,
+      currentVersion: task.version,
+    });
+  if (task.status === "in_progress" && task.ownerId === args.userId) return task;
+  if (task.ownerId !== undefined || task.status !== "open")
+    throw new ConvexError({
+      code: "TASK_ALREADY_CLAIMED",
+      ...(await ownerDetails(ctx, task)),
+    });
+  checkTaskVersion(task, args.expectedVersion);
+  return await commitTask(
+    ctx,
+    task,
+    { ownerId: args.userId, status: "in_progress" },
+    "task.claimed",
+    "Claimed",
+    args.actor,
+  );
+}
+
+/**
+ * Edits title, description or status. Status "open" releases the claim;
+ * "in_progress" on an unowned task makes the caller its owner, so an
+ * in-progress task always has one.
+ */
+export async function updateTaskCore(
+  ctx: MutationCtx,
+  args: {
+    task: Doc<"tasks">;
+    expectedVersion: number;
+    userId: Id<"users">;
+    title?: string;
+    description?: string;
+    status?: TaskStatus;
+    actor: Actor;
+  },
+): Promise<Doc<"tasks">> {
+  const { task } = args;
+  if (args.status === "done")
+    throw new ConvexError({ code: "INVALID_INPUT", field: "status" });
+  const title = args.title === undefined ? undefined : taskTitle(args.title);
+  const description =
+    args.description === undefined ? undefined : taskDescription(args.description);
+  await checkTaskWritable(ctx, task, args.userId);
+  checkTaskVersion(task, args.expectedVersion);
+  if (
+    (title === undefined || title === task.title) &&
+    (description === undefined || description === task.description) &&
+    (args.status === undefined || args.status === task.status)
+  )
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "The update changes nothing.",
+    });
+  // Moving an unowned task to in progress assigns its owner: that is a claim.
+  const claims = args.status === "in_progress" && task.ownerId === undefined;
+  return await commitTask(
+    ctx,
+    task,
+    {
+      ...(title !== undefined ? { title } : {}),
+      ...(description !== undefined ? { description } : {}),
+      ...(args.status === "open"
+        ? { status: "open" as const, ownerId: undefined }
+        : {}),
+      ...(args.status === "in_progress"
+        ? { status: "in_progress" as const, ownerId: task.ownerId ?? args.userId }
+        : {}),
+    },
+    claims ? "task.claimed" : "task.updated",
+    claims ? "Claimed" : "Updated",
+    args.actor,
+  );
+}
+
+/** Any member may complete an unowned task; they become its owner. */
+export async function completeTaskCore(
+  ctx: MutationCtx,
+  args: {
+    task: Doc<"tasks">;
+    expectedVersion: number;
+    userId: Id<"users">;
+    actor: Actor;
+  },
+): Promise<Doc<"tasks">> {
+  const { task } = args;
+  await checkTaskWritable(ctx, task, args.userId);
+  checkTaskVersion(task, args.expectedVersion);
+  return await commitTask(
+    ctx,
+    task,
+    {
+      status: "done" as const,
+      ownerId: task.ownerId ?? args.userId,
+      completedAt: Date.now(),
+    },
+    "task.completed",
+    "Completed",
+    args.actor,
+  );
+}
+
 export const SYNC_LIMIT = 50;
 const SYNC_WORK_LIMIT = 20;
 
@@ -682,9 +1062,10 @@ export function toEvent(event: Doc<"workspace_events">) {
 }
 
 /**
- * Snapshot (sinceSeq undefined): latest SYNC_LIMIT events and newest files.
- * Incremental: events with seq > sinceSeq, oldest first, and the files they
- * touched. A sinceSeq past the newest event is INVALID_CURSOR.
+ * Snapshot (sinceSeq undefined): latest SYNC_LIMIT events, newest files and
+ * active tasks. Incremental: events with seq > sinceSeq, oldest first, and the
+ * files and tasks they touched. A sinceSeq past the newest event is
+ * INVALID_CURSOR.
  */
 export async function syncCore(
   ctx: ReadCtx,
@@ -797,6 +1178,27 @@ export async function syncCore(
       if (row && row.workspaceId === workspaceId) work.push(row);
     }
   }
+  let tasks: Doc<"tasks">[];
+  let tasksTruncated: boolean;
+  if (sinceSeq === undefined) {
+    // Active tasks only: open and in progress, merged newest first.
+    const merged = await listActiveTasks(ctx, workspaceId, SYNC_LIMIT + 1);
+    tasksTruncated = merged.length > SYNC_LIMIT;
+    tasks = merged.slice(0, SYNC_LIMIT);
+  } else {
+    // Every task this event page touched, in any status, like changedFiles.
+    const taskIds = new Set<string>();
+    for (const event of events)
+      if (event.entityType === "task") taskIds.add(event.entityId);
+    tasks = [];
+    for (const raw of taskIds) {
+      const id = ctx.db.normalizeId("tasks", raw);
+      const task = id ? await ctx.db.get(id) : null;
+      if (task && task.workspaceId === workspaceId) tasks.push(task);
+    }
+    tasks.sort(newestTaskFirst);
+    tasksTruncated = false;
+  }
   const pending = await listProposals(ctx, workspaceId, "pending", SYNC_LIMIT);
   return {
     workspace: { id: workspace._id, name: workspace.name },
@@ -804,6 +1206,7 @@ export async function syncCore(
     pendingProposals: pending.map((p) => ({
       id: p._id,
       field: p.field,
+      operation: p.operation ?? ("add" as const),
       rationale: p.rationale,
       proposedValue: p.proposedValue,
       supersedes: p.supersedes ?? null,
@@ -815,6 +1218,8 @@ export async function syncCore(
     filesTruncated,
     recentWork: work.slice(0, SYNC_WORK_LIMIT).map(toPublishedWork),
     workTruncated: work.length > SYNC_WORK_LIMIT,
+    tasks: await Promise.all(tasks.map((task) => toTask(ctx, task))),
+    tasksTruncated,
     events: events.map(toEvent),
     eventsTruncated,
     headSeq,
@@ -833,6 +1238,8 @@ export async function applyApprovedProposal(
     | "ownerUserId"
     | "ownerArea"
     | "supersedes"
+    | "operation"
+    | "entryId"
   >,
   actor: Actor,
   now: number,
@@ -843,6 +1250,22 @@ export async function applyApprovedProposal(
     .withIndex("by_workspace", (q) => q.eq("workspaceId", proposal.workspaceId))
     .unique();
   if (!stored) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
+  if (proposal.operation) {
+    if (!proposal.entryId || entryTargetMissing(stored, proposal))
+      throw new ConvexError({ code: "INVALID_INPUT", field: "entryId" });
+    await applyEntryOperation(
+      ctx,
+      stored,
+      {
+        field: proposal.field,
+        operation: proposal.operation,
+        entryId: proposal.entryId,
+      },
+      actor,
+      now,
+    );
+    return;
+  }
   const context = normalizeContext(stored);
   const value = {
     id: crypto.randomUUID(),

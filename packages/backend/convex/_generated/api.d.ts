@@ -28,6 +28,7 @@ import type * as mcp from "../mcp.js";
 import type * as mcpTools from "../mcpTools.js";
 import type * as oauth from "../oauth.js";
 import type * as seed from "../seed.js";
+import type * as tasks from "../tasks.js";
 import type * as workspaces from "../workspaces.js";
 
 import type {
@@ -57,6 +58,7 @@ declare const fullApi: ApiFromModules<{
   mcpTools: typeof mcpTools;
   oauth: typeof oauth;
   seed: typeof seed;
+  tasks: typeof tasks;
   workspaces: typeof workspaces;
 }>;
 

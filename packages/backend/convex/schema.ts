@@ -55,6 +55,11 @@ export default defineSchema({
     name: v.string(),
     // Set only on the workspace seed:resetDemo builds, which a reset deletes.
     demoSeed: v.optional(v.boolean()),
+    // Whether context proposals wait for approval ("manual", the default when
+    // unset) or apply as soon as they're proposed ("automatic").
+    contextApproval: v.optional(
+      v.union(v.literal("manual"), v.literal("automatic")),
+    ),
     createdBy: v.id("users"),
     updatedBy: actor,
     revision: v.number(),
@@ -242,6 +247,10 @@ export default defineSchema({
     // re-checked on approval. proposedValue is the display form.
     ownerUserId: v.optional(v.id("users")),
     ownerArea: v.optional(v.string()),
+    // Resolve/remove proposals only: the constraint or open question entry
+    // they act on. Absent means an addition.
+    operation: v.optional(v.union(v.literal("resolve"), v.literal("remove"))),
+    entryId: v.optional(v.string()),
     status: v.union(
       v.literal("pending"),
       v.literal("applied"),
@@ -282,6 +291,34 @@ export default defineSchema({
     revision: v.number(),
     updatedAt: v.number(),
   }).index("by_workspace_and_created", ["workspaceId", "createdAt"]),
+
+  // Lightweight work coordination for assistants (manage_task). The owner is
+  // the person doing the task, not the approval-gated context ownership.
+  // History is the task.* rows in workspace_events.
+  tasks: defineTable({
+    workspaceId: v.id("workspaces"),
+    title: v.string(),
+    description: v.string(),
+    status: v.union(
+      v.literal("open"),
+      v.literal("in_progress"),
+      v.literal("done"),
+    ),
+    ownerId: v.optional(v.id("users")),
+    version: v.number(),
+    createdBy: actor,
+    updatedBy: actor,
+    revision: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    completedAt: v.optional(v.number()),
+  })
+    .index("by_workspace_and_status_and_updated_at", [
+      "workspaceId",
+      "status",
+      "updatedAt",
+    ])
+    .index("by_workspace_and_updated_at", ["workspaceId", "updatedAt"]),
 
   workspace_events: defineTable({
     workspaceId: v.id("workspaces"),

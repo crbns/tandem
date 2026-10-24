@@ -41,6 +41,7 @@ const TOOL_SURFACE = [
   "get_approvals",
   "get_file_versions",
   "get_workspace_info",
+  "manage_task",
 ];
 
 const INITIAL_GOAL = `Ship the Tandem P0 slice (${run})`;
@@ -608,6 +609,8 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
   });
 
   it("7c. an agent adds and resolves a working question immediately with retained history", async () => {
+    // Manual approval is the default; this step covers the automatic mode.
+    await a.dashboard.setContextApproval(workspaceId, "automatic");
     const before = await agent.ok<McpSync>("sync_workspace");
     const text = `Which native client should we demo first? (${run})`;
     const added = await agent.ok<{ proposal: { id: string; status: string } }>(
@@ -668,6 +671,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       questionId: question.id,
       resolved: after.context.open_questions.find((q) => q.id === question.id),
     };
+    await a.dashboard.setContextApproval(workspaceId, "manual");
   });
 
   it("7d. a superseding decision stays pending until human approval and retains both IDs", async () => {
@@ -727,6 +731,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
   });
 
   it("7e. resolves a dashboard-created question longer than 2000 characters without proposed_value", async () => {
+    await a.dashboard.setContextApproval(workspaceId, "automatic");
     const before = await agent.ok<McpSync>("sync_workspace");
     const text = `Long dashboard question (${run}): ${"x".repeat(2100)}`;
     await a.http.mutation(api.context.updateContextField, {
@@ -757,6 +762,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       resolved_at: expect.any(Number),
     });
     evidence.step7e = { questionId: question.id, length: text.length, status: "resolved" };
+    await a.dashboard.setContextApproval(workspaceId, "manual");
   });
 
   it("8. tenant boundaries: C's token and session can't touch A's workspace; revoked and malformed tokens get 401", async () => {

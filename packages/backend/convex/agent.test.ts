@@ -103,6 +103,11 @@ async function callTool(
   };
 }
 
+/** Lets context proposals apply without approval, as the old working tier did. */
+async function automatic(owner: Caller, workspaceId: Id<"workspaces">) {
+  await owner.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "automatic" });
+}
+
 async function setup() {
   const t = newTest();
   mcpTest.register(t);
@@ -160,7 +165,7 @@ describe("agent connections", () => {
     expect(stored?.tokenHash).toBeUndefined();
     expect(JSON.stringify(stored)).not.toContain(created.apiKey);
 
-    // The key works against the real endpoint and sees all 11 tools.
+    // The key works against the real endpoint and sees all 12 tools.
     const list = await mcpRequest(t, created.apiKey, "tools/list");
     expect(list.status).toBe(200);
     expect(list.body.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
@@ -170,6 +175,7 @@ describe("agent connections", () => {
       "get_file_versions",
       "get_workspace_info",
       "list_files",
+      "manage_task",
       "move_file",
       "move_folder",
       "propose_context_change",
@@ -1720,6 +1726,7 @@ describe("OAuth consent", () => {
 describe("context tiers (#25)", () => {
   it("records working context immediately and retains resolved questions with attribution", async () => {
     const { t, alex, sam, workspaceId } = await setup();
+    await automatic(alex, workspaceId);
     const { token } = await connect(sam, { workspaceId, client: "claude" });
     const before = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
     const { proposal } = await t.mutation(internal.mcpTools.proposeContextChange, {
@@ -1909,6 +1916,76 @@ describe("context tiers (#25)", () => {
   });
 });
 
+describe("context approval setting", () => {
+  it("holds every proposal for approval by default, including findings and resolves", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    const { apiKey, token } = await connect(sam, { workspaceId, client: "claude" });
+    const info = (await callTool(t, apiKey, "get_workspace_info")).structuredContent;
+    expect(info.workspaces[0].context_approval).toBe("manual");
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId, field: "open_question", proposedValue: "Who reviews?", sourceFileIds: [], expectedVersion: 1,
+    });
+    const before = await alex.query(api.context.getDetails, { workspaceId });
+    const added = await t.mutation(internal.mcpTools.proposeContextChange, {
+      principal: token, field: "constraint", proposedValue: "Ship by Sunday", rationale: "Deadline", sourceFileIds: [],
+    });
+    expect(added.proposal).toMatchObject({ status: "pending", operation: "add" });
+    const resolve = await t.mutation(internal.mcpTools.proposeContextChange, {
+      principal: token, field: "open_question", operation: "resolve", entryId: before.openQuestions[0]!.id,
+      expectedVersion: before.revision, rationale: "Answered", sourceFileIds: [],
+    });
+    expect(resolve.proposal).toMatchObject({ status: "pending", operation: "resolve", proposedValue: "Who reviews?" });
+    const synced = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
+    expect(synced.pending_proposals.map((p: { operation: string }) => p.operation).sort()).toEqual(["add", "resolve"]);
+    const unchanged = await alex.query(api.context.getDetails, { workspaceId });
+    expect(unchanged.revision).toBe(before.revision);
+    expect(unchanged.constraints).toEqual([]);
+    expect(unchanged.openQuestions[0]).toMatchObject({ status: "active" });
+
+    await alex.mutation(api.context.decideContextProposal, { proposalId: resolve.proposal.id, decision: "approved" });
+    await alex.mutation(api.context.decideContextProposal, { proposalId: added.proposal.id, decision: "approved" });
+    const approved = await alex.query(api.context.getDetails, { workspaceId });
+    expect(approved.openQuestions[0]).toMatchObject({ status: "resolved" });
+    expect(approved.constraints).toMatchObject([{ text: "Ship by Sunday", status: "active" }]);
+  });
+
+  it("marks a pending remove stale when its entry is already gone", async () => {
+    const { alex, sam, workspaceId } = await setup();
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId, field: "constraint", proposedValue: "No new deps", sourceFileIds: [], expectedVersion: 1,
+    });
+    const context = await alex.query(api.context.getDetails, { workspaceId });
+    const input = {
+      workspaceId, field: "constraint" as const, operation: "remove" as const, entryId: context.constraints[0]!.id,
+      expectedVersion: context.revision, rationale: "Obsolete", sourceFileIds: [],
+    };
+    const first = await sam.mutation(api.context.proposeContextChange, input);
+    const second = await sam.mutation(api.context.proposeContextChange, input);
+    expect([first.status, second.status]).toEqual(["pending", "pending"]);
+    await alex.mutation(api.context.decideContextProposal, { proposalId: first.id, decision: "approved" });
+    expect((await alex.query(api.context.getDetails, { workspaceId })).constraints).toEqual([]);
+    await alex.mutation(api.context.decideContextProposal, { proposalId: second.id, decision: "approved" });
+    const proposals = await alex.query(api.context.getApprovals, { workspaceId });
+    expect(proposals.find((p) => p.id === second.id)?.status).toBe("stale");
+  });
+
+  it("applies every proposal at once when automatic, and only owners or admins choose", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    expect(await errorData(sam.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "automatic" })))
+      .toMatchObject({ code: "FORBIDDEN" });
+    await automatic(alex, workspaceId);
+    expect((await alex.query(api.workspaces.getWorkspaceInfo, { workspaceId })).contextApproval).toBe("automatic");
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const goal = await callTool(t, apiKey, "propose_context_change", {
+      field: "goal", proposed_value: "Win Cal Hacks", rationale: "Kickoff",
+    });
+    expect(goal.structuredContent.proposal).toMatchObject({ status: "applied", field: "goal" });
+    expect((await alex.query(api.context.getDetails, { workspaceId })).goal?.text).toBe("Win Cal Hacks");
+    const events = await t.run((ctx) => ctx.db.query("workspace_events").collect());
+    expect(events.map((e) => e.kind)).toContain("workspace.context_approval_changed");
+  });
+});
+
 describe("context lifecycle review regressions", () => {
   it("preserves ownership identity when editing by ID or legacy index", async () => {
     const { alex, samId, workspaceId } = await setup();
@@ -1942,6 +2019,7 @@ describe("context lifecycle review regressions", () => {
     "resolves a dashboard-created long question without depending on the supplied value (%#)",
     async (proposedValue) => {
       const { t, alex, sam, workspaceId } = await setup();
+      await automatic(alex, workspaceId);
       const text = "Q".repeat(3000);
       await alex.mutation(api.context.updateContextField, {
         workspaceId,
@@ -1995,6 +2073,7 @@ describe("context lifecycle review regressions", () => {
 describe("context tiers over the hosted MCP contract", () => {
   it("maps stable IDs, lifecycle attribution and pending supersession through real tool handlers", async () => {
     const { t, alex, sam, samId, workspaceId } = await setup();
+    await automatic(alex, workspaceId);
     const { apiKey, connectionId } = await connect(sam, { workspaceId, client: "claude" });
     const added = await callTool(t, apiKey, "propose_context_change", {
       field: "open_questions", proposed_value: "Who reviews?", rationale: "Planning",
@@ -2015,6 +2094,7 @@ describe("context tiers over the hosted MCP contract", () => {
     expect(after.context.open_questions[0]).toMatchObject({ id: question.id, status: "resolved", resolved_at: expect.any(Number),
       resolved_by: { actor_type: "agent", agent_connection_id: connectionId } });
     await alex.mutation(api.context.updateContextField, { workspaceId, field: "decision", proposedValue: "D1", sourceFileIds: [], expectedVersion: after.context_version });
+    await alex.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "manual" });
     const initial = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
     const d1 = initial.context.decisions[0];
     const replacement = (await callTool(t, apiKey, "propose_context_change", {
@@ -2063,6 +2143,7 @@ describe("context references after source deletion (#27)", () => {
 
   it.each(["dashboard", "MCP"])("resolves a question with a deleted source through %s, then removes it", async (caller) => {
     const { t, alex, sam, workspaceId, file, context } = await sourcedContext();
+    await automatic(alex, workspaceId);
     const input = {
       field: "open_question" as const, operation: "resolve" as const,
       entryId: context.openQuestions[0]!.id, rationale: "Answered", sourceFileIds: [file.id],
@@ -2864,5 +2945,232 @@ describe("file system review fixes (PR #47)", () => {
 
     const blank = await callTool(t, apiKey, "search_files", { query: "   " });
     expect(blank.structuredContent.error).toMatchObject({ code: "INVALID_INPUT", field: "query" });
+  });
+});
+
+describe("sync brief and server instructions", () => {
+  /** A workspace with an active and a superseded decision, an open and a resolved question, and a pending goal. */
+  async function seeded() {
+    const s = await setup();
+    const { t, alex, sam, workspaceId } = s;
+    const { apiKey, token } = await connect(sam, { workspaceId, client: "claude" });
+    const tool = async (name: string, args: Record<string, unknown> = {}) => {
+      const result = await callTool(t, apiKey, name, args);
+      expect(result.isError).toBeUndefined();
+      return result.structuredContent;
+    };
+    const decide = async (text: string) => {
+      const { context_version } = await tool("sync_workspace");
+      await alex.mutation(api.context.updateContextField, { workspaceId, field: "decision", proposedValue: text, sourceFileIds: [], expectedVersion: context_version });
+    };
+    await decide("Old pricing");
+    const old = (await tool("sync_workspace")).context.decisions[0];
+    const replacement = (await tool("propose_context_change", {
+      field: "decisions", proposed_value: "Usage pricing", rationale: "Research", supersedes: old.id,
+    })).proposal;
+    await alex.mutation(api.context.decideContextProposal, { proposalId: replacement.id, decision: "approved" });
+    // Working entries apply at once; the goal below stays pending.
+    await automatic(alex, workspaceId);
+    const blocker = (await tool("propose_context_change", {
+      field: "open_questions", proposed_value: "Who signs off on launch?", rationale: "Blocks launch",
+    })).proposal;
+    await tool("propose_context_change", { field: "open_questions", proposed_value: "Logo color?", rationale: "Design" });
+    const answered = (await tool("sync_workspace")).context;
+    const logo = answered.open_questions.find((q: { text: string }) => q.text === "Logo color?");
+    await tool("propose_context_change", {
+      field: "open_questions", operation: "resolve", entry_id: logo.id,
+      expected_version: (await tool("sync_workspace")).context_version, rationale: "Blue",
+    });
+    await alex.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "manual" });
+    const goal = (await tool("propose_context_change", {
+      field: "goal", proposed_value: "Ship the beta", rationale: "Kickoff",
+    })).proposal;
+    const doc = await tool("create_document", { name: "plan.md", content: "# Plan" });
+    const { published } = await tool("publish_work", { kind: "finding", title: "Pricing research", summary: "Long details ".repeat(20), file_ids: [doc.id] });
+    return { ...s, apiKey, token, tool, old, blocker, goal, doc, published };
+  }
+
+  it("puts a brief of decisions, blockers and recent changes first in the full result", async () => {
+    const { t, token, tool, old, blocker, goal, doc, published, workspaceId } = await seeded();
+    const sync = await tool("sync_workspace");
+    expect(Object.keys(sync)[0]).toBe("brief");
+    // Everything after the brief is the pre-brief contract, key for key and value for value.
+    const { brief, ...rest } = sync;
+    expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "pending_proposals", "changed_files", "files_truncated", "folders", "folders_truncated",
+      "recent_work", "work_truncated", "tasks", "tasks_truncated", "events", "events_truncated", "cursor"]);
+    const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    expect(rest.workspace).toEqual({ id: workspaceId, name: "Demo" });
+    expect(rest.context_version).toBe(raw.context.revision);
+    expect(rest.context.goal).toBe("");
+    expect(rest.context.decisions.map((e: { id: string; text: string; status: string }) => [e.id, e.text, e.status]))
+      .toEqual(raw.context.decisions.map((e) => [e.id, e.text, e.status]));
+    expect(rest.context.open_questions.map((e: { id: string; text: string; status: string }) => [e.id, e.text, e.status]))
+      .toEqual(raw.context.openQuestions.map((e) => [e.id, e.text, e.status]));
+    const { source_ids: _sourceIds, base_context_version: _base, workspace_id: _workspace, ...pendingGoal } = goal;
+    expect(rest.pending_proposals).toEqual([pendingGoal]);
+    expect(rest.changed_files).toEqual((await tool("list_files")).files);
+    expect(rest.files_truncated).toBe(false);
+    expect(rest.recent_work).toEqual([published]);
+    expect(rest.work_truncated).toBe(false);
+    expect(rest.events.map(({ actor: _actor, ...e }: { actor: unknown }) => e)).toEqual(raw.events.map((e) => ({
+      seq: e.seq, workspace_id: workspaceId, type: e.kind, subject_id: e.entityId, at: new Date(e.createdAt).toISOString(), summary: e.summary,
+    })));
+    expect(rest.events.at(-1).actor).toEqual(published.published_by);
+    expect(rest.events_truncated).toBe(false);
+    expect((await tool("sync_workspace", { since: rest.cursor })).events).toEqual([]);
+    expect(brief.active_decisions).toEqual([{ id: expect.any(String), text: "Usage pricing" }]);
+    expect(brief.active_decisions[0].id).not.toBe(old.id);
+    expect(brief.blockers).toEqual({
+      open_questions: [{ id: expect.any(String), text: "Who signs off on launch?" }],
+      pending_approvals: [{ id: goal.id, field: "goal", proposed_value: "Ship the beta" }],
+    });
+    expect(blocker.status).toBe("applied");
+    expect(brief.goal).toBe("");
+    expect(brief.changed_file_count).toBe(1);
+    // Newest first, at most BRIEF_LIMIT, with actor labels.
+    expect(brief.recent_changes.length).toBeLessThanOrEqual(10);
+    expect(brief.recent_changes[0]).toMatchObject({ type: "work.published", actor: "Sam's claude assistant", at: expect.any(String) });
+    expect(brief.recent_changes[1]).toMatchObject({ type: "file.created", subject_id: doc.id });
+    // recent_changes mirror the newest events, newest first.
+    expect(brief.recent_changes.map(({ actor: _actor, ...c }: { actor: string }) => c)).toEqual(
+      rest.events.slice(-10).reverse().map((e: { type: string; subject_id: string; summary: string; at: string }) =>
+        ({ type: e.type, subject_id: e.subject_id, summary: e.summary, at: e.at })),
+    );
+    // The seed's snapshot has more than ten events, so recent_changes is capped and flagged.
+    expect(rest.events.length).toBeGreaterThan(10);
+    expect(brief.recent_changes).toHaveLength(10);
+    expect(brief.truncated).toBe(true);
+  });
+
+  it("returns a compact payload for detail brief whose cursor continues incrementally", async () => {
+    const { t, alex, tool, doc, workspaceId } = await seeded();
+    const compact = await tool("sync_workspace", { detail: "brief" });
+    const full = await tool("sync_workspace");
+    expect(Object.keys(compact)).toEqual(["brief", "workspace", "context_version", "changed_files", "deleted_file_ids", "files_truncated",
+      "recent_work", "work_truncated", "tasks", "tasks_truncated", "events_truncated", "cursor"]);
+    expect(compact).not.toHaveProperty("context");
+    expect(compact).not.toHaveProperty("events");
+    expect(compact).not.toHaveProperty("pending_proposals");
+    expect(compact.changed_files).toEqual([{ id: doc.id, name: "plan.md", path: "/plan.md", version: 1 }]);
+    expect(compact.recent_work).toEqual(full.recent_work);
+    expect(compact.tasks).toEqual(full.tasks);
+    expect(compact.brief.blockers.pending_approvals).toHaveLength(1);
+    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(full).length / 2);
+
+    await alex.mutation(api.files.updateDocument, { fileId: doc.id, content: "# Plan v2", expectedVersion: 1 });
+    const next = await tool("sync_workspace", { since: compact.cursor, detail: "brief" });
+    expect(next.changed_files).toEqual([{ id: doc.id, name: "plan.md", path: "/plan.md", version: 2 }]);
+    expect(next.brief.recent_changes).toMatchObject([{ type: "file.updated", subject_id: doc.id, actor: expect.any(String) }]);
+    expect(next.brief.changed_file_count).toBe(1);
+    expect(next.recent_work).toEqual([]);
+    // The compact cursor is an ordinary cursor: a full incremental sync sees nothing newer.
+    const after = await tool("sync_workspace", { since: next.cursor });
+    expect(after.events).toEqual([]);
+    expect(after.brief.recent_changes).toEqual([]);
+    const bad = await callTool(t, (await connect(alex, { workspaceId, client: "chatgpt" })).apiKey, "sync_workspace", { detail: "everything" });
+    expect(bad.isError).toBe(true);
+  });
+
+  it("tells assistants when to sync and how to share work back, in a short instructions string", async () => {
+    const { MCP_INSTRUCTIONS } = await import("./mcp");
+    for (const term of ["sync_workspace", "since", "cursor", "publish_work", "propose_context_change", "expected_version", "best effort", "untrusted"])
+      expect(MCP_INSTRUCTIONS).toContain(term);
+    expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
+    expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);
+
+    const { t, sam, workspaceId } = await setup();
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const init = await mcpRequest(t, apiKey, "initialize", {
+      protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" },
+    });
+    expect(init.body.result.instructions).toBe(MCP_INSTRUCTIONS);
+    const listed = await mcpRequest(t, apiKey, "tools/list");
+    const syncTool = listed.body.result.tools.find((entry: { name: string }) => entry.name === "sync_workspace");
+    expect(syncTool.inputSchema.properties.detail.enum).toEqual(["brief", "full"]);
+  });
+
+  it("keeps full publication summaries in brief since syncs, whose cursor acknowledges them", async () => {
+    const { alex, tool, doc } = await seeded();
+    const before = await tool("sync_workspace", { detail: "brief" });
+    const summary = "Annual plans churn three times less than monthly plans. ".repeat(40).trim();
+    const { published } = await tool("publish_work", { kind: "finding", title: "Churn analysis", summary, file_ids: [doc.id] });
+    await alex.mutation(api.files.updateDocument, { fileId: doc.id, content: "# Plan v2", expectedVersion: 1 });
+    const page = await tool("sync_workspace", { since: before.cursor, detail: "brief" });
+    expect(page.recent_work).toEqual([published]);
+    expect(page.recent_work[0].summary).toBe(summary);
+    expect(page.recent_work[0]).toMatchObject({ file_ids: [doc.id], published_by: published.published_by, created_at: expect.any(String) });
+    // Nothing is left to recover later: the next page no longer carries it.
+    expect((await tool("sync_workspace", { since: page.cursor })).recent_work).toEqual([]);
+  });
+
+  it("carries tasks changed in the page in brief since syncs, whose cursor acknowledges them", async () => {
+    const { tool } = await seeded();
+    const before = await tool("sync_workspace", { detail: "brief" });
+    const { task } = await tool("manage_task", { operation: "create", title: "Draft welcome email" });
+    const { task: claimed } = await tool("manage_task", { operation: "claim", task_id: task.id, expected_version: task.version });
+    const page = await tool("sync_workspace", { since: before.cursor, detail: "brief" });
+    expect(page.tasks).toEqual([claimed]);
+    expect(page.tasks[0]).toMatchObject({ status: "in_progress", owner: { user_id: expect.any(String) } });
+    expect((await tool("sync_workspace", { since: page.cursor, detail: "brief" })).tasks).toEqual([]);
+  });
+
+  it("preserves deletion tombstones outside the ten newest changes before advancing the brief cursor", async () => {
+    const { alex, tool, doc } = await seeded();
+    const before = await tool("sync_workspace", { detail: "brief" });
+    await alex.mutation(api.files.deleteFile, { fileId: doc.id, expectedVersion: 1 });
+    for (let i = 0; i < 11; i++)
+      await tool("create_document", { name: `later-${i}.md`, content: "Later work" });
+    const page = await tool("sync_workspace", { since: before.cursor, detail: "brief" });
+    expect(page.brief.recent_changes).toHaveLength(10);
+    expect(page.brief.recent_changes.some((event: { type: string }) => event.type === "file.deleted")).toBe(false);
+    expect(page.deleted_file_ids).toEqual([doc.id]);
+    expect(page.changed_files.some((file: { id: string }) => file.id === doc.id)).toBe(false);
+    expect(page).not.toHaveProperty("events");
+    const next = await tool("sync_workspace", { since: page.cursor, detail: "brief" });
+    expect(next.deleted_file_ids).toEqual([]);
+    expect(next.brief.recent_changes).toEqual([]);
+  });
+
+  it("caps each brief list after active filtering and flags exactly when a list exceeds ten", async () => {
+    const { t, alex, workspaceId } = await seeded();
+    const { token } = await connect(alex, { workspaceId, client: "chatgpt" });
+    const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    const { toSyncResult } = await import("./lib/mcpContract");
+    const decision = raw.context.decisions.find((entry) => entry.status === "active")!;
+    const question = raw.context.openQuestions.find((entry) => entry.status === "active")!;
+    const entry = (base: typeof decision, index: number) => ({ ...base, id: String(index) });
+    const base = {
+      ...raw,
+      context: { ...raw.context, decisions: [], openQuestions: [] },
+      pendingProposals: [], events: [],
+    };
+    for (const count of [10, 11]) {
+      const decisions = Array.from({ length: count }, (_, i) => entry(decision, i));
+      const questions = Array.from({ length: count }, (_, i) => entry(question, i));
+      const pendingProposals = Array.from({ length: count }, (_, i) => ({ ...raw.pendingProposals[0]!, id: String(i) }));
+      const events = Array.from({ length: count }, (_, i) => ({ ...raw.events[0]!, seq: i, createdAt: i }));
+      for (const input of [
+        { ...base, context: { ...base.context, decisions } },
+        { ...base, context: { ...base.context, openQuestions: questions } },
+        { ...base, pendingProposals },
+        { ...base, events },
+      ]) expect(toSyncResult(input).brief.truncated).toBe(count > 10);
+      const brief = toSyncResult({ ...base, context: { ...base.context, decisions, openQuestions: questions }, pendingProposals, events }).brief;
+      expect(brief.active_decisions.map((item) => item.id)).toEqual(decisions.slice(-10).map((item) => item.id));
+      // Questions are stored newest last (keep the tail); pending proposals arrive newest first (keep the head).
+      expect(brief.blockers.open_questions.map((item) => item.id)).toEqual(questions.slice(-10).map((item) => item.id));
+      expect(brief.blockers.pending_approvals.map((item) => item.id)).toEqual(pendingProposals.slice(0, 10).map((item) => item.id));
+      expect(brief.recent_changes.map((item) => item.at)).toEqual(events.slice(-10).reverse().map((event) => new Date(event.createdAt).toISOString()));
+    }
+    const inactive = toSyncResult({
+      ...base,
+      context: { ...base.context,
+        decisions: Array.from({ length: 11 }, (_, i) => ({ ...entry(decision, i), status: "superseded" as const })),
+        openQuestions: Array.from({ length: 11 }, (_, i) => ({ ...entry(question, i), status: "resolved" as const })),
+      },
+    }).brief;
+    expect(inactive.active_decisions).toEqual([]);
+    expect(inactive.blockers.open_questions).toEqual([]);
+    expect(inactive.truncated).toBe(false);
   });
 });

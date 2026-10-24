@@ -503,6 +503,7 @@ async function deleteWorkspace(ctx: MutationCtx, workspaceId: Id<"workspaces">) 
     () => ctx.db.query("context_proposals").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
     () => ctx.db.query("approvals").withIndex("by_workspace_and_decided", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
     () => ctx.db.query("published_work").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
+    () => ctx.db.query("tasks").withIndex("by_workspace_and_updated_at", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
     () => ctx.db.query("structured_context").withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
     () => ctx.db.query("workspace_invites").withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
     () => ctx.db.query("workspace_members").withIndex("by_workspace_and_user", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
