@@ -13,6 +13,27 @@ export async function requireUser(ctx: ReadCtx): Promise<Doc<"users">> {
   return user;
 }
 
+/**
+ * Agent sessions must carry a verified Convex identity claim. Until the MCP
+ * auth bridge issues that claim, this safely treats existing dashboard
+ * sessions as human sessions and rejects identities explicitly bound to an
+ * agent connection from making human-only approval decisions.
+ */
+export async function requireHumanSession(ctx: ReadCtx): Promise<void> {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) throw new ConvexError({ code: "UNAUTHENTICATED" });
+  const claims = identity as typeof identity & {
+    agentConnectionId?: unknown;
+    agent_connection_id?: unknown;
+  };
+  if (
+    claims.agentConnectionId !== undefined ||
+    claims.agent_connection_id !== undefined
+  ) {
+    throw new ConvexError({ code: "APPROVAL_REQUIRED" });
+  }
+}
+
 export async function ensureUser(ctx: MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) throw new ConvexError({ code: "UNAUTHENTICATED" });

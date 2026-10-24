@@ -29,27 +29,40 @@ Use only the tools the connector actually exposes. The full surface is:
 `update_document`, `publish_work`, `propose_context_change`, `get_approvals`,
 `get_file_versions`, `get_workspace_info`.
 
-Some of these (`sync_workspace`, `search_files`, `publish_work`,
-`propose_context_change`, `get_approvals`, `get_file_versions`,
-`get_workspace_info`) may not be available yet. If a tool you need is missing,
-fall back to the closest available one and tell the user what you could not do.
-If no Tandem tools are available at all, say so plainly. Never claim you synced,
-saved, or published when you did not.
+If a tool you need is missing from the connector, use the closest one it does
+expose and tell the user what you could not do. If no Tandem tools are available
+at all, say so plainly. Never claim you synced, saved, or published when you did
+not.
 
 ## 1. Sync at the start of project work
 
 - At the start of meaningful project work in a conversation, call
-  `sync_workspace`. If it is unavailable, call `list_files` (and
-  `get_workspace_info` if available) instead.
-- Use the result to orient: current goal, approved decisions, owners, pending
-  approvals, recently changed files.
-- Sync is best-effort. Re-sync before a significant write if time has passed or
-  the user mentions teammates changing things.
+  `sync_workspace` with no arguments (add `workspace_id` only if the user means
+  a non-default workspace; `get_workspace_info` lists them).
+- It returns the approved `context` (goal, scope, constraints, decisions,
+  ownership, open questions) and its `context_version`, `pending_proposals`
+  (summaries, not yet in effect), `changed_files` (metadata only), recent
+  `events`, and a `cursor`. Use it to orient before answering or writing.
+- Keep the `cursor`. Later in the same conversation, re-sync with
+  `since: <cursor>` to get only what changed since: new events and the files
+  they touched (the context is always returned in full). Each sync returns a new
+  cursor; use the latest one. With `since`, `events_truncated: true` means more
+  events remain: sync again with the new cursor. In a snapshot (no `since`) it
+  means only the latest 50 events are shown; older ones are omitted and there is
+  nothing to page. If `files_truncated` is true, use `list_files` or
+  `search_files` to see the rest. If a cursor is rejected (`INVALID_INPUT`),
+  sync without `since`.
+- Re-sync before a significant write if time has passed or the user mentions
+  teammates changing things. Sync is best-effort: teammates may change things
+  right after.
 
 ## 2. Find and read the authoritative document
 
-- Locate files with `search_files` (or `list_files` if search is unavailable),
-  then open them with `read_file`.
+- Locate files with `search_files` (it matches names and content); fall back to
+  `list_files` to browse everything. Then open them with `read_file`. Search
+  snippets are partial: read the file before relying on it.
+- For "who changed what, and when", use `get_file_versions`: it lists each
+  version's author (human or agent) and time, without content.
 - Prefer the canonical Tandem file over your memory, earlier chat turns, or
   copies the user pasted. If they differ, say so and use the Tandem version
   unless the user says otherwise.
@@ -87,11 +100,17 @@ Someone else saved a newer version since you read it.
   existing file; update that file instead if one exists.
 - Write Markdown. Use a clear, descriptive, kebab-case name such as
   `q4-launch-plan.md`. Only pass a folder id if a tool already returned one.
+- `create_document` and `update_document` write canonical workspace files that
+  every workspace member can see immediately. Say so. Never tell the user a
+  file you saved is private, a draft, or invisible to teammates.
 
 ## 6. Publish work
 
-- Use `publish_work` only for relevant project deliverables or findings that the
-  user has authorized sharing with the team.
+- `publish_work` announces or records a deliverable or finding for the team; it
+  doesn't control who can see a file. Use it only for relevant project work the
+  user has authorized announcing. Pass `kind` (`"deliverable"` or `"finding"`),
+  a short `title`, a `summary` the team can act on, and the `file_ids` it
+  covers. It returns `published`; it doesn't change files or context.
 - Never publish or export private conversation history, the user's personal
   content, or material unrelated to the project.
 - If you are unsure whether something should be shared, ask first.
@@ -102,10 +121,17 @@ Someone else saved a newer version since you read it.
 
 - Goal, scope, major decisions, and ownership are human-approved. Never change
   them directly, including by editing a file to claim they changed.
-- Call `propose_context_change` with: the specific change, a short rationale,
-  and the ids of the source files that support it.
-- Tell the user the proposal is pending human approval and has not taken effect.
-  Use `get_approvals` to check status when asked.
+- Call `propose_context_change` with `field`, `proposed_value`, a short
+  `rationale`, and `source_ids` (ids of files that support it). Value by field:
+  - `goal` or `scope`: the full new text.
+  - `constraints`: the full new list of strings (it replaces the old list).
+  - `decisions`: the text of one new decision.
+  - `ownership`: `{ area, owner_user_id }` for one area; the owner must be a
+    workspace member.
+- It returns a `proposal` with `status: "pending"` and changes nothing. Tell
+  the user it awaits a human owner or admin's approval in the dashboard and has not
+  taken effect. Use `get_approvals` (default `status: "pending"`; also
+  `"approved"`, `"rejected"`, `"all"`) to check when asked.
 - Until approved, treat the current approved context as authoritative.
 
 ## 8. Error codes
@@ -116,8 +142,9 @@ Someone else saved a newer version since you read it.
 | `FORBIDDEN` | Tell the user they don't have access to that workspace or file. Don't retry or try workarounds. |
 | `FILE_NOT_FOUND` | Re-run `list_files`/`search_files` to get current ids. Don't guess ids. |
 | `VERSION_CONFLICT` | Follow section 4. |
+| `NAME_EXISTS` | A file with that name already exists in that folder (`file_id`, `name`, `current_version` in the error). Read it with `read_file`. If it is the same deliverable, merge your content into it per section 3. Otherwise ask the user whether to update it or use a different name. Never replace its content wholesale. |
 | `APPROVAL_REQUIRED` | The change needs human approval. Switch to `propose_context_change` and tell the user. |
-| `INVALID_INPUT` or `Input validation error` (MCP error -32602) | Your arguments were rejected. Read the error message, fix the arguments, retry once. |
+| `INVALID_INPUT` or `Input validation error` (MCP error -32602) | Your arguments were rejected. Read the error message, fix the arguments, retry once. If `expected_version` was wrong (newer than the file), re-read with `read_file` and use its `file.version` rather than retrying with a guess. |
 
 For any other error, report it to the user in plain words and don't invent a
 success.

@@ -5,6 +5,7 @@ import type { MutationCtx } from "./_generated/server";
 import {
   humanActor,
   recordWorkspaceEvent,
+  requireHumanSession,
   requireMembership,
 } from "./lib/auth";
 
@@ -21,6 +22,7 @@ const proposalStatusValidator = v.union(
   v.literal("pending"),
   v.literal("approved"),
   v.literal("rejected"),
+  v.literal("stale"),
 );
 
 const actorValidator = v.object({
@@ -63,6 +65,12 @@ export const proposeContextChange = mutation({
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .unique();
     if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
+    const currentField =
+      args.field === "goal"
+        ? (context.goal?.text ?? null)
+        : args.field === "scope"
+          ? (context.scope?.text ?? null)
+          : undefined;
     for (const fileId of args.sourceFileIds) {
       const file = await ctx.db.get(fileId);
       if (!file || file.workspaceId !== args.workspaceId)
@@ -72,6 +80,7 @@ export const proposeContextChange = mutation({
     const proposalId = await ctx.db.insert("context_proposals", {
       ...args,
       contextRevision: context.revision,
+      ...(currentField !== undefined ? { baseValue: currentField } : {}),
       status: "pending",
       createdBy: actor,
       createdAt: now,
@@ -139,6 +148,7 @@ export const decideContextProposal = mutation({
   handler: async (ctx, { proposalId, decision }) => {
     const proposal = await ctx.db.get(proposalId);
     if (!proposal) throw new ConvexError({ code: "PROPOSAL_NOT_FOUND" });
+    if (decision === "approved") await requireHumanSession(ctx);
     const { user, membership } = await requireMembership(
       ctx,
       proposal.workspaceId,
@@ -155,15 +165,35 @@ export const decideContextProposal = mutation({
         )
         .unique();
       if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
-      if (
+      const currentField =
+        proposal.field === "goal"
+          ? (context.goal?.text ?? null)
+          : proposal.field === "scope"
+            ? (context.scope?.text ?? null)
+            : undefined;
+      const stale =
         proposal.contextRevision === undefined ||
-        context.revision !== proposal.contextRevision
-      ) {
-        throw new ConvexError({
-          code: "VERSION_CONFLICT",
-          expectedRevision: proposal.contextRevision ?? null,
-          currentRevision: context.revision,
+        (currentField !== undefined &&
+          (proposal.baseValue === undefined
+            ? context.revision !== proposal.contextRevision
+            : currentField !== proposal.baseValue));
+      if (stale) {
+        const now = Date.now();
+        await ctx.db.patch(proposalId, {
+          status: "stale",
+          updatedBy: humanActor(user),
+          updatedAt: now,
+          revision: proposal.revision + 1,
         });
+        await recordWorkspaceEvent(ctx, {
+          workspaceId: proposal.workspaceId,
+          kind: "context.stale",
+          entityType: "context_proposal",
+          entityId: proposalId,
+          summary: `Marked ${proposal.field.replaceAll("_", " ")} proposal stale`,
+          actor: humanActor(user),
+        });
+        return null;
       }
     }
     const actor = humanActor(user);

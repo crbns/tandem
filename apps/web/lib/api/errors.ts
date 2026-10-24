@@ -54,7 +54,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function asActor(value: unknown): Actor | undefined {
   const v = asRecord(value);
   if (!v) return undefined;
-  // Frontend/MCP attribution, or the Convex backend's { type, label, userId }.
+  // Canonical camelCase, or MCP's snake_case Attribution { actor_type, user_id, client }.
   const actorType = v.actorType ?? v.actor_type ?? v.type;
   const userId = v.userId ?? v.user_id;
   if (
@@ -64,13 +64,9 @@ function asActor(value: unknown): Actor | undefined {
     return undefined;
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   const label = str(v.label);
-  const userName =
-    str(v.userName ?? v.user_name) ??
-    (actorType === "human" ? label : undefined);
+  const userName = str(v.userName ?? v.user_name) ?? (actorType === "human" ? label : undefined);
   const agentClient = str(v.agentClient ?? v.client);
-  const agentName =
-    str(v.agentName ?? v.agent_name) ??
-    (actorType === "agent" ? label : undefined);
+  const agentName = str(v.agentName ?? v.agent_name) ?? (actorType === "agent" ? label : undefined);
   return {
     actorType,
     userId,
@@ -85,19 +81,17 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
   if (isApiErrorCode(data)) return new TandemApiError(data);
 
   const record = asRecord(data);
-  const backendCode =
-    record && typeof record.code === "string" ? record.code : undefined;
-  const code =
-    backendCode && isApiErrorCode(backendCode)
-      ? backendCode
-      : backendCode === "INVALID_NAME" ||
-          backendCode === "INVALID_PARENT_FOLDER" ||
-          backendCode === "INVALID_EMAIL"
-        ? "INVALID_INPUT"
-        : backendCode === "USER_NOT_INITIALIZED"
-          ? "UNAUTHENTICATED"
-          : backendCode === "WORKSPACE_NOT_FOUND"
-            ? "FORBIDDEN"
+  const backendCode = record && typeof record.code === "string" ? record.code : undefined;
+  const code = backendCode && isApiErrorCode(backendCode)
+    ? backendCode
+    : backendCode === "INVALID_NAME" || backendCode === "INVALID_PARENT_FOLDER" || backendCode === "INVALID_EMAIL" || backendCode === "USER_NOT_REGISTERED"
+      ? "INVALID_INPUT"
+      : backendCode === "USER_NOT_INITIALIZED"
+        ? "UNAUTHENTICATED"
+        : backendCode === "WORKSPACE_NOT_FOUND"
+          ? "FORBIDDEN"
+          : backendCode === "PROPOSAL_ALREADY_DECIDED" || backendCode === "USER_EMAIL_NOT_VERIFIED"
+            ? "APPROVAL_REQUIRED"
             : "UNKNOWN";
   const details: ApiErrorDetails = {};
   if (record) {

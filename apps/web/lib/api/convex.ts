@@ -132,11 +132,10 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
           limit: 100,
         });
         return revisions.map(
-          ({ version, createdAt, content, actor }): Revision => ({
+          ({ version, createdAt, actor }): Revision => ({
             ...toActor(actor),
             version,
             createdAt,
-            content,
           }),
         );
       }),

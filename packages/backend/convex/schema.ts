@@ -139,10 +139,14 @@ export default defineSchema({
     rationale: v.string(),
     sourceFileIds: v.array(v.id("files")),
     contextRevision: v.optional(v.number()),
+    // Snapshot the scalar field a proposal is based on. Append-only fields do
+    // not need a base value because separate proposals do not overwrite them.
+    baseValue: v.optional(v.union(v.string(), v.null())),
     status: v.union(
       v.literal("pending"),
       v.literal("approved"),
       v.literal("rejected"),
+      v.literal("stale"),
     ),
     createdBy: actor,
     createdAt: v.number(),

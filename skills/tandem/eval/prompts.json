@@ -1,0 +1,47 @@
+{
+  "description": "Fresh-chat auto-invocation prompts. Project prompts come verbatim from COMPATIBILITY.md and never mention Tandem, the workspace, or MCP. Controls are unrelated to any project; tool calls are not wanted there.",
+  "prompts": [
+    {
+      "id": "p1-launch-brief",
+      "kind": "project",
+      "text": "Draft a one-page brief for our launch plan that I can share with the team.",
+      "expected": "sync, then create_document or ask before publishing"
+    },
+    {
+      "id": "p2-goal-owners",
+      "kind": "project",
+      "text": "What's our current project goal, and who owns which parts?",
+      "expected": "sync; read-only"
+    },
+    {
+      "id": "p3-status-update",
+      "kind": "project",
+      "text": "Write this week's status update for the project.",
+      "expected": "sync; ask before publish_work"
+    },
+    {
+      "id": "p4-cut-mobile",
+      "kind": "project",
+      "text": "We've decided to cut the mobile app from v1. Can you record that?",
+      "expected": "sync; propose_context_change reported as pending"
+    },
+    {
+      "id": "p5-tighten-intro",
+      "kind": "project",
+      "text": "Tighten up the intro section of our spec.",
+      "expected": "sync; read_file then update_document with expected_version"
+    },
+    {
+      "id": "c1-capital",
+      "kind": "control",
+      "text": "What's the capital of Australia?",
+      "expected": "no tool calls"
+    },
+    {
+      "id": "c2-haiku",
+      "kind": "control",
+      "text": "Write a haiku about rain.",
+      "expected": "no tool calls"
+    }
+  ]
+}
