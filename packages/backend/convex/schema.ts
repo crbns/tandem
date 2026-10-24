@@ -254,6 +254,34 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_workspace_and_created", ["workspaceId", "createdAt"]),
 
+  // Lightweight work coordination for assistants (manage_task). The owner is
+  // the person doing the task, not the approval-gated context ownership.
+  // History is the task.* rows in workspace_events.
+  tasks: defineTable({
+    workspaceId: v.id("workspaces"),
+    title: v.string(),
+    description: v.string(),
+    status: v.union(
+      v.literal("open"),
+      v.literal("in_progress"),
+      v.literal("done"),
+    ),
+    ownerId: v.optional(v.id("users")),
+    version: v.number(),
+    createdBy: actor,
+    updatedBy: actor,
+    revision: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    completedAt: v.optional(v.number()),
+  })
+    .index("by_workspace_and_status_and_updated_at", [
+      "workspaceId",
+      "status",
+      "updatedAt",
+    ])
+    .index("by_workspace_and_updated_at", ["workspaceId", "updatedAt"]),
+
   workspace_events: defineTable({
     workspaceId: v.id("workspaces"),
     // Per-workspace, gapless, assigned in the same transaction as the write

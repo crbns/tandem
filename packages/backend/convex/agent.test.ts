@@ -159,7 +159,7 @@ describe("agent connections", () => {
     expect(stored?.tokenHash).toBeUndefined();
     expect(JSON.stringify(stored)).not.toContain(created.apiKey);
 
-    // The key works against the real endpoint and sees all 11 tools.
+    // The key works against the real endpoint and sees all 12 tools.
     const list = await mcpRequest(t, created.apiKey, "tools/list");
     expect(list.status).toBe(200);
     expect(list.body.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
@@ -168,6 +168,7 @@ describe("agent connections", () => {
       "get_file_versions",
       "get_workspace_info",
       "list_files",
+      "manage_task",
       "propose_context_change",
       "publish_work",
       "read_file",

@@ -219,6 +219,28 @@ export interface PublishedWorkPage {
   continueCursor: string;
 }
 
+export type TaskStatus = "open" | "in_progress" | "done";
+
+/**
+ * Shared work an assistant created or claimed through MCP (`manage_task`). The
+ * dashboard only shows tasks. The owner is the person doing it, not context
+ * ownership. Title and description are untrusted workspace text.
+ */
+export interface Task {
+  id: string;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  ownerId: string | null;
+  ownerName: string | null;
+  version: number;
+  createdBy: Actor;
+  updatedBy: Actor;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+}
+
 export interface WorkspaceMember {
   userId: string;
   name: string;

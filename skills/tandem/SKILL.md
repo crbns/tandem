@@ -27,7 +27,7 @@ changes; you read, draft, save versioned edits, and propose.
 Use only the tools the connector actually exposes. The full surface is:
 `sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`,
 `update_document`, `publish_work`, `propose_context_change`, `get_approvals`,
-`get_file_versions`, `get_workspace_info`.
+`get_file_versions`, `get_workspace_info`, `manage_task`.
 
 If a tool you need is missing from the connector, use the closest one it does
 expose and tell the user what you could not do. If no Tandem tools are available
@@ -126,6 +126,12 @@ Someone else saved a newer version since you read it.
 - Publish authorized findings (facts learned, progress, answers to open
   questions) that teammates' assistants would need. Major context changes go
   through section 7.
+- Shared tasks (`manage_task`) split work with teammates' assistants. `sync_workspace`
+  returns active `tasks`. Before working on one, `claim` it with its `task_id`
+  and the `version` you read as `expected_version`; when the work is done,
+  `complete` it. If a claim fails with `TASK_ALREADY_CLAIMED` or
+  `VERSION_CONFLICT`, someone else took it: list again and pick another open
+  task. Claiming a task is not context ownership.
 
 ## 7. Record working context and propose major changes
 
@@ -175,6 +181,7 @@ Someone else saved a newer version since you read it.
 | `FILE_NOT_FOUND`                                                                              | Re-run `list_files`/`search_files` to get current ids. Don't guess ids.                                                                                                                                                                                                                                               |
 | `VERSION_CONFLICT`                                                                            | Follow section 4.                                                                                                                                                                                                                                                                                                     |
 | `NAME_EXISTS`                                                                                 | A file with that name already exists in that folder (`file_id`, `name`, `current_version` in the error). Read it with `read_file`. If it is the same deliverable, merge your content into it per section 3. Otherwise ask the user whether to update it or use a different name. Never replace its content wholesale. |
+| `TASK_ALREADY_CLAIMED`, `TASK_NOT_OWNER`, `TASK_DONE`, `TASK_NOT_FOUND`                       | Someone else owns the task, it is finished, or the id is wrong. List tasks with `manage_task` again and pick another open task; don't work on a task you don't own. |
 | `APPROVAL_REQUIRED`                                                                           | The change needs human approval. Switch to `propose_context_change` and tell the user.                                                                                                                                                                                                                                |
 | `INVALID_INPUT` or `Input validation error` (MCP error -32602)                                | Your arguments were rejected. Read the error message, fix the arguments, retry once. If `expected_version` was wrong (newer than the file), re-read with `read_file` and use its `file.version` rather than retrying with a guess.                                                                                    |
 

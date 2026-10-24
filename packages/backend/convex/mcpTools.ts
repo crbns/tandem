@@ -21,9 +21,14 @@ import {
 } from "./lib/agent";
 import {
   checkSourceFiles,
+  claimTaskCore,
+  completeTaskCore,
   createDocumentCore,
+  createTaskCore,
   getFileInWorkspace,
+  getTaskInWorkspace,
   listProposals,
+  listTasks,
   proposeContextChangeCore,
   publishWorkCore,
   searchFilesCore,
@@ -31,7 +36,9 @@ import {
   toFileMetadata,
   toPublishedWork,
   toProposal,
+  toTask,
   updateDocumentCore,
+  updateTaskCore,
 } from "./lib/ops";
 import {
   actorValidator,
@@ -43,6 +50,8 @@ import {
   proposalValidator,
   publishedWorkValidator,
   roleValidator,
+  taskStatusValidator,
+  taskValidator,
 } from "./lib/validators";
 
 const LIST_LIMIT = 200;
@@ -372,6 +381,8 @@ export const syncWorkspace = internalMutation({
     filesTruncated: v.boolean(),
     recentWork: v.array(publishedWorkValidator),
     workTruncated: v.boolean(),
+    tasks: v.array(taskValidator),
+    tasksTruncated: v.boolean(),
     events: v.array(eventValidator),
     eventsTruncated: v.boolean(),
     headSeq: v.number(),
@@ -484,6 +495,78 @@ export const getApprovals = internalMutation({
       proposal: toProposal(proposal),
       contextRevision: proposal.contextRevision ?? 0,
     }));
+  },
+});
+
+/**
+ * manage_task: list needs only read scope, every other operation needs write
+ * scope, so read-only connections can still see the task list. Ownership is
+ * by person (session.user), whichever of their assistants acts.
+ */
+export const manageTask = internalMutation({
+  args: {
+    principal,
+    workspaceId: v.optional(v.string()),
+    operation: v.union(
+      v.literal("list"),
+      v.literal("create"),
+      v.literal("claim"),
+      v.literal("update"),
+      v.literal("complete"),
+    ),
+    taskId: v.optional(v.string()),
+    title: v.optional(v.string()),
+    description: v.optional(v.string()),
+    /** list: filter (omit for all). update: "open" or "in_progress". */
+    status: v.optional(taskStatusValidator),
+    expectedVersion: v.optional(v.number()),
+    limit: v.optional(v.number()),
+  },
+  returns: v.union(
+    v.object({ task: taskValidator }),
+    v.object({ tasks: v.array(taskValidator) }),
+  ),
+  handler: async (ctx, args) => {
+    const { operation } = args;
+    const session = await agentCall(ctx, args.principal, {
+      write: operation !== "list",
+    });
+    const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
+    if (operation === "list") {
+      const limit = boundedInt(args.limit ?? 50, 1, 100);
+      const tasks = await listTasks(ctx, workspaceId, args.status, limit);
+      return { tasks: await Promise.all(tasks.map((task) => toTask(ctx, task))) };
+    }
+    if (operation === "create") {
+      const task = await createTaskCore(ctx, {
+        workspaceId,
+        title: args.title ?? "",
+        description: args.description ?? "",
+        actor: session.actor,
+      });
+      return { task: await toTask(ctx, task) };
+    }
+    if (args.taskId === undefined || args.expectedVersion === undefined)
+      throw new ConvexError({ code: "INVALID_INPUT" });
+    const task = await getTaskInWorkspace(ctx, args.taskId, workspaceId);
+    const base = {
+      task,
+      expectedVersion: args.expectedVersion,
+      userId: session.user._id,
+      actor: session.actor,
+    };
+    const updated =
+      operation === "claim"
+        ? await claimTaskCore(ctx, base)
+        : operation === "complete"
+          ? await completeTaskCore(ctx, base)
+          : await updateTaskCore(ctx, {
+              ...base,
+              title: args.title,
+              description: args.description,
+              status: args.status,
+            });
+    return { task: await toTask(ctx, updated) };
   },
 });
 

@@ -3,6 +3,7 @@ import type {
   ContextProposalInput,
   ContextDetails,
   PublishedWorkPage,
+  Task,
   WorkspaceMember,
   AgentClient,
   AgentConnection,
@@ -64,6 +65,8 @@ export interface TandemApi {
   proposeContextChange(workspaceId: string, input: ContextProposalInput): Promise<{ id: string; status: "pending" | "applied" }>;
   /** Newest first, cursor-paginated; maximum page size is 100. */
   listPublishedWork(workspaceId: string, cursor?: string | null, pageSize?: number): Promise<PublishedWorkPage>;
+  /** Every status, newest updatedAt first, at most 100. Read-only: assistants manage tasks over MCP. */
+  listTasks(workspaceId: string): Promise<Task[]>;
   /** Newest first, at most 100. Every member may read them. */
   listProposals(workspaceId: string, status?: ProposalStatus): Promise<ContextProposal[]>;
   /**
