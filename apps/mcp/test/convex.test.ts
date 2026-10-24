@@ -200,6 +200,22 @@ describe("Convex-backed server", () => {
     }
   });
 
+  it("rejects malformed tokens without calling Convex", async () => {
+    const verified: string[] = [];
+    const resolver = new ConvexTokenResolver({
+      verifyToken: async (token) => {
+        verified.push(token);
+        return null;
+      },
+    });
+    for (const key of ["x", "tdm_wrong", `tdm_${"a".repeat(42)}`, `tdm_${"a".repeat(44)}`, `tdm_${"a".repeat(42)}!`]) {
+      expect(await resolver.resolve(key)).toBeNull();
+    }
+    expect(verified).toEqual([]);
+    await resolver.resolve(TOKEN);
+    expect(verified).toEqual([TOKEN]);
+  });
+
   it("forwards the token on every call and converts shapes", async () => {
     const client = await connect({ Authorization: `Bearer ${TOKEN}` });
     const result = await call(client, "read_file", { file_id: "file1" });

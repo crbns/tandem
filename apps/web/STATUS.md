@@ -83,8 +83,8 @@ The backend functions exist; these need a seeded deployment (dev `NEXT_PUBLIC_CO
 | Check | Status | Notes |
 |---|---|---|
 | Production build passes | PASS | `next build` in real mode (placeholder Convex URL) and mock mode; standalone server at `.next/standalone/apps/web/server.js` |
-| Docker image builds | SKIPPED | Docker isn't installed on this machine. Run the `docker build` command in `README.md` on a machine that has it |
-| Compose + Caddy snippets, README deploy steps | PASS | `deploy/compose.web.yml`, `deploy/Caddyfile.web` (no root compose/Caddyfile exist yet) |
+| Docker image builds | PASS | web and MCP images build and run healthy behind Caddy in `deploy/compose.yml` (local stack test) |
+| Compose + Caddy, deploy steps | PASS | root `deploy/compose.yml` + `deploy/Caddyfile` (Caddy + web + MCP); runbook in `docs/deploy.md` |
 | Friendly copy for every error code | PASS | `lib/api/errorCopy.ts` |
 | Dev mock controls hidden in production | PASS | the image forces `NEXT_PUBLIC_USE_MOCKS=false`; controls only render when the mock API is mounted |
 | Seed-reset instructions link | PENDING (live) | Person 2 hasn't written them yet |

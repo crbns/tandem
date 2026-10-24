@@ -59,27 +59,16 @@ proxy.ts                 Convex Auth route protection (Next 16's name for middle
 lib/api/                 TandemApi interface, Convex + mock adapters, error normalization
 lib/editor/saveMachine   pure save/conflict reducer: never discards a draft, never auto-retries
 components/              shell, file table, editor, conflict panel, history, approvals, assistant connections
-deploy/                  compose + Caddy snippets for Vultr
 ```
 
 ## Deploy to Vultr
 
-The image builds from the **repo root** (it runs `turbo prune web --docker`). `NEXT_PUBLIC_*` values are baked in at build time, so rebuild after changing them.
+The web image runs in the root stack (`deploy/compose.yml`, Caddy + web + MCP); the full runbook is [`docs/deploy.md`](../../docs/deploy.md). The image builds from the **repo root** (it runs `turbo prune web --docker`). `NEXT_PUBLIC_*` values are baked in at build time, so rebuild after changing them.
 
 Local build check:
 
 ```bash
 docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud -t tandem-web .
 ```
-
-There's no root `docker-compose.yml` or `Caddyfile` yet. `deploy/compose.web.yml` and `deploy/Caddyfile.web` hold the `web` service and site block: merge them into the root files when they exist. Until then, use the snippet directly.
-
-On the Vultr instance (run these yourself):
-
-1. SSH in and `cd` to the checkout, then `git pull`.
-2. Put `NEXT_PUBLIC_CONVEX_URL` (production Convex URL) and optionally `NEXT_PUBLIC_DEFAULT_WORKSPACE_ID` in the root `.env`.
-3. `docker compose up -d --build web`. Until the root compose file exists, use `docker compose -f apps/web/deploy/compose.web.yml --env-file .env up -d --build web` from the repo root. The container healthcheck hits `/api/health`, which doesn't depend on Convex.
-4. Add a DNS A record for the web domain (e.g. `app.<domain>`) pointing at the instance IP, and set `WEB_DOMAIN` for Caddy.
-5. Ask Person 2 to confirm Convex Auth's `SITE_URL` in the Convex deployment env matches the production web URL (`https://app.<domain>`).
 
 Seed/reset of demo data is owned by Person 2 (`packages/backend`). Their reset instructions will be linked here once they exist.

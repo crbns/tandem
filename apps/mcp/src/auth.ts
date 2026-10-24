@@ -21,6 +21,12 @@ export interface IdentityResolver {
  * to. The token rides along on the actor as `credential` so every backend call
  * is authorized by Convex again; this server never decides identity itself.
  */
+/**
+ * Shape of a Convex agent connection token: "tdm_" + 32 random bytes as
+ * unpadded base64url. Keep in sync with packages/backend/convex/lib/agent.ts.
+ */
+export const AGENT_TOKEN_PATTERN = /^tdm_[A-Za-z0-9_-]{43}$/;
+
 export class ConvexTokenResolver implements IdentityResolver {
   constructor(
     private readonly verifier: {
@@ -31,7 +37,9 @@ export class ConvexTokenResolver implements IdentityResolver {
   ) {}
 
   async resolve(key: string | null): Promise<Identity | null> {
-    if (!key) return null;
+    // Malformed tokens can't be valid; reject them without a Convex call so
+    // internet noise on a public /mcp doesn't become backend usage.
+    if (!key || !AGENT_TOKEN_PATTERN.test(key)) return null;
     const verified = await this.verifier.verifyToken(key);
     return (
       verified && {

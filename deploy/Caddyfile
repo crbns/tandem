@@ -1,0 +1,23 @@
+# Caddy provisions HTTPS for both domains automatically. Their DNS A records
+# must point at this instance, and ports 80 and 443 must be open.
+# ACME_EMAIL: Let's Encrypt account email (required; Caddy rejects an empty value).
+{
+	email {$ACME_EMAIL}
+}
+
+# Web dashboard.
+{$WEB_DOMAIN} {
+	encode zstd gzip
+	# The app sets its other security headers itself (next.config.js).
+	header Strict-Transport-Security "max-age=31536000"
+	header -Server
+	reverse_proxy web:3000
+}
+
+# MCP server. Clients connect to https://{$MCP_DOMAIN}/mcp; the dashboard's
+# NEXT_PUBLIC_MCP_URL is https://{$MCP_DOMAIN}.
+{$MCP_DOMAIN} {
+	header Strict-Transport-Security "max-age=31536000"
+	header -Server
+	reverse_proxy mcp:8787
+}

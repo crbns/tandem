@@ -123,7 +123,7 @@ docker run --rm -p 8787:8787 -e CONVEX_URL=https://<deployment>.convex.cloud tan
 curl http://127.0.0.1:8787/healthz   # {"ok":true}
 ```
 
-On the Vultr instance, use `deploy/compose.mcp.yml` (runtime env: `CONVEX_URL`, optional `TANDEM_ALLOWED_ORIGINS`) behind Caddy with `deploy/Caddyfile.mcp`, which serves `https://$MCP_DOMAIN/mcp`. Set the dashboard's `NEXT_PUBLIC_MCP_URL` build arg to `https://$MCP_DOMAIN`.
+On Vultr it runs in the root stack (`deploy/compose.yml`) behind Caddy, which serves `https://$MCP_DOMAIN/mcp`; the dashboard's `NEXT_PUBLIC_MCP_URL` is `https://$MCP_DOMAIN`. Runbook: [`docs/deploy.md`](../../docs/deploy.md).
 
 ## Layout
 
