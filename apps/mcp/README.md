@@ -1,22 +1,31 @@
 # Tandem MCP server
 
-Remote MCP server (Streamable HTTP, stateless) that lets assistants read and edit Tandem workspace files.
+Stateless Streamable HTTP MCP server for workspace files. The local server currently uses an in-memory mock backend and development-only static bearer tokens. It is useful for exercising the MCP transport and tool contract; it is **not connected to the Convex data used by the web app** and is not production authentication.
 
-Tools: `list_files`, `read_file`, `create_document`, `update_document` (optimistic versioning via `expected_version`).
+Current tools: `list_files`, `read_file`, `create_document`, and `update_document`. Writes use optimistic versioning: `expected_version` must match the latest file version.
 
 ## Run locally
 
+From the repository root, start the web app and MCP server in separate terminals:
+
 ```sh
-pnpm install
+pnpm --filter web dev
+```
+
+```sh
 TANDEM_DEV_TOKENS=alex-dev-token:user_alex,sam-dev-token:user_sam pnpm --filter mcp dev
 ```
 
-- MCP endpoint: `POST http://localhost:8787/mcp` (GET/DELETE return 405 because the server is stateless)
+The web app uses `apps/web/.env.local` and `NEXT_PUBLIC_CONVEX_URL`. The MCP process reads its configuration from the process environment; it does not load `.env` files itself.
+
+- Web: `http://localhost:3000`
+- MCP endpoint: `POST http://localhost:8787/mcp` (stateless mode; GET and DELETE return 405)
 - Health check: `GET http://localhost:8787/healthz` returns `{"ok":true}`
+- Every MCP request requires `Authorization: Bearer <token>`. Missing or unknown tokens receive `401` and a `WWW-Authenticate` header.
 
-Every `/mcp` request needs `Authorization: Bearer <token>`. Missing or unknown tokens get `401` with a `WWW-Authenticate: Bearer` header. The env vars are read from the process environment; the server doesn't load `.env` files itself.
+The mock is reset when the MCP process restarts. Its seed workspace is `ws_demo`, with members `user_alex` and `user_sam`, and file `brief.md` at version 1. `user_jordan` is seeded in a separate workspace for tenant-isolation checks.
 
-Production build: `pnpm --filter mcp build && node apps/mcp/dist/index.js`.
+These static tokens are local test credentials only. Do not expose the MCP port publicly or reuse these identities outside the mock.
 
 ## Connect MCP Inspector
 
@@ -24,26 +33,34 @@ Production build: `pnpm --filter mcp build && node apps/mcp/dist/index.js`.
 npx @modelcontextprotocol/inspector
 ```
 
-In the Inspector UI choose transport **Streamable HTTP**, URL `http://localhost:8787/mcp`, and under Authentication set the bearer token to one from `TANDEM_DEV_TOKENS` (e.g. `alex-dev-token`).
+Choose transport **Streamable HTTP**, URL `http://localhost:8787/mcp`, and bearer token `alex-dev-token` or `sam-dev-token`.
 
 ## Environment
 
-| Variable            | Default | Meaning                                                                                                                              |
-| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `PORT`              | `8787`  | HTTP port                                                                                                                            |
-| `TANDEM_BACKEND`    | `mock`  | Storage backend. `mock` is in-memory and seeded with workspace `ws_demo` (members `user_alex`, `user_sam`) containing `brief.md` v1. |
-| `TANDEM_DEV_TOKENS` | empty   | Comma-separated `token:user_id` pairs for the dev identity resolver                                                                  |
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PORT` | `8787` | HTTP port |
+| `TANDEM_BACKEND` | `mock` | Only `mock` is implemented today. |
+| `TANDEM_DEV_TOKENS` | empty | Comma-separated `token:user_id` pairs for the local mock identity resolver. Empty means all MCP calls return 401. |
 
-## Layout
+## Integration status
 
-- `src/server.ts`: HTTP routing, bearer auth, per-request MCP server and transport
-- `src/tools.ts`: tool definitions; maps `TandemError` to `isError` results
-- `src/auth.ts`: `IdentityResolver` interface and the dev token resolver (swap for OAuth/JWT later)
-- `src/backend/types.ts`: `TandemBackend` interface; `src/backend/mock.ts`: in-memory implementation
-- `src/errors.ts`: `TandemError` and its error codes
+See [`../../docs/mvp-integration.md`](../../docs/mvp-integration.md) for the shared web/MCP data contract and the work required before connecting MCP to the Convex deployment. In particular, the current bearer-token resolver and mock `user_id` values are not Convex Auth identities, and production agent writes need verified identity plus agent attribution.
 
-The caller's identity always comes from the bearer token, never from tool arguments.
+## Source layout
 
-## Tests
+- `src/server.ts`: HTTP routing, bearer auth, and one MCP server per request
+- `src/tools.ts`: MCP tool schemas and domain-error mapping
+- `src/auth.ts`: identity-resolver contract and local static-token resolver
+- `src/backend/types.ts`: backend contract
+- `src/backend/mock.ts`: in-memory local implementation
+- `src/errors.ts`: stable MCP-facing error codes
 
-`pnpm --filter mcp test` starts the server on an ephemeral port and drives it with the SDK client.
+The caller identity comes from the verified bearer token, never from tool arguments. The static resolver is intentionally suitable only for the mock backend.
+
+## Build and test
+
+```sh
+pnpm --filter mcp build
+pnpm --filter mcp test
+```
