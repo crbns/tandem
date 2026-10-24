@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
-import { BotIcon, ChevronDownIcon, FileTextIcon, LogOutIcon, StampIcon, type LucideIcon } from "lucide-react";
+import { BotIcon, BookOpenIcon, ChevronDownIcon, FileTextIcon, LogOutIcon, StampIcon, type LucideIcon } from "lucide-react";
 import { useSession } from "@/lib/auth/useSession";
 import { signOutAndLeave } from "@/lib/auth/signOutAndLeave";
 import { countDraftStashes } from "@/lib/editor/draftStash";
@@ -41,6 +41,7 @@ interface AppShellProps {
 function crumbFor(pathname: string, filesHref: string): string {
   if (pathname.endsWith("/history")) return "History";
   if (pathname.startsWith(`${filesHref}/files/`)) return "File";
+  if (pathname.startsWith(`${filesHref}/context`)) return "Project context";
   if (pathname.startsWith(`${filesHref}/approvals`)) return "Approvals";
   if (pathname.startsWith(`${filesHref}/assistants`)) return "Assistants";
   return "Files";
@@ -103,6 +104,7 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
               <span className="label-caps ml-auto font-normal text-muted-foreground">{fileCount}</span>
             )}
           </NavItem>
+          <NavItem href={`${filesHref}/context`} icon={BookOpenIcon} label="Project context" active={pathname.startsWith(`${filesHref}/context`)} current={pathname === `${filesHref}/context`} />
           <NavItem
             href={`${filesHref}/approvals`}
             icon={StampIcon}
@@ -174,6 +176,10 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {/* The rail is hidden on small screens; these keep its sections reachable. */}
+                <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/context`)}>
+                  <BookOpenIcon />
+                  Project context
+                </DropdownMenuItem>
                 <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/approvals`)}>
                   <StampIcon />
                   Approvals
