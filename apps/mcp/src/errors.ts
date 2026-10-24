@@ -3,6 +3,7 @@ export type TandemErrorCode =
   | "FORBIDDEN"
   | "FILE_NOT_FOUND"
   | "VERSION_CONFLICT"
+  | "NAME_EXISTS"
   | "APPROVAL_REQUIRED"
   | "INVALID_INPUT";
 
@@ -49,5 +50,35 @@ export function versionConflict(
       current_version: currentVersion,
       expected_version: expectedVersion,
     },
+  );
+}
+
+export function versionAhead(
+  fileId: string,
+  currentVersion: number,
+  expectedVersion: number,
+): TandemError {
+  return new TandemError(
+    "INVALID_INPUT",
+    `expected_version ${expectedVersion} is newer than the file's current version ${currentVersion}. ` +
+      `Use the file.version returned by read_file.`,
+    {
+      file_id: fileId,
+      current_version: currentVersion,
+      expected_version: expectedVersion,
+    },
+  );
+}
+
+export function nameExists(
+  fileId: string,
+  name: string,
+  version: number,
+): TandemError {
+  return new TandemError(
+    "NAME_EXISTS",
+    `A file named ${name} already exists (file_id ${fileId}, version ${version}). ` +
+      `Read it with read_file and update it with update_document, or choose a different name.`,
+    { file_id: fileId, name, version },
   );
 }

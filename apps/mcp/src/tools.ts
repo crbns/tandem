@@ -26,7 +26,9 @@ export function createMcpServer(
         folder_id: z
           .string()
           .optional()
-          .describe("Only list files directly inside this folder."),
+          .describe(
+            "Folder to list. Folders aren't supported yet, so omit this.",
+          ),
         query: z
           .string()
           .optional()
@@ -59,7 +61,8 @@ export function createMcpServer(
       title: "Create document",
       description:
         "Create a new text document in the workspace. It starts at version 1. " +
-        "Check list_files first so you don't create a duplicate of an existing file.",
+        "Check list_files first so you don't create a duplicate of an existing file; " +
+        "a name already used in the workspace (case-insensitive) fails with NAME_EXISTS.",
       inputSchema: {
         name: z
           .string()

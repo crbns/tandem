@@ -1,15 +1,18 @@
 import type { Actor } from "./backend/types.js";
 
 /**
- * Turns a bearer token into a verified identity. The dev resolver below will be
+ * Turns an API key into a verified identity. The dev resolver below will be
  * replaced by an OAuth/JWT verifier implementing the same interface.
  */
 export interface IdentityResolver {
-  /** Returns null when the token is unknown, expired, or invalid. */
-  resolve(token: string): Promise<Actor | null>;
+  /**
+   * `key` is null when the request has no `api-key` header. Returns null when
+   * the key is missing, unknown, expired, or invalid.
+   */
+  resolve(key: string | null): Promise<Actor | null>;
 }
 
-/** Resolves tokens from a static map, e.g. TANDEM_DEV_TOKENS="token1:user_alex,token2:user_sam". */
+/** Resolves keys from a static map, e.g. TANDEM_DEV_TOKENS="key1:user_alex,key2:user_sam". */
 export class DevTokenResolver implements IdentityResolver {
   private readonly tokens: Map<string, string>;
 
@@ -25,13 +28,64 @@ export class DevTokenResolver implements IdentityResolver {
     return this.tokens.size;
   }
 
-  async resolve(token: string): Promise<Actor | null> {
-    const userId = this.tokens.get(token);
+  async resolve(key: string | null): Promise<Actor | null> {
+    const userId = key ? this.tokens.get(key) : undefined;
     return userId ? { user_id: userId, client: "dev-token" } : null;
   }
 }
 
-export function bearerToken(header: string | undefined): string | null {
-  const match = header?.match(/^Bearer\s+(\S+)$/i);
-  return match?.[1] ?? null;
+/**
+ * TEMPORARY dev aid for clients that can't send a static API key (claude.ai
+ * custom connectors before OAuth lands): requests with no `api-key` header act
+ * as a fixed user. Requests that do carry a key still go through `inner`.
+ */
+export class DevAnonResolver implements IdentityResolver {
+  constructor(
+    private readonly inner: IdentityResolver,
+    readonly userId: string,
+  ) {}
+
+  async resolve(key: string | null): Promise<Actor | null> {
+    if (key === null) return { user_id: this.userId, client: "dev-anon" };
+    return this.inner.resolve(key);
+  }
+}
+
+/** Wraps `inner` in DevAnonResolver when TANDEM_DEV_ANON_USER is set; refuses outside mock dev. */
+export function withDevAnon(
+  inner: IdentityResolver,
+  env: NodeJS.ProcessEnv,
+): IdentityResolver {
+  const userId = env.TANDEM_DEV_ANON_USER?.trim();
+  if (!userId) return inner;
+  if (
+    env.NODE_ENV === "production" ||
+    (env.TANDEM_BACKEND ?? "mock") !== "mock"
+  ) {
+    throw new Error(
+      "TANDEM_DEV_ANON_USER is only allowed with TANDEM_BACKEND=mock outside NODE_ENV=production. Unset it.",
+    );
+  }
+  return new DevAnonResolver(inner, userId);
+}
+
+/**
+ * Resolves the `api-key` header value (`req.headers["api-key"]`). Only a missing
+ * header counts as anonymous; an empty or repeated header is rejected like an
+ * unknown key.
+ */
+export async function authenticate(
+  identity: IdentityResolver,
+  header: string | string[] | undefined,
+): Promise<Actor | null> {
+  if (header === undefined) return identity.resolve(null);
+  const key = apiKeyFromHeader(header);
+  return key ? identity.resolve(key) : null;
+}
+
+export function apiKeyFromHeader(
+  header: string | string[] | undefined,
+): string | null {
+  if (typeof header !== "string") return null;
+  return header.trim() || null;
 }

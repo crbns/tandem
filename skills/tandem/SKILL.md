@@ -116,8 +116,9 @@ Someone else saved a newer version since you read it.
 | `FORBIDDEN` | Tell the user they don't have access to that workspace or file. Don't retry or try workarounds. |
 | `FILE_NOT_FOUND` | Re-run `list_files`/`search_files` to get current ids. Don't guess ids. |
 | `VERSION_CONFLICT` | Follow section 4. |
+| `NAME_EXISTS` | A file with that name exists. Read it and update it with `update_document` instead of creating a duplicate; only pick a new name if the user wants a separate file. |
 | `APPROVAL_REQUIRED` | The change needs human approval. Switch to `propose_context_change` and tell the user. |
-| `INVALID_INPUT` or `Input validation error` (MCP error -32602) | Your arguments were rejected. Read the error message, fix the arguments, retry once. |
+| `INVALID_INPUT` or `Input validation error` (MCP error -32602) | Your arguments were rejected. Read the error message, fix the arguments, retry once. If `expected_version` was wrong (newer than the file), re-read with `read_file` and use its `file.version` rather than retrying with a guess. |
 
 For any other error, report it to the user in plain words and don't invent a
 success.

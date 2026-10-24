@@ -1,4 +1,4 @@
-/** Who is making a request. Always comes from the verified bearer token, never from tool arguments. */
+/** Who is making a request. Always comes from the verified API key, never from tool arguments. */
 export interface Actor {
   user_id: string;
   /** The agent client the token was issued to (e.g. an OAuth client id). */
@@ -29,11 +29,17 @@ export interface FileWithContent {
 
 export interface ListFilesInput {
   workspace_id?: string;
+  /** Folders aren't supported yet: throw INVALID_INPUT for any folder_id. */
   folder_id?: string;
   query?: string;
 }
 
 export interface CreateDocumentInput {
+  /**
+   * Unique per workspace and parent, compared trimmed and case-insensitively.
+   * If a file with the same name exists there, throw NAME_EXISTS with its
+   * file_id, name, and current version.
+   */
   name: string;
   content: string;
   mime_type: string;
@@ -63,7 +69,10 @@ export interface TandemBackend {
     actor: Actor,
     input: CreateDocumentInput,
   ): Promise<FileMetadata>;
-  /** Atomically writes version N+1 only if `expected_version` equals the current version N. */
+  /**
+   * Atomically writes version N+1 only if `expected_version` equals the current version N.
+   * Throws VERSION_CONFLICT when it is lower than N, and INVALID_INPUT when it is higher.
+   */
   updateDocument(
     actor: Actor,
     input: UpdateDocumentInput,

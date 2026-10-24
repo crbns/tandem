@@ -3,6 +3,8 @@ import {
   TandemError,
   fileNotFound,
   forbidden,
+  nameExists,
+  versionAhead,
   versionConflict,
 } from "../errors.js";
 import type {
@@ -73,12 +75,17 @@ export class MockBackend implements TandemBackend {
     input: ListFilesInput,
   ): Promise<FileMetadata[]> {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
+    // No folders in the mock yet, so no folder_id can name a valid folder.
+    if (input.folder_id !== undefined) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "Folders are not supported yet; omit folder_id.",
+        { folder_id: input.folder_id },
+      );
+    }
     const query = input.query?.toLowerCase();
     return [...this.files.values()]
       .filter((f) => f.workspace_id === workspaceId)
-      .filter(
-        (f) => input.folder_id === undefined || f.parent_id === input.folder_id,
-      )
       .filter(
         (f) => query === undefined || f.name.toLowerCase().includes(query),
       )
@@ -103,6 +110,16 @@ export class MockBackend implements TandemBackend {
         { parent_id: input.parent_id },
       );
     }
+    const key = nameKey(input.name);
+    const existing = [...this.files.values()].find(
+      (f) =>
+        f.workspace_id === workspaceId &&
+        f.parent_id === null &&
+        nameKey(f.name) === key,
+    );
+    if (existing) {
+      throw nameExists(existing.id, existing.name, head(existing).version);
+    }
     const file: StoredFile = {
       id: `file_${randomUUID()}`,
       workspace_id: workspaceId,
@@ -121,7 +138,10 @@ export class MockBackend implements TandemBackend {
   ): Promise<FileMetadata> {
     const file = this.getFile(actor, input.file_id);
     const current = head(file).version;
-    if (input.expected_version !== current) {
+    if (input.expected_version > current) {
+      throw versionAhead(file.id, current, input.expected_version);
+    }
+    if (input.expected_version < current) {
       throw versionConflict(file.id, current, input.expected_version);
     }
     file.revisions.push(newRevision(actor, current + 1, input.content));
@@ -156,6 +176,10 @@ export class MockBackend implements TandemBackend {
       throw fileNotFound(fileId);
     return file;
   }
+}
+
+function nameKey(name: string): string {
+  return name.trim().toLowerCase();
 }
 
 function head(file: StoredFile): Revision {

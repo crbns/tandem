@@ -1,6 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { bearerToken, type IdentityResolver } from "./auth.js";
+import { authenticate, type IdentityResolver } from "./auth.js";
 import type { TandemBackend } from "./backend/types.js";
 import { createMcpServer } from "./tools.js";
 
@@ -21,14 +21,14 @@ export function createApp({ backend, identity }: AppOptions): Server {
         return sendJson(res, 404, { error: "not_found" });
       }
 
-      const token = bearerToken(req.headers.authorization);
-      const actor = token ? await identity.resolve(token) : null;
+      // Static dev API keys for now; OAuth via the Convex MCP component
+      // (docs/mcp-auth-design.md) will replace this, including WWW-Authenticate.
+      const actor = await authenticate(identity, req.headers["api-key"]);
       if (!actor) {
-        res.setHeader("WWW-Authenticate", 'Bearer realm="tandem"');
         return sendJson(res, 401, {
           error: {
             code: "UNAUTHENTICATED",
-            message: "Missing or invalid bearer token.",
+            message: "Missing or invalid api-key header.",
           },
         });
       }
