@@ -10,6 +10,8 @@ Tools:
 - Sync: `sync_workspace` (approved context, pending proposal summaries, changed files, events, and an opaque `cursor`; pass it back as `since` for incremental syncs). It only records the last sync time.
 - Write: `create_document` (in a folder via `parent_id` or `folder_path`), `update_document` (optimistic versioning via `expected_version`), `create_folder` (idempotent `mkdir -p`), `move_file` (versioned like an edit), `move_folder` (checked by `expected_revision`), `propose_context_change` (creates a pending proposal, never changes context), `publish_work` (records an authorized deliverable or finding)
 
+Loop guidance: the server sends `MCP_INSTRUCTIONS` at initialize, and successful `sync_workspace`, `create_document`, `update_document`, `publish_work` and `propose_context_change` results carry `next_steps` (fixed text plus server-generated ids and versions, never workspace content) restating "read before, write back after". `src/loop.ts` is a copy of the Convex server's `convex/lib/mcpLoop.ts`; `test/loopParity.test.ts` keeps them identical.
+
 Approving or rejecting proposals is not an MCP tool: humans do it in the dashboard (`TandemBackend.decideProposal`, owners and admins only). `TandemBackend.applyContextChange` always throws `APPROVAL_REQUIRED` for agents.
 
 ## Data model

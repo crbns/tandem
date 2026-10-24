@@ -3,6 +3,13 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Actor, TandemBackend } from "./backend/types.js";
 import { TandemError } from "./errors.js";
+import {
+  MCP_INSTRUCTIONS,
+  proposedNextSteps,
+  publishedNextSteps,
+  savedNextSteps,
+  syncNextSteps,
+} from "./loop.js";
 
 const contextAdditionValue = z.union([
   z.string().trim().min(1).max(2000),
@@ -17,7 +24,10 @@ export function createMcpServer(
   backend: TandemBackend,
   actor: Actor,
 ): McpServer {
-  const server = new McpServer({ name: "tandem", version: "0.0.0" });
+  const server = new McpServer(
+    { name: "tandem", version: "0.0.0" },
+    { instructions: MCP_INSTRUCTIONS },
+  );
 
   server.registerTool(
     "get_workspace_info",
@@ -52,6 +62,8 @@ export function createMcpServer(
     {
       title: "Sync workspace",
       description:
+        "Call this before any workspace-related work, then again with since before significant decisions or writes. " +
+        "next_steps restates the loop: read the files the task touches before working, write back and publish after. " +
         "Get the workspace context (approved goal, scope, decisions and ownership; working constraints and open questions), " +
         "List entries retain stable IDs and resolved/superseded history: use active entries as current context. " +
         "summaries of pending proposals, changed files, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. Safe to call at the start of project work and again before a significant write. " +
@@ -84,7 +96,11 @@ export function createMcpServer(
         openWorldHint: false,
       },
     },
-    (args) => run(() => backend.syncWorkspace(actor, args)),
+    (args) =>
+      run(async () => ({
+        ...(await backend.syncWorkspace(actor, args)),
+        next_steps: syncNextSteps(),
+      })),
   );
 
   server.registerTool(
@@ -234,7 +250,8 @@ export function createMcpServer(
         "Without either it goes in the root folder. " +
         "Check list_files first so you don't create a duplicate of an existing file; " +
         "a name already used by a file or folder in the same folder (case-insensitive, surrounding whitespace ignored) fails with NAME_EXISTS. " +
-        'Names can\'t contain "/".',
+        'Names can\'t contain "/". ' +
+        "If you haven't called sync_workspace in this conversation, do that first.",
       inputSchema: {
         name: z
           .string()
@@ -273,7 +290,7 @@ export function createMcpServer(
         openWorldHint: false,
       },
     },
-    (args) => run(() => backend.createDocument(actor, args)),
+    (args) => run(async () => saved(await backend.createDocument(actor, args))),
   );
 
   server.registerTool(
@@ -283,7 +300,8 @@ export function createMcpServer(
       description:
         "Replace a document's full content, creating version N+1. expected_version must equal the version you last read; " +
         "if someone else changed the file since, this fails with VERSION_CONFLICT and nothing is written. " +
-        "On conflict, re-read with read_file, merge your changes into the latest content, and retry with the new version.",
+        "On conflict, re-read with read_file, merge your changes into the latest content, and retry with the new version. " +
+        "If you haven't called sync_workspace in this conversation, do that first.",
       inputSchema: {
         file_id: z
           .string()
@@ -304,7 +322,7 @@ export function createMcpServer(
         openWorldHint: false,
       },
     },
-    (args) => run(() => backend.updateDocument(actor, args)),
+    (args) => run(async () => saved(await backend.updateDocument(actor, args))),
   );
 
   server.registerTool(
@@ -531,15 +549,16 @@ export function createMcpServer(
       },
     },
     (args) =>
-      run(async () => ({
-        proposal: await backend.proposeContextChange(actor, {
+      run(async () => {
+        const proposal = await backend.proposeContextChange(actor, {
           ...args,
           proposed_value:
             args.operation === "add"
               ? contextAdditionValue.parse(args.proposed_value)
               : undefined,
-        }),
-      })),
+        });
+        return { proposal, next_steps: proposedNextSteps(proposal.status) };
+      }),
   );
 
   server.registerTool(
@@ -617,10 +636,20 @@ export function createMcpServer(
       },
     },
     (args) =>
-      run(async () => ({ published: await backend.publishWork(actor, args) })),
+      run(async () => ({
+        published: await backend.publishWork(actor, args),
+        next_steps: publishedNextSteps(),
+      })),
   );
 
   return server;
+}
+
+/** A saved file's metadata plus what to do next. */
+function saved<T extends { id: string; version: number }>(
+  file: T,
+): T & { next_steps: string[] } {
+  return { ...file, next_steps: savedNextSteps(file) };
 }
 
 async function run(fn: () => Promise<object>): Promise<CallToolResult> {

@@ -7,6 +7,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { ALL_MCP_SCOPES } from "./lib/mcpConfig";
 import { toToolError } from "./lib/mcpContract";
+import { proposedNextSteps, publishedNextSteps, savedNextSteps, syncNextSteps } from "./lib/mcpLoop";
 import schema from "./schema";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -2994,8 +2995,10 @@ describe("sync brief and server instructions", () => {
     const { t, token, tool, old, blocker, goal, doc, published, workspaceId } = await seeded();
     const sync = await tool("sync_workspace");
     expect(Object.keys(sync)[0]).toBe("brief");
-    // Everything after the brief is the pre-brief contract, key for key and value for value.
-    const { brief, ...rest } = sync;
+    // Everything between the brief and next_steps is the pre-brief contract, key for key and value for value.
+    const { brief, next_steps, ...rest } = sync;
+    expect(Object.keys(sync).at(-1)).toBe("next_steps");
+    expect(next_steps).toEqual(syncNextSteps());
     expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "pending_proposals", "changed_files", "files_truncated", "folders", "folders_truncated",
       "recent_work", "work_truncated", "tasks", "tasks_truncated", "events", "events_truncated", "cursor"]);
     const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
@@ -3047,7 +3050,7 @@ describe("sync brief and server instructions", () => {
     const compact = await tool("sync_workspace", { detail: "brief" });
     const full = await tool("sync_workspace");
     expect(Object.keys(compact)).toEqual(["brief", "workspace", "context_version", "changed_files", "deleted_file_ids", "files_truncated",
-      "recent_work", "work_truncated", "tasks", "tasks_truncated", "events_truncated", "cursor"]);
+      "recent_work", "work_truncated", "tasks", "tasks_truncated", "events_truncated", "cursor", "next_steps"]);
     expect(compact).not.toHaveProperty("context");
     expect(compact).not.toHaveProperty("events");
     expect(compact).not.toHaveProperty("pending_proposals");
@@ -3071,9 +3074,57 @@ describe("sync brief and server instructions", () => {
     expect(bad.isError).toBe(true);
   });
 
+  it("restates the read-before / write-back loop in next_steps on the results that open and close work", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const tool = async (name: string, args: Record<string, unknown> = {}) => {
+      const result = await callTool(t, apiKey, name, args);
+      expect(result.isError).toBeUndefined();
+      return result.structuredContent;
+    };
+
+    expect((await tool("sync_workspace", { detail: "brief" })).next_steps).toEqual(syncNextSteps());
+
+    const created = await tool("create_document", { name: "loop.md", content: "v1" });
+    expect(created.next_steps).toEqual(savedNextSteps(created as { id: string; version: number }));
+    expect(created.next_steps.join(" ")).toMatch(/expected_version=1.*publish_work.*propose_context_change/s);
+    const { next_steps: savedSteps, ...file } = created;
+    expect(file).toEqual(expect.objectContaining({ id: expect.any(String), path: "/loop.md", version: 1 }));
+    expect(savedSteps[1]).toContain(`["${created.id}"]`);
+
+    const updated = await tool("update_document", { file_id: created.id, content: "v2", expected_version: 1 });
+    expect(updated.next_steps[0]).toBe("Saved as version 2; pass expected_version=2 for your next edit of this file.");
+    expect(updated.next_steps.join(" ")).not.toContain("loop.md");
+
+    const { next_steps: publishedSteps } = await tool("publish_work", { kind: "deliverable", title: "Loop", summary: "Done", file_ids: [created.id] });
+    expect(publishedSteps).toEqual(publishedNextSteps());
+
+    const pending = await tool("propose_context_change", { field: "goal", proposed_value: "Ship", rationale: "Kickoff" });
+    expect(pending.proposal.status).toBe("pending");
+    expect(pending.next_steps).toEqual(proposedNextSteps("pending"));
+    expect(pending.next_steps.join(" ")).toMatch(/human owner or admin/);
+
+    await automatic(alex, workspaceId);
+    const applied = await tool("propose_context_change", { field: "constraints", proposed_value: "No mobile", rationale: "Budget" });
+    expect(applied.proposal.status).toBe("applied");
+    expect(applied.next_steps).toEqual(proposedNextSteps("applied"));
+  });
+
+  it("keeps next_steps off read results and error results", async () => {
+    const { t, sam, workspaceId } = await setup();
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const created = (await callTool(t, apiKey, "create_document", { name: "r.md", content: "x" })).structuredContent;
+    const read = await callTool(t, apiKey, "read_file", { file_id: created.id });
+    expect(read.structuredContent).not.toHaveProperty("next_steps");
+    const stale = await callTool(t, apiKey, "update_document", { file_id: created.id, content: "y", expected_version: 7 });
+    expect(stale.isError).toBe(true);
+    expect(stale.structuredContent).not.toHaveProperty("next_steps");
+  });
+
   it("tells assistants when to sync and how to share work back, in a short instructions string", async () => {
     const { MCP_INSTRUCTIONS } = await import("./mcp");
-    for (const term of ["sync_workspace", "since", "cursor", "publish_work", "propose_context_change", "expected_version", "best effort", "untrusted"])
+    for (const term of ["sync_workspace", "since", "cursor", "read_file", "update_document", "publish_work", "propose_context_change",
+      "expected_version", "open_questions", "best effort", "without waiting to be asked", "private conversation history", "untrusted"])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);

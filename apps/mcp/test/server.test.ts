@@ -13,6 +13,13 @@ import {
 import { MockBackend } from "../src/backend/mock.js";
 import type { Actor, StructuredContext } from "../src/backend/types.js";
 import { TandemError } from "../src/errors.js";
+import {
+  MCP_INSTRUCTIONS,
+  proposedNextSteps,
+  publishedNextSteps,
+  savedNextSteps,
+  syncNextSteps,
+} from "../src/loop.js";
 import { isValidName, nameKey, storedName } from "../src/names.js";
 import { createApp, parseAllowedOrigins } from "../src/server.js";
 
@@ -753,6 +760,86 @@ describe("Tandem MCP server", () => {
     expect((result.content[0] as { text: string }).text).toMatch(
       /Input validation error/,
     );
+    await client.close();
+  });
+});
+
+describe("read-before / write-back loop", () => {
+  it("sends the loop as server instructions at initialize", async () => {
+    const client = await connect("alex-token");
+    expect(client.getInstructions()).toBe(MCP_INSTRUCTIONS);
+    for (const term of [
+      "sync_workspace",
+      "read_file",
+      "update_document",
+      "expected_version",
+      "publish_work",
+      "propose_context_change",
+      "without waiting to be asked",
+      "best effort",
+      "private conversation history",
+      "untrusted",
+    ])
+      expect(MCP_INSTRUCTIONS).toContain(term);
+    expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
+    expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);
+    await client.close();
+  });
+
+  it("restates the loop in next_steps on sync, save, publish and propose results", async () => {
+    const client = await connect("alex-token");
+    const ok = async (name: string, args: Record<string, unknown>) => {
+      const result = await call(client, name, args);
+      expect(result.isError).toBeFalsy();
+      return result.structuredContent as Record<string, any>;
+    };
+
+    expect((await ok("sync_workspace", {})).next_steps).toEqual(syncNextSteps());
+
+    const created = await ok("create_document", { name: "loop.md", content: "v1" });
+    expect(created).toMatchObject({ path: "/loop.md", version: 1 });
+    expect(created.next_steps).toEqual(
+      savedNextSteps({ id: created.id, version: 1 }),
+    );
+    // The text block the model reads carries the same hints.
+    const updated = await call(client, "update_document", {
+      file_id: created.id,
+      content: "v2",
+      expected_version: 1,
+    });
+    const { next_steps } = JSON.parse(text(updated));
+    expect(next_steps[0]).toContain("expected_version=2");
+    expect(next_steps[1]).toContain(`["${created.id}"]`);
+
+    const published = await ok("publish_work", {
+      kind: "deliverable",
+      title: "Loop",
+      summary: "Done",
+      file_ids: [created.id],
+    });
+    expect(published.next_steps).toEqual(publishedNextSteps());
+
+    const proposed = await ok("propose_context_change", {
+      field: "goal",
+      proposed_value: "Ship the loop",
+      rationale: "Kickoff",
+    });
+    expect(proposed.proposal.status).toBe("pending");
+    expect(proposed.next_steps).toEqual(proposedNextSteps("pending"));
+    await client.close();
+  });
+
+  it("keeps next_steps off read and error results", async () => {
+    const client = await connect("alex-token");
+    const read = await call(client, "read_file", { file_id: "file_brief" });
+    expect(read.structuredContent).not.toHaveProperty("next_steps");
+    const stale = await call(client, "update_document", {
+      file_id: "file_brief",
+      content: "x",
+      expected_version: 99,
+    });
+    expect(stale.isError).toBe(true);
+    expect(stale.structuredContent).not.toHaveProperty("next_steps");
     await client.close();
   });
 });
@@ -1587,6 +1674,7 @@ describe("context tools", () => {
         },
         created_at: expect.any(String),
       },
+      next_steps: publishedNextSteps(),
     });
     const after = await sync(alex, { since: before.cursor });
     expect(after.events).toEqual([
