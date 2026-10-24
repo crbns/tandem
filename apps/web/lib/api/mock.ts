@@ -194,11 +194,17 @@ export function createMockApi({
     const userId = signedInUser();
     if (!membersFor(workspaceId).has(userId)) throw new TandemApiError("FORBIDDEN");
   };
-  const validateChange = (workspaceId: string, input: ContextChangeInput) => {
+  const validateSources = (workspaceId: string, sourceFileIds: string[], existingFileIds: string[] = []) => {
+    if (sourceFileIds.some((id) => {
+      const file = files.get(id);
+      return !file || file.summary.workspaceId !== workspaceId ||
+        (file.deletedAt !== undefined && !existingFileIds.includes(id));
+    })) throw new TandemApiError("INVALID_INPUT");
+  };
+  const validateChange = (workspaceId: string, input: ContextChangeInput, existingFileIds: string[] = []) => {
     if (!input.proposedValue.trim() || input.proposedValue.length > 10000)
       throw new TandemApiError("INVALID_INPUT");
-    if (input.sourceFileIds.some((id) => files.get(id)?.summary.workspaceId !== workspaceId))
-      throw new TandemApiError("INVALID_INPUT");
+    validateSources(workspaceId, input.sourceFileIds, existingFileIds);
     if (input.field === "ownership") {
       if (!input.ownerUserId || !membersFor(workspaceId).has(input.ownerUserId) || input.proposedValue.trim().length > 200)
         throw new TandemApiError("INVALID_INPUT");
@@ -509,7 +515,6 @@ export function createMockApi({
       requireAdmin(workspaceId);
       const ctx = details.get(workspaceId)!;
       if (input.expectedVersion !== ctx.version) throw new TandemApiError("VERSION_CONFLICT", { currentVersion: ctx.version });
-      validateChange(workspaceId, input);
       const key = { constraint: "constraints", decision: "decisions", ownership: "ownership", open_question: "openQuestions" } as const;
       if (input.entryIndex !== undefined && (input.field === "goal" || input.field === "scope" || !Number.isInteger(input.entryIndex) || input.entryIndex < 0 || input.entryIndex >= ctx[key[input.field]].length))
         throw new TandemApiError("INVALID_INPUT");
@@ -521,6 +526,10 @@ export function createMockApi({
       }
       if (input.field !== "goal" && input.field !== "scope" && index !== undefined && ctx[key[input.field]][index]?.status !== "active")
         throw new TandemApiError("INVALID_INPUT");
+      const existing = input.field === "goal" || input.field === "scope"
+        ? ctx[input.field]
+        : index !== undefined ? ctx[key[input.field]][index] : undefined;
+      validateChange(workspaceId, input, existing?.sourceFileIds);
       applyChange(workspaceId, input, getActor(), index);
       notify(workspaceId);
       return { version: ctx.version };
@@ -535,8 +544,6 @@ export function createMockApi({
         if (!members?.has(actor.userId)) throw new TandemApiError("FORBIDDEN");
       } else requireMember(workspaceId);
       const ctx = details.get(workspaceId)!;
-      if (input.sourceFileIds.some((id) => files.get(id)?.summary.workspaceId !== workspaceId))
-        throw new TandemApiError("INVALID_INPUT");
       const operation = input.operation ?? "add";
       if (input.expectedVersion !== undefined && input.expectedVersion !== ctx.version)
         throw new TandemApiError("VERSION_CONFLICT", { currentVersion: ctx.version });
@@ -549,9 +556,11 @@ export function createMockApi({
         const entries = input.field === "constraint" ? ctx.constraints : ctx.openQuestions;
         const index = entries.findIndex((entry) => entry.id === input.entryId && (operation === "remove" || entry.status === "active"));
         if (index < 0) throw new TandemApiError("INVALID_INPUT");
+        validateSources(workspaceId, input.sourceFileIds, entries[index]!.sourceFileIds);
         proposedValue = entries[index]!.text;
       } else {
-        validateChange(workspaceId, { ...input, proposedValue });
+        const existing = input.field === "goal" || input.field === "scope" ? ctx[input.field] : undefined;
+        validateChange(workspaceId, { ...input, proposedValue }, existing?.sourceFileIds);
         if (input.entryId !== undefined) throw new TandemApiError("INVALID_INPUT");
         if (input.supersedes !== undefined && (input.field !== "decision" || !ctx.decisions.some((entry) => entry.id === input.supersedes && entry.status === "active")))
           throw new TandemApiError("INVALID_INPUT");
@@ -619,7 +628,8 @@ export function createMockApi({
           throw new TandemApiError("VERSION_CONFLICT");
         }
         const input = { ...proposal, proposedValue: proposal.ownerArea ?? proposal.proposedValue };
-        validateChange(workspaceId, input);
+        // Sources were accepted when proposed; deletion must not strand approval.
+        validateChange(workspaceId, input, proposal.sourceFileIds);
         const target = proposal.supersedes ? details.get(workspaceId)!.decisions.find((entry) => entry.id === proposal.supersedes) : undefined;
         if (proposal.supersedes && target?.status !== "active") {
           proposal.status = "stale";

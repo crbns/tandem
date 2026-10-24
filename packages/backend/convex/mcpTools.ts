@@ -450,7 +450,7 @@ export const proposeContextChange = internalMutation({
       proposedValue: (args.operation ?? "add") === "add"
         ? boundedText(args.proposedValue ?? "", 2000, "proposedValue") : undefined,
       rationale: boundedText(args.rationale, 2000, "rationale"),
-      sourceFileIds: await checkSourceFiles(ctx, workspaceId, args.sourceFileIds),
+      sourceFileIds: args.sourceFileIds,
       ownerUserId: args.ownerUserId,
       actor: session.actor,
     });

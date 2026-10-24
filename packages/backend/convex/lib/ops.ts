@@ -40,11 +40,12 @@ export async function getFileInWorkspace(
   return file;
 }
 
-/** Deduplicated file ids, each in `workspaceId`; otherwise INVALID_SOURCE_FILE. */
+/** Validate sources, preserving soft-deleted references already on the target. */
 export async function checkSourceFiles(
   ctx: ReadCtx,
   workspaceId: Id<"workspaces">,
   fileIds: string[],
+  existingFileIds: readonly string[] = [],
 ): Promise<Id<"files">[]> {
   const unique = [...new Set(fileIds)];
   if (unique.length > 20) throw new ConvexError({ code: "INVALID_INPUT" });
@@ -52,7 +53,10 @@ export async function checkSourceFiles(
   for (const raw of unique) {
     const id = ctx.db.normalizeId("files", raw);
     const file = id ? await ctx.db.get(id) : null;
-    if (!file || file.deletedAt !== undefined || file.workspaceId !== workspaceId)
+    if (
+      !file || file.workspaceId !== workspaceId ||
+      (file.deletedAt !== undefined && !existingFileIds.includes(raw))
+    )
       throw new ConvexError({ code: "INVALID_SOURCE_FILE", fileId: raw });
     result.push(file._id);
   }
@@ -364,7 +368,7 @@ export async function proposeContextChangeCore(
     /** For ownership, the area being assigned. */
     proposedValue?: string;
     rationale: string;
-    sourceFileIds: Id<"files">[];
+    sourceFileIds: string[];
     /** Untrusted; required for ownership and rejected for every other field. */
     ownerUserId?: string;
     actor: Actor;
@@ -424,6 +428,15 @@ export async function proposeContextChangeCore(
     )
   )
     throw new ConvexError({ code: "INVALID_INPUT", field: "supersedes" });
+  const targetKey = field === "constraint" ? "constraints" : "openQuestions";
+  const existing = field === "goal" || field === "scope"
+    ? context[field]
+    : operation !== "add"
+      ? normalized[targetKey].find((e) => e.id === args.entryId)
+      : undefined;
+  const sourceFileIds = await checkSourceFiles(
+    ctx, workspaceId, args.sourceFileIds, existing?.sourceFileIds,
+  );
   if (operation !== "add") {
     const key = field === "constraint" ? "constraints" : "openQuestions";
     const target = normalized[key].find((e) => e.id === args.entryId);
@@ -457,7 +470,7 @@ export async function proposeContextChangeCore(
   } else if (working) {
     await applyApprovedProposal(
       ctx,
-      { workspaceId, field, proposedValue, sourceFileIds: args.sourceFileIds },
+      { workspaceId, field, proposedValue, sourceFileIds },
       actor,
       Date.now(),
     );
@@ -474,7 +487,7 @@ export async function proposeContextChangeCore(
     field,
     proposedValue,
     rationale: args.rationale,
-    sourceFileIds: args.sourceFileIds,
+    sourceFileIds,
     contextRevision: context.revision + (working ? 1 : 0),
     ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
     ...(currentField !== undefined ? { baseValue: currentField } : {}),

@@ -2013,3 +2013,112 @@ describe("context tiers over the hosted MCP contract", () => {
     expect(missing.structuredContent.error.code).toBe("INVALID_INPUT");
   });
 });
+
+describe("context references after source deletion (#27)", () => {
+  async function sourcedContext(field: "open_question" | "goal" = "open_question") {
+    const state = await setup();
+    const { alex, workspaceId } = state;
+    const file = await alex.mutation(api.files.createDocument, {
+      workspaceId, name: "source.md", mimeType: "text/markdown", content: "Evidence",
+    });
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId, field, proposedValue: "Original", sourceFileIds: [file.id], expectedVersion: 1,
+    });
+    await alex.mutation(api.files.deleteFile, { fileId: file.id, expectedVersion: file.version });
+    const context = await alex.query(api.context.getDetails, { workspaceId });
+    return { ...state, file, context };
+  }
+
+  it.each(["id", "index"])("edits an existing question with a deleted source by %s", async (target) => {
+    const { alex, workspaceId, file, context } = await sourcedContext();
+    const question = context.openQuestions[0]!;
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId, field: "open_question", proposedValue: "Edited", sourceFileIds: [file.id],
+      expectedVersion: context.revision, ...(target === "id" ? { entryId: question.id } : { entryIndex: 0 }),
+    });
+    expect((await alex.query(api.context.getDetails, { workspaceId })).openQuestions[0])
+      .toMatchObject({ id: question.id, text: "Edited", sourceFileIds: [file.id] });
+  });
+
+  it.each(["dashboard", "MCP"])("resolves a question with a deleted source through %s, then removes it", async (caller) => {
+    const { t, alex, sam, workspaceId, file, context } = await sourcedContext();
+    const input = {
+      field: "open_question" as const, operation: "resolve" as const,
+      entryId: context.openQuestions[0]!.id, rationale: "Answered", sourceFileIds: [file.id],
+      expectedVersion: context.revision,
+    };
+    if (caller === "MCP") {
+      const { token } = await connect(sam, { workspaceId, client: "claude" });
+      await t.mutation(internal.mcpTools.proposeContextChange, { ...input, principal: token });
+    } else await alex.mutation(api.context.proposeContextChange, { ...input, workspaceId });
+    const resolved = await alex.query(api.context.getDetails, { workspaceId });
+    expect(resolved.openQuestions[0]).toMatchObject({ status: "resolved", sourceFileIds: [file.id] });
+    await alex.mutation(api.context.proposeContextChange, {
+      ...input, workspaceId, operation: "remove", expectedVersion: resolved.revision,
+    });
+    expect((await alex.query(api.context.getDetails, { workspaceId })).openQuestions).toEqual([]);
+  });
+
+  it("edits and proposes an existing goal with a deleted source, then approves it", async () => {
+    const { t, alex, sam, workspaceId, file, context } = await sourcedContext("goal");
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId, field: "goal", proposedValue: "Edited goal", sourceFileIds: [file.id], expectedVersion: context.revision,
+    });
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
+    const { proposal } = await t.mutation(internal.mcpTools.proposeContextChange, {
+      principal: token, field: "goal", proposedValue: "Proposed goal", rationale: "Updated", sourceFileIds: [file.id],
+    });
+    expect(proposal.status).toBe("pending");
+    await alex.mutation(api.context.decideContextProposal, { proposalId: proposal.id, decision: "approved" });
+    expect((await alex.query(api.context.getDetails, { workspaceId })).goal)
+      .toMatchObject({ text: "Proposed goal", sourceFileIds: [file.id] });
+  });
+
+  it("rejects adding an unrelated deleted source during edit or resolve", async () => {
+    const { alex, workspaceId, file, context } = await sourcedContext();
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId, field: "open_question", proposedValue: "Unsourced", sourceFileIds: [], expectedVersion: context.revision,
+    });
+    const current = await alex.query(api.context.getDetails, { workspaceId });
+    const entryId = current.openQuestions[1]!.id;
+    await expect(alex.mutation(api.context.updateContextField, {
+      workspaceId, field: "open_question", proposedValue: "Edited", sourceFileIds: [file.id], entryId, expectedVersion: current.revision,
+    })).rejects.toThrow("INVALID_SOURCE_FILE");
+    await expect(alex.mutation(api.context.proposeContextChange, {
+      workspaceId, field: "open_question", operation: "resolve", entryId, rationale: "Answered", sourceFileIds: [file.id], expectedVersion: current.revision,
+    })).rejects.toThrow("INVALID_SOURCE_FILE");
+  });
+
+  it("approves a pending proposal whose source was deleted after submission", async () => {
+    const { alex, workspaceId } = await setup();
+    const file = await alex.mutation(api.files.createDocument, {
+      workspaceId, name: "source.md", mimeType: "text/markdown", content: "Evidence",
+    });
+    const proposal = await alex.mutation(api.context.proposeContextChange, {
+      workspaceId, field: "decision", proposedValue: "Approved decision", rationale: "Evidence", sourceFileIds: [file.id],
+    });
+    await alex.mutation(api.files.deleteFile, { fileId: file.id, expectedVersion: file.version });
+    await alex.mutation(api.context.decideContextProposal, { proposalId: proposal.id, decision: "approved" });
+    expect((await alex.query(api.context.getDetails, { workspaceId })).decisions[0])
+      .toMatchObject({ text: "Approved decision", sourceFileIds: [file.id] });
+  });
+
+  it("rejects new deleted or nonexistent sources even when another entry already links them", async () => {
+    const { t, alex, workspaceId, file, context } = await sourcedContext();
+    const missing = await alex.mutation(api.files.createDocument, {
+      workspaceId, name: "missing.md", mimeType: "text/markdown", content: "",
+    });
+    await t.run((ctx) => ctx.db.delete(missing.id));
+    for (const sourceFileIds of [[file.id], [missing.id]]) {
+      await expect(alex.mutation(api.context.updateContextField, {
+        workspaceId, field: "open_question", proposedValue: "New", sourceFileIds, expectedVersion: context.revision,
+      })).rejects.toThrow("INVALID_SOURCE_FILE");
+      await expect(alex.mutation(api.context.proposeContextChange, {
+        workspaceId, field: "decision", proposedValue: "New", rationale: "New", sourceFileIds,
+      })).rejects.toThrow("INVALID_SOURCE_FILE");
+      await expect(alex.mutation(api.context.updateContextField, {
+        workspaceId, field: "goal", proposedValue: "Unrelated goal", sourceFileIds, expectedVersion: context.revision,
+      })).rejects.toThrow("INVALID_SOURCE_FILE");
+    }
+  });
+});
