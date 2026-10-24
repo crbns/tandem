@@ -2274,6 +2274,8 @@ describe("sync brief and server instructions", () => {
       field: "decisions", proposed_value: "Usage pricing", rationale: "Research", supersedes: old.id,
     })).proposal;
     await alex.mutation(api.context.decideContextProposal, { proposalId: replacement.id, decision: "approved" });
+    // Working entries apply at once; the goal below stays pending.
+    await automatic(alex, workspaceId);
     const blocker = (await tool("propose_context_change", {
       field: "open_questions", proposed_value: "Who signs off on launch?", rationale: "Blocks launch",
     })).proposal;
@@ -2284,6 +2286,7 @@ describe("sync brief and server instructions", () => {
       field: "open_questions", operation: "resolve", entry_id: logo.id,
       expected_version: (await tool("sync_workspace")).context_version, rationale: "Blue",
     });
+    await alex.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "manual" });
     const goal = (await tool("propose_context_change", {
       field: "goal", proposed_value: "Ship the beta", rationale: "Kickoff",
     })).proposal;
