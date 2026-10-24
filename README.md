@@ -18,11 +18,42 @@ This Turborepo includes the following packages/apps:
 
 - `docs`: a [Next.js](https://nextjs.org/) app
 - `web`: another [Next.js](https://nextjs.org/) app
+- `@repo/backend`: [Convex](https://convex.dev/) backend (schema and functions in `packages/backend/convex`)
 - `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
 - `@repo/eslint-config`: `eslint` configurations (includes `@next/eslint-plugin-next` and `eslint-config-prettier`)
 - `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
 
 Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+
+### Backend (Convex)
+
+First-time setup (logs in and provisions a dev deployment, writing `packages/backend/.env.local`):
+
+```sh
+pnpm --filter @repo/backend setup
+```
+
+Copy `CONVEX_URL` from `packages/backend/.env.local` into `apps/web/.env.local` as `NEXT_PUBLIC_CONVEX_URL`. After that, `pnpm dev` runs `convex dev` alongside the Next.js apps.
+
+Deploy functions to production with `CONVEX_DEPLOY_KEY` set:
+
+```sh
+pnpm --filter @repo/backend deploy
+```
+
+### Deployment (Vultr)
+
+`apps/web` ships as a Docker image (Next.js `standalone` output, pruned with `turbo prune`). Build from the repo root, push to Vultr Container Registry, and run it on a Vultr instance or VKE cluster:
+
+```sh
+docker build -f apps/web/Dockerfile \
+  --build-arg NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud \
+  -t <region>.vultrcr.com/<registry>/web:latest .
+docker push <region>.vultrcr.com/<registry>/web:latest
+docker run -d -p 80:3000 <region>.vultrcr.com/<registry>/web:latest
+```
+
+`NEXT_PUBLIC_CONVEX_URL` is inlined at build time, so rebuild the image when it changes.
 
 ### Utilities
 

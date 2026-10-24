@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+.git
+.turbo
+**/.turbo
+**/.next
+out
+.omc
+**/.env*
+npm-debug.log*
