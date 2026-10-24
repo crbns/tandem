@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ConvexReactClient, useConvex, useConvexAuth } from "convex/react";
 import { ConvexAuthNextjsProvider } from "@convex-dev/auth/nextjs";
 import { useAuthActions } from "@convex-dev/auth/react";
@@ -20,20 +20,28 @@ function ConvexSessionBridge({ children }: { children: ReactNode }) {
   const { signIn, signOut } = useAuthActions();
   const email = useStoredValue(EMAIL_KEY);
 
+  // Don't leave the last user's email in localStorage once the session is gone.
+  // A lost session re-signs-in with the same email, so stashed drafts still match.
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) writeStored(EMAIL_KEY, null);
+  }, [isLoading, isAuthenticated]);
+
   const session = useMemo<Session>(
     () => ({
       status: isLoading ? "loading" : isAuthenticated ? "authenticated" : "unauthenticated",
       user: isAuthenticated ? { email: email ?? "", name: email || "Signed in" } : null,
       async signIn(nextEmail, password) {
+        let result: { signingIn: boolean };
         try {
-          await signIn("password", { email: nextEmail, password, flow: "signIn" });
+          result = await signIn("password", { email: nextEmail, password, flow: "signIn" });
         } catch (err) {
           // Only real credential failures say "wrong password"; network/server
           // errors propagate so the page can say Tandem is unreachable.
           if (isInvalidCredentialsError(err)) throw new InvalidCredentialsError();
           throw err;
         }
-        writeStored(EMAIL_KEY, nextEmail);
+        // Only remember an identity that actually signed in.
+        if (result.signingIn) writeStored(EMAIL_KEY, nextEmail.trim());
       },
       async signOut() {
         try {

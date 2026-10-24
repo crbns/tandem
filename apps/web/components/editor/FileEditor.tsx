@@ -8,16 +8,9 @@ import { useMockControls, useTandemApi, type Actor, type FileDetail } from "@/li
 import { ERROR_COPY } from "@/lib/api/errorCopy";
 import { useSession } from "@/lib/auth/useSession";
 import { humanActorId } from "@/lib/actors";
-import {
-  canSave,
-  draftToStash,
-  initSaveState,
-  saveReducer,
-  type SaveState,
-  type Theirs,
-} from "@/lib/editor/saveMachine";
+import { canSave, draftToStash, restoreSaveState, saveReducer, type Theirs } from "@/lib/editor/saveMachine";
 import { performSave } from "@/lib/editor/performSave";
-import { clearDraftStash, readDraftStash, stashDraft } from "@/lib/editor/draftStash";
+import { clearDraftStash, draftOwnerKey, readDraftStash, stashDraft } from "@/lib/editor/draftStash";
 import { isMarkdown } from "@/lib/files";
 import { MarkdownEditor, type EditorView } from "@/components/editor/MarkdownEditor";
 import { SaveBar } from "@/components/editor/SaveBar";
@@ -36,17 +29,6 @@ import {
 
 const SIMULATED_AGENT: Actor = { actorType: "agent", actorId: "agent_claude", actorName: "Claude" };
 
-/**
- * Restore a stashed draft (lost session, navigation). We keep the stashed
- * `baseVersion`: if the file moved on meanwhile, the next save conflicts and
- * the user sees the newer version instead of silently overwriting it.
- */
-function initialState(file: FileDetail, stash: ReturnType<typeof readDraftStash>): SaveState {
-  const fresh = initSaveState(file.content ?? "", file.version);
-  if (!stash || stash.draft === fresh.base) return fresh;
-  return { ...fresh, baseVersion: stash.baseVersion, draft: stash.draft, phase: { kind: "dirty" } };
-}
-
 interface FileEditorProps {
   file: FileDetail;
   historyHref: string;
@@ -55,13 +37,23 @@ interface FileEditorProps {
 export function FileEditor({ file, historyHref }: FileEditorProps) {
   const api = useTandemApi();
   const mock = useMockControls();
-  const { user } = useSession();
+  const session = useSession();
+  const { user } = session;
   const router = useRouter();
   const pathname = usePathname();
-  const userKey = user?.email ?? "anonymous";
+  const userKey = draftOwnerKey(user?.email);
+  const readOnly = !file.permissions.canEdit;
 
-  const [stash] = useState(() => readDraftStash(userKey, file.id));
-  const [state, dispatch] = useReducer(saveReducer, undefined, () => initialState(file, stash));
+  const [stash] = useState(() => (userKey ? readDraftStash(userKey, file.id) : null));
+  const head: Theirs = { version: file.version, content: file.content ?? "", updatedBy: file.updatedBy };
+  // A read-only user can't save or discard in the editor, so a draft from before
+  // their access changed is shown beside the file instead of replacing it.
+  const [orphanedDraft, setOrphanedDraft] = useState(() =>
+    readOnly && stash && stash.draft !== head.content ? stash.draft : null,
+  );
+  const [state, dispatch] = useReducer(saveReducer, undefined, () =>
+    restoreSaveState(head, readOnly ? null : stash),
+  );
   const [lastEdited, setLastEdited] = useState({ actor: file.updatedBy, at: file.updatedAt });
   const [view, setView] = useState<EditorView>("split");
   // After "Keep my text": the version the next save will replace, kept visible until then.
@@ -69,24 +61,29 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
   const [returnFocus, setReturnFocus] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const readOnly = !file.permissions.canEdit;
   const { phase } = state;
 
-  const restored = stash !== null && stash.draft !== (file.content ?? "");
+  const restored = !readOnly && stash !== null && stash.draft !== head.content;
   const toastedRestore = useRef(false);
   useEffect(() => {
     if (!restored || toastedRestore.current) return;
     toastedRestore.current = true;
-    toast.info("Restored your unsaved changes.");
-  }, [restored]);
+    toast.info(
+      stash && stash.baseVersion !== file.version
+        ? "Restored your unsaved changes. The file changed since, so review the newer version below."
+        : "Restored your unsaved changes.",
+    );
+  }, [restored]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist unsaved work on every change, so losing the session mid-edit (the
   // layout unmounts us and redirects to sign-in) or navigating away can't drop it.
   const pending = draftToStash(state);
   useEffect(() => {
+    // Read-only: nothing to stash, and an orphaned draft stays until dismissed.
+    if (!userKey || readOnly) return;
     if (pending) stashDraft(userKey, file.id, pending);
     else clearDraftStash(userKey, file.id);
-  }, [userKey, file.id, pending?.draft, pending?.baseVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userKey, readOnly, file.id, pending?.draft, pending?.baseVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refreshLastEdited = () => {
     api.readFile(file.id).then(
@@ -113,12 +110,20 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
         },
         at: Date.now(),
       });
+      refreshLastEdited(); // replace the local guess with the backend's attribution
     } else if (event.type === "SAVE_CONFLICT") {
       // The bar should name who saved the version we just collided with.
       if (event.theirs.updatedBy) setLastEdited({ actor: event.theirs.updatedBy, at: Date.now() });
       refreshLastEdited();
     } else if (event.type === "SAVE_ERROR" && event.code === "UNAUTHENTICATED") {
-      // The draft is already stashed by the effect above.
+      // The draft is already stashed by the effect above. End the client session
+      // too: sign-in bounces an "authenticated" session straight back here, so
+      // the user would never see the form. Not signOutAndLeave: drafts stay.
+      try {
+        await session.signOut();
+      } catch {
+        // the session is already unusable; sign-in still shows the form
+      }
       router.replace(`/sign-in?next=${encodeURIComponent(pathname)}`);
     }
   }
@@ -126,7 +131,8 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
   const onKeyDown = useEffectEvent((e: KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
-      void save();
+      // Not behind the discard dialog: a save started there would commit the text being discarded.
+      if (!confirmDiscard) void save();
     }
   });
   useEffect(() => {
@@ -213,7 +219,47 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
         </Alert>
       )}
 
-      {replacing && phase.kind !== "conflict" && (
+      {orphanedDraft !== null && (
+        <Alert>
+          <AlertTitle>Unsaved text from before your access changed</AlertTitle>
+          <AlertDescription>
+            <p>You can no longer edit this file, so it shows the current version. Copy anything you need from your text below.</p>
+            <details className="mt-2 w-full">
+              <summary className="cursor-pointer">Show your text</summary>
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border bg-background px-3 py-2 font-mono text-xs">
+                {orphanedDraft}
+              </pre>
+            </details>
+            <div className="mt-2 flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  navigator.clipboard.writeText(orphanedDraft).then(
+                    () => toast.success("Copied your text."),
+                    () => toast.error("Couldn't copy. Select the text above instead."),
+                  )
+                }
+              >
+                Copy
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (userKey) clearDraftStash(userKey, file.id);
+                  setOrphanedDraft(null);
+                }}
+              >
+                Delete it
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Only while there's something to save; edited back to match, nothing gets replaced. */}
+      {replacing && phase.kind !== "conflict" && state.draft !== state.base && (
         <details className="rounded-md border border-amber-300 bg-amber-50 text-sm" open>
           {/* One span per phrase: bare JSX text beside {expressions} loses its
               spaces inside a flex row ("version 2by"). The gap spaces them. */}
@@ -241,7 +287,11 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
             dispatch({ type: "KEEP_MINE_REBASE" });
             setReplacing(phase.theirs);
             setReturnFocus(true);
-            toast.info(`Continuing with your changes. Your next save replaces version ${phase.theirs.version}.`);
+            toast.info(
+              phase.mine === phase.theirs.content
+                ? `Your text matches version ${phase.theirs.version}, so there's nothing to save.`
+                : `Continuing with your changes. Your next save replaces version ${phase.theirs.version}.`,
+            );
           }}
           onDiscardMine={() => {
             dispatch({ type: "RELOAD_THEIRS" });
@@ -285,6 +335,7 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
             </Button>
             <Button
               variant="destructive"
+              disabled={phase.kind === "saving"}
               onClick={() => {
                 setConfirmDiscard(false);
                 setReplacing(null);

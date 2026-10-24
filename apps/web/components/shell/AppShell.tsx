@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { BotIcon, ChevronDownIcon, FileTextIcon, LogOutIcon } from "lucide-react";
 import { useSession } from "@/lib/auth/useSession";
 import { signOutAndLeave } from "@/lib/auth/signOutAndLeave";
+import { countDraftStashes } from "@/lib/editor/draftStash";
 import { USE_MOCKS } from "@/lib/config";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +18,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 interface AppShellProps {
@@ -31,6 +40,9 @@ export function AppShell({ workspaceId, workspaceName, children }: AppShellProps
   const pathname = usePathname();
   const filesHref = `/w/${workspaceId}`;
   const onFiles = pathname === filesHref || pathname.startsWith(`${filesHref}/files`);
+  // Signing out deletes this tab's unsaved drafts, so ask first when there are any.
+  const [unsavedOnSignOut, setUnsavedOnSignOut] = useState(0);
+  const leave = () => void signOutAndLeave(signOut, () => router.replace("/sign-in"));
 
   return (
     <div className="flex min-h-screen">
@@ -98,7 +110,11 @@ export function AppShell({ workspaceId, workspaceName, children }: AppShellProps
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onSelect={() => void signOutAndLeave(signOut, () => router.replace("/sign-in"))}
+                  onSelect={() => {
+                    const unsaved = countDraftStashes();
+                    if (unsaved > 0) setUnsavedOnSignOut(unsaved);
+                    else leave();
+                  }}
                 >
                   <LogOutIcon />
                   Sign out
@@ -109,6 +125,32 @@ export function AppShell({ workspaceId, workspaceName, children }: AppShellProps
         </header>
         <main className="flex-1 px-4 py-6 md:px-8">{children}</main>
       </div>
+
+      <Dialog open={unsavedOnSignOut > 0} onOpenChange={(open) => !open && setUnsavedOnSignOut(0)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sign out and discard unsaved changes?</DialogTitle>
+            <DialogDescription>
+              You have unsaved changes in {unsavedOnSignOut === 1 ? "1 file" : `${unsavedOnSignOut} files`}. Signing
+              out deletes them from this browser. This can&apos;t be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUnsavedOnSignOut(0)}>
+              Stay signed in
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setUnsavedOnSignOut(0);
+                leave();
+              }}
+            >
+              Discard and sign out
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
