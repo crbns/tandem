@@ -1,7 +1,8 @@
 // Brings up the two live processes the scenario needs:
 // - the local Convex deployment (reused when it's already serving, otherwise
 //   `convex dev` is started from packages/backend and stopped afterwards), and
-// - the real MCP server (apps/mcp, TANDEM_BACKEND=convex) on a free port.
+// - the real MCP server (apps/mcp, TANDEM_BACKEND=convex) on a free port,
+//   unless MCP_URL points at one that's already deployed.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
@@ -98,6 +99,13 @@ export default async function setup(project: TestProject) {
       ready: /Convex functions ready/,
       timeoutMs: 150_000,
     });
+  }
+
+  // A deployed MCP server (MCP_URL) is used as is; otherwise one is spawned.
+  if (process.env.MCP_URL) {
+    project.provide("convexUrl", convexUrl);
+    project.provide("mcpUrl", process.env.MCP_URL);
+    return () => stop(convex);
   }
 
   const port = await freePort();

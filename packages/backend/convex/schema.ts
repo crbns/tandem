@@ -42,6 +42,8 @@ export default defineSchema({
 
   workspaces: defineTable({
     name: v.string(),
+    // Set only on the workspace seed:resetDemo builds, which a reset deletes.
+    demoSeed: v.optional(v.boolean()),
     createdBy: v.id("users"),
     updatedBy: actor,
     revision: v.number(),

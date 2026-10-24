@@ -87,4 +87,4 @@ The backend functions exist; these need a seeded deployment (dev `NEXT_PUBLIC_CO
 | Compose + Caddy snippets, README deploy steps | PASS | `deploy/compose.web.yml`, `deploy/Caddyfile.web` (no root compose/Caddyfile exist yet) |
 | Friendly copy for every error code | PASS | `lib/api/errorCopy.ts` |
 | Dev mock controls hidden in production | PASS | the image forces `NEXT_PUBLIC_USE_MOCKS=false`; controls only render when the mock API is mounted |
-| Seed-reset instructions link | PENDING (live) | Person 2 hasn't written them yet |
+| Seed-reset instructions link | PASS | `pnpm demo:reset`: [docs/demo-seed.md](../../docs/demo-seed.md). `pnpm test:demo` runs the P0 slice on the seeded workspace (6/6 on a local deployment) |

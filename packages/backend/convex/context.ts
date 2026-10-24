@@ -87,77 +87,92 @@ export const decideContextProposal = mutation({
     );
     if (membership.role !== "owner" && membership.role !== "admin")
       throw new ConvexError({ code: "FORBIDDEN" });
-    if (proposal.status !== "pending")
-      throw new ConvexError({ code: "PROPOSAL_ALREADY_DECIDED" });
-    if (decision === "approved") {
-      const context = await ctx.db
-        .query("structured_context")
-        .withIndex("by_workspace", (q) =>
-          q.eq("workspaceId", proposal.workspaceId),
-        )
-        .unique();
-      if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
-      const currentField =
-        proposal.field === "goal"
-          ? (context.goal?.text ?? null)
-          : proposal.field === "scope"
-            ? (context.scope?.text ?? null)
-            : undefined;
-      const stale =
-        proposal.contextRevision === undefined ||
-        (currentField !== undefined &&
-          (proposal.baseValue === undefined
-            ? context.revision !== proposal.contextRevision
-            : currentField !== proposal.baseValue));
-      if (stale) {
-        const now = Date.now();
-        await ctx.db.patch(proposalId, {
-          status: "stale",
-          updatedBy: humanActor(user),
-          updatedAt: now,
-          revision: proposal.revision + 1,
-        });
-        await recordWorkspaceEvent(ctx, {
-          workspaceId: proposal.workspaceId,
-          kind: "context.stale",
-          entityType: "context_proposal",
-          entityId: proposalId,
-          summary: `Marked ${proposal.field.replaceAll("_", " ")} proposal stale`,
-          actor: humanActor(user),
-        });
-        return null;
-      }
-    }
-    const actor = humanActor(user);
-    const now = Date.now();
-    await ctx.db.patch(proposalId, {
-      status: decision,
-      decidedBy: actor,
-      decidedAt: now,
-      updatedBy: actor,
-      updatedAt: now,
-      revision: proposal.revision + 1,
-    });
-    await ctx.db.insert("approvals", {
-      workspaceId: proposal.workspaceId,
-      proposalId,
-      decision,
-      decidedBy: actor,
-      decidedAt: now,
-    });
-    if (decision === "approved")
-      await applyApprovedProposal(ctx, proposal, actor, now);
-    await recordWorkspaceEvent(ctx, {
-      workspaceId: proposal.workspaceId,
-      kind: `context.${decision}`,
-      entityType: "context_proposal",
-      entityId: proposalId,
-      summary: `${decision === "approved" ? "Approved" : "Rejected"} ${proposal.field.replaceAll("_", " ")} change`,
-      actor,
-    });
+    await decideProposalCore(ctx, proposal, decision, user);
     return null;
   },
 });
+
+/**
+ * Records a decision by `user`, who the caller has verified is a human owner
+ * or admin of the proposal's workspace. A stale approval marks the proposal
+ * stale instead of applying it.
+ */
+export async function decideProposalCore(
+  ctx: MutationCtx,
+  proposal: Doc<"context_proposals">,
+  decision: "approved" | "rejected",
+  user: Doc<"users">,
+): Promise<void> {
+  const proposalId = proposal._id;
+  if (proposal.status !== "pending")
+    throw new ConvexError({ code: "PROPOSAL_ALREADY_DECIDED" });
+  if (decision === "approved") {
+    const context = await ctx.db
+      .query("structured_context")
+      .withIndex("by_workspace", (q) =>
+        q.eq("workspaceId", proposal.workspaceId),
+      )
+      .unique();
+    if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
+    const currentField =
+      proposal.field === "goal"
+        ? (context.goal?.text ?? null)
+        : proposal.field === "scope"
+          ? (context.scope?.text ?? null)
+          : undefined;
+    const stale =
+      proposal.contextRevision === undefined ||
+      (currentField !== undefined &&
+        (proposal.baseValue === undefined
+          ? context.revision !== proposal.contextRevision
+          : currentField !== proposal.baseValue));
+    if (stale) {
+      const now = Date.now();
+      await ctx.db.patch(proposalId, {
+        status: "stale",
+        updatedBy: humanActor(user),
+        updatedAt: now,
+        revision: proposal.revision + 1,
+      });
+      await recordWorkspaceEvent(ctx, {
+        workspaceId: proposal.workspaceId,
+        kind: "context.stale",
+        entityType: "context_proposal",
+        entityId: proposalId,
+        summary: `Marked ${proposal.field.replaceAll("_", " ")} proposal stale`,
+        actor: humanActor(user),
+      });
+      return;
+    }
+  }
+  const actor = humanActor(user);
+  const now = Date.now();
+  await ctx.db.patch(proposalId, {
+    status: decision,
+    decidedBy: actor,
+    decidedAt: now,
+    updatedBy: actor,
+    updatedAt: now,
+    revision: proposal.revision + 1,
+  });
+  await ctx.db.insert("approvals", {
+    workspaceId: proposal.workspaceId,
+    proposalId,
+    decision,
+    decidedBy: actor,
+    decidedAt: now,
+  });
+  if (decision === "approved")
+    await applyApprovedProposal(ctx, proposal, actor, now);
+  await recordWorkspaceEvent(ctx, {
+    workspaceId: proposal.workspaceId,
+    kind: `context.${decision}`,
+    entityType: "context_proposal",
+    entityId: proposalId,
+    summary: `${decision === "approved" ? "Approved" : "Rejected"} ${proposal.field.replaceAll("_", " ")} change`,
+    actor,
+  });
+}
 
 async function applyApprovedProposal(
   ctx: MutationCtx,

@@ -48,6 +48,27 @@ export async function signUp(
   person: { email: string; password: string; name: string },
 ): Promise<Human> {
   const jwt = await passwordSignIn(convexUrl, { ...person, flow: "signUp" });
+  return session(convexUrl, person, jwt);
+}
+
+/** An existing Password user, such as a seeded demo member. */
+export async function signIn(
+  convexUrl: string,
+  person: { email: string; password: string; name: string },
+): Promise<Human> {
+  const jwt = await passwordSignIn(convexUrl, {
+    email: person.email,
+    password: person.password,
+    flow: "signIn",
+  });
+  return session(convexUrl, person, jwt);
+}
+
+function session(
+  convexUrl: string,
+  person: { email: string; password: string; name: string },
+  jwt: string,
+): Human {
   const http = new ConvexHttpClient(convexUrl, { logger: false });
   http.setAuth(jwt);
   const react = new ConvexReactClient(convexUrl, {

@@ -58,6 +58,14 @@ curl -s http://127.0.0.1:8787/mcp \
 
 The token can also go in the `api-key` header. The MCP server holds no Convex credentials: it forwards the token, and Convex verifies it on every call. `TANDEM_DEV_TOKENS` and `TANDEM_DEV_ANON_USER` apply to the mock backend only (anon mode refuses to start with Convex).
 
+## 5. Demo seed and reset
+
+```sh
+pnpm demo:reset
+```
+
+Deletes and rebuilds only the demo workspace (Alex, Blake and Casey, `brief.md` v1, an approved goal and scope, one agent connection each), then prints sign-in credentials and agent tokens. `pnpm test:demo` runs the P0 slice on the seeded workspace. See [demo-seed.md](demo-seed.md) for pinning the password and tokens, cloud deployments, and the rehearsal checklist.
+
 ## Tests
 
 ```sh

@@ -19,6 +19,7 @@ import type * as lib_names from "../lib/names.js";
 import type * as lib_ops from "../lib/ops.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as mcp from "../mcp.js";
+import type * as seed from "../seed.js";
 import type * as workspaces from "../workspaces.js";
 
 import type {
@@ -39,6 +40,7 @@ declare const fullApi: ApiFromModules<{
   "lib/ops": typeof lib_ops;
   "lib/validators": typeof lib_validators;
   mcp: typeof mcp;
+  seed: typeof seed;
   workspaces: typeof workspaces;
 }>;
 
