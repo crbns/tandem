@@ -98,12 +98,37 @@ function RevisionViewer({ revision, previous, head, file }: RevisionViewerProps)
   );
 }
 
+/**
+ * Version lists can be metadata only (the Convex backend keeps them bounded),
+ * so fetch the content of the selected revision and its predecessor on demand.
+ */
+function RevisionContentLoader({ fileId, revision, previous, head, file }: RevisionViewerProps & { fileId: string }) {
+  const api = useTandemApi();
+  const load = useCallback(async () => {
+    const fill = async (r: Revision | undefined) =>
+      r === undefined || r.content !== undefined ? r : ((await api.getRevision(fileId, r.version)) ?? r);
+    return Promise.all([fill(revision), fill(previous)]);
+  }, [api, fileId, revision, previous]);
+  const { resource, refreshing, reload } = useResource(load);
+
+  if (resource.status === "loading") return <Skeleton className="h-96" aria-busy="true" />;
+  if (resource.status === "error") return <ErrorState error={resource.error} onRetry={reload} retrying={refreshing} />;
+  const [filled, filledPrevious] = resource.data;
+  return <RevisionViewer revision={filled!} previous={filledPrevious} head={head} file={file} />;
+}
+
 export default function HistoryPage() {
   const { workspaceId, fileId } = useParams<{ workspaceId: string; fileId: string }>();
   const api = useTandemApi();
   const load = useCallback(async () => {
     const [file, revisions] = await Promise.all([api.readFile(fileId), api.listRevisions(fileId)]);
     if (!belongsToWorkspace(file, workspaceId)) throw new TandemApiError("FILE_NOT_FOUND");
+    // When the list is ahead of `file`, the newest revision is the head and
+    // its content is needed for "Compare with current".
+    const newest = revisions[0];
+    if (newest && newest.version !== file.version && newest.content === undefined) {
+      revisions[0] = (await api.getRevision(fileId, newest.version)) ?? newest;
+    }
     return [file, revisions] as const;
   }, [api, fileId, workspaceId]);
   const { resource, refreshing, reload } = useResource(load);
@@ -173,7 +198,14 @@ export default function HistoryPage() {
             selected={current.version}
             onSelect={setSelected}
           />
-          <RevisionViewer key={current.version} revision={current} previous={previous} head={head} file={file} />
+          <RevisionContentLoader
+            key={current.version}
+            fileId={fileId}
+            revision={current}
+            previous={previous}
+            head={head}
+            file={file}
+          />
         </div>
       )}
     </div>

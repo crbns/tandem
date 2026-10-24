@@ -39,11 +39,16 @@ export class TandemApiError extends Error {
 }
 
 function isApiErrorCode(value: unknown): value is ApiErrorCode {
-  return typeof value === "string" && (API_ERROR_CODES as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (API_ERROR_CODES as readonly string[]).includes(value)
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function asActor(value: unknown): Actor | undefined {
@@ -52,7 +57,11 @@ function asActor(value: unknown): Actor | undefined {
   // Canonical camelCase, or MCP's snake_case Attribution { actor_type, user_id, client }.
   const actorType = v.actorType ?? v.actor_type ?? v.type;
   const userId = v.userId ?? v.user_id;
-  if ((actorType !== "human" && actorType !== "agent") || typeof userId !== "string") return undefined;
+  if (
+    (actorType !== "human" && actorType !== "agent") ||
+    typeof userId !== "string"
+  )
+    return undefined;
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
   const label = str(v.label);
   const userName = str(v.userName ?? v.user_name) ?? (actorType === "human" ? label : undefined);
@@ -90,8 +99,10 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
     // backend that reuses MCP's versionConflict() helper still reports who saved.
     const currentVersion = record.currentVersion ?? record.current_version;
     const currentContent = record.currentContent ?? record.current_content;
-    if (typeof currentVersion === "number") details.currentVersion = currentVersion;
-    if (typeof currentContent === "string") details.currentContent = currentContent;
+    if (typeof currentVersion === "number")
+      details.currentVersion = currentVersion;
+    if (typeof currentContent === "string")
+      details.currentContent = currentContent;
     const updatedBy = asActor(record.updatedBy ?? record.updated_by);
     if (updatedBy) details.updatedBy = updatedBy;
   }
@@ -114,7 +125,8 @@ function classify(err: unknown): TandemApiError {
   if (err instanceof ConvexError) return fromConvexError(err);
   if (err instanceof Error) {
     for (const [pattern, code] of MESSAGE_PATTERNS) {
-      if (pattern.test(err.message)) return new TandemApiError(code, { cause: err.message });
+      if (pattern.test(err.message))
+        return new TandemApiError(code, { cause: err.message });
     }
     return new TandemApiError("UNKNOWN", { cause: err.message });
   }
@@ -128,7 +140,10 @@ export function normalizeError(err: unknown): TandemApiError {
   // debugging (e.g. a backend contract mismatch mid-demo). Logged once, here,
   // at the point of normalization; never includes file content.
   if (normalized.code === "UNKNOWN") {
-    console.error("[tandem] unexpected backend error:", normalized.details.cause);
+    console.error(
+      "[tandem] unexpected backend error:",
+      normalized.details.cause,
+    );
   }
   return normalized;
 }
