@@ -26,6 +26,7 @@ Sources: [cmcp-page], [cmcp-readme], and `src/client/index.ts` in [cmcp-repo] (r
 3. **Where does the endpoint live? In Convex HTTP actions [verified].** The endpoint is `https://<deployment>.convex.site/mcp`, alongside `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server` and `/mcp/oauth/{register,authorize,token,revoke,device}`. The app must not set `httpPrefix`. What this means for apps/mcp:
    - **Deploy:** the Vultr MCP container becomes unnecessary, and only `apps/web` ships to Vultr. Don't proxy: the PRM `resource` must equal the pasted URL. Use the component's `siteUrl` option for a custom domain.
    - **Tools:** port the 4 tools to `tool({ args: v…, returns: v…, scope, annotations, handler })`. Zod schemas become Convex validators. Each write must run in **one** internal mutation (version check plus N+1 write), because every `ctx.runMutation` is its own transaction.
+   - **Attribution:** every tool mutation records `user.userId` as the person and `user.connectionId` plus `user.clientId` as the agent, on `file_revisions`, `workspace_events` and `context_proposals`. These come from the verified credential [verified: `vMcpUser` has `connectionId: string`, `clientId?: string`]. `clientId` is optional, probably absent for API keys [unverified], so `connectionId` is the field that is always present. `clientName` from `getAuthRequest` is self-reported by the client (the component's own comment says "label it as unverified"), so a DCR client can call itself "Claude". Never store it as attribution; show it only as an **unverified** display label next to the connection.
    - **Errors:** throw `ConvexError({ code: "VERSION_CONFLICT", message, current_version })`. The component returns `ConvexError` data to the model as JSON text with `isError: true`. Any other exception becomes a generic failure.
    - **Tests:** move to `convex-test` with `mcpTest.register(t)` and `t.fetch("/mcp", …)`, run as two users. Add `expect(mcp.lint()).toEqual([])`.
    - **Cleanup:** keep `apps/mcp` only until the tools are ported, then delete it, or keep it as a mock harness that never deploys.
@@ -37,7 +38,7 @@ Sources: [cmcp-page], [cmcp-readme], and `src/client/index.ts` in [cmcp-repo] (r
 5. **How mature is it? Alpha [verified].** `0.1.0-alpha.7` (`alpha` dist-tag), published 2026-10-08. The npm `latest` tag points at `alpha.0`, so **pin the exact version**. Apache-2.0. Repo created 2026-10-08, last push 2026-10-15, 9 stars, no open bug issues. Peer dependency `convex ^1.43.0` (we have 1.46.0). Documented limits:
    - no SSE, sampling or elicitation, and no resources or prompts;
    - no confidential clients;
-   - `/mcp` isn't rate-limited, and the other limiters are global or per client, not per IP;
+   - `/mcp` isn't rate-limited, and the other limiters are global or per client, not per IP (the global DCR limiter is a lockout risk, §5.12);
    - each tool call is bound by Convex action limits.
    Device flow (RFC 8628) is on by default; we set `deviceFlow: false` for the PoC.
 
@@ -75,13 +76,22 @@ sequenceDiagram
   participant F as internalQuery/internalMutation
   C->>X: POST /mcp tools/call get_workspace_info, Authorization: Bearer <opaque>
   X->>X: sha256(token) lookup, check expiry, grant not revoked, resource match, tool scope
-  X->>F: ctx.runQuery(internal.workspaces.listForUser, { user })
+  X->>F: ctx.runQuery(internal.mcpTools.listForUser, { user })
   F->>F: requireMember / index by user_id, so tenant boundary is enforced in-transaction
   F-->>X: { user, workspaces }
   X-->>C: result (structuredContent checked against `returns`) or isError / 401 / 403
 ```
 
-Human-only actions (approve a proposal, change goal or ownership, approve consent) are public functions gated by `getAuthUserId`. MCP requests carry no `ctx.auth` identity, so an agent token cannot call them. MCP tools only expose `propose_context_change`.
+Human-only actions (approve a proposal, change goal or ownership, approve consent) are public functions that get a user id **only** from `requireHuman(ctx)` in `convex/access.ts`. It reads `ctx.auth.getUserIdentity()`, throws unless `identity.issuer === process.env.CONVEX_SITE_URL` (the Convex Auth issuer), and only then returns `getAuthUserId(ctx)`. No human-only function calls `getAuthUserId` directly. Why this holds in both designs:
+- **Primary design:** MCP requests carry no `ctx.auth` identity, and `auth.config.ts` lists only the Convex Auth provider, so an agent token can't reach a public function as anyone. `requireHuman` costs nothing here.
+- **§6 fallback:** `auth.config.ts` also trusts the agent issuer, so agent JWTs **do** produce a `ctx.auth` identity on every public function. `requireHuman` rejects them by issuer, and their `sub` doesn't decode to a `users` id (§6), so a bare `getAuthUserId` call fails closed as well. Without `requireHuman`, an agent could approve its own proposal.
+
+MCP tools only expose `propose_context_change`.
+
+Security rules for the MCP path:
+- **One module.** The internal functions that MCP tools call live in `convex/mcpTools.ts` and are called only from `convex/mcp.ts` handlers, with the component-supplied `user`. No other action, HTTP action or mutation calls them, and nothing builds a `user` from request data (args, headers, body). Internal functions trust their caller's `user`, so this is the boundary. Review check: `rg "internal\.mcpTools" packages/backend/convex --glob '!mcp.ts'` is empty.
+- **Exports.** Export only `getAuthRequest`, `authorize`, `listConnections` and `revokeConnection` from `mcp.api()`. Never export `createApiKey`. The component README's example does, but it is a **public** action that lets any signed-in user mint an API key without the consent page, and API keys have no expiry (`crons.ts`: "API keys have no expiresAt") [verified in alpha.7 source]. Keep `createApiKeyForUser` (from `mcp.internalApi()`) for CLI and tests only, and delete PoC keys after the PoC; how a key is revoked isn't checked [unverified].
+- **Consent scope.** The consent page states that the grant covers **all** of the user's workspaces, current and future, because grants are per user (§5.9).
 
 ## 4. First proof of concept: claude.ai → OAuth → `get_workspace_info`
 
@@ -94,13 +104,13 @@ The coordinator asked for a `get_workspace`-style tool. We name it `get_workspac
 | P2 | `convex/auth.ts`, `convex/auth.config.ts` | Convex Auth with one provider (Password is enough). `auth.config.ts` = `{ providers: [{ domain: process.env.CONVEX_SITE_URL, applicationID: "convex" }] }` |
 | P2 | `convex/http.ts` (new) | `auth.addHttpRoutes(http); mcp.registerRoutes(http)` |
 | P2 | `convex/schema.ts` | `...authTables`, `workspaces {name, created_at, created_by}`, `workspace_members {workspace_id, user_id, role, created_at}` with indexes `by_user` and `by_workspace_user` |
-| P2 | `convex/access.ts` | `requireMember(ctx, userId, workspaceId)`, shared by UI and MCP. Returns the same error for "not found" and "forbidden" |
-| P2 | `convex/workspaces.ts` | `internalQuery listForUser({ user: vMcpUser(v.id("users")) })` → `{ user: {id, name, email}, workspaces: [{id, name, role}] }` |
+| P2 | `convex/access.ts` | `requireMember(ctx, userId, workspaceId)`, shared by UI and MCP. Returns the same error for "not found" and "forbidden". `requireHuman(ctx)` (§3), the only way human-only functions get a user id |
+| P2 | `convex/mcpTools.ts` | The only module of MCP-facing internal functions (§3). `internalQuery listForUser({ user: vMcpUser(v.id("users")) })` → `{ user: {id, name, email}, workspaces: [{id, name, role}] }` |
 | P2 | `convex/seed.ts` | `internalMutation` that creates one workspace and adds two existing users. Dev only, run with `npx convex run` |
 | P1 | `convex/mcp.ts` (new) | `createTool<Id<"users">>()`, `new McpServer(components.mcp, { name: "tandem", version, instructions, consentUrl: process.env.MCP_CONSENT_URL!, scopes: { "tandem:read": …, "tandem:write": … }, deviceFlow: false, tools: { get_workspace_info } })` with `scope: "tandem:read"`, `readOnlyHint: true` and a `returns` validator. Exports `getAuthRequest`, `authorize`, `listConnections`, `revokeConnection` from `mcp.api({ getUserId: getAuthUserId })`, plus `createApiKeyForUser` from `mcp.internalApi()` |
 | P1 | `convex/mcp.test.ts` | Two users. `tools/list` with an API key; `get_workspace_info` returns only the caller's workspaces; a revoked grant gets 401; `mcp.lint()` is empty |
 | P1 | `skills/tandem/*` | Point the server URL at `https://<deployment>.convex.site/mcp` |
-| P3 | `apps/web/app/oauth/consent/page.tsx` | Client component. Reads `?request=` and requires sign-in (sign-in returns to this exact URL). `useQuery(api.mcp.getAuthRequest)` shows `clientName` labeled **unverified**, the redirect URI **hostname**, and the scopes. Allow/Deny calls `useAction(api.mcp.authorize)` and then `window.location.assign(redirectUrl)`. Refuses to render if `window.top !== window.self` |
+| P3 | `apps/web/app/oauth/consent/page.tsx` | Client component. Reads `?request=` and requires sign-in (sign-in returns to this exact URL). `useQuery(api.mcp.getAuthRequest)` shows `clientName` labeled **unverified**, the redirect URI **hostname**, the scopes, and a line saying the grant covers all of the user's workspaces. Allow/Deny calls `useAction(api.mcp.authorize)` and then `window.location.assign(redirectUrl)`. Refuses to render if `window.top !== window.self` |
 | P3 | `apps/web` Convex Auth wiring | `ConvexAuthNextjsServerProvider` / `ConvexAuthNextjsProvider`, `middleware.ts` (`convexAuthNextjsMiddleware`), a sign-in page, and `Content-Security-Policy: frame-ancestors 'none'` on `/oauth/consent` in `next.config` |
 
 Env vars on the Convex deployment (set by P2):
@@ -118,6 +128,11 @@ PoC acceptance:
 4. Repeat as B in a second claude.ai account and confirm B can't see A-only workspaces.
 5. `revokeConnection`, then the next call returns 401 and Claude asks to reconnect.
 
+Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every agent loads as overriding instructions. Until then, agents will keep building and deploying `apps/mcp` and the Vultr MCP container. Changes:
+- **Stack › MCP server:** the endpoint is `@convex-dev/mcp` in Convex HTTP actions at `https://<deployment>.convex.site/mcp`, replacing the Node.js MCP container. Replace "calling the same Convex functions as the dashboard" with "using the same authz helpers as the dashboard (`requireMember`, `requireHuman`)", because MCP tools call `internal*` functions in `convex/mcpTools.ts`, not the dashboard's public functions.
+- **Stack › Hosting:** only `apps/web` ships as a Docker container to Vultr.
+- **Hard rules:** agent attribution is `connectionId` + `clientId` (§2.3); `clientName` is an unverified label.
+
 ## 5. Open questions and risks
 
 1. **Requirement change (§2.2): accepted by Person 1 on 2026-10-23.** MCP paths have no `ctx.auth` identity; trust comes from the component-verified `user` and `internal*` functions.
@@ -131,6 +146,9 @@ PoC acceptance:
 9. **Workspace scoping:** grants are per user, not per workspace. Every tool takes or defaults `workspace_id` and checks membership. The component's tables carry no workspace id, which is an accepted exception to the "every record has workspace ID" rule, because they hold auth state, not workspace content.
 10. **Custom domain:** changing `siteUrl` later changes `resource` and invalidates existing connections. Decide the URL before the demo.
 11. **Abuse:** `/mcp` isn't rate-limited. The demo risk is acceptable; add `@convex-dev/rate-limiter` per user later.
+12. **DCR lockout [verified in alpha.7 source].** `src/component/limits.ts` sets `registerClient` to a token bucket with capacity 30 and 100/hour, and `src/component/clients.ts` calls `rateLimiter.limit(ctx, "registerClient")` with **no key**, so one bucket is shared by everyone. An unauthenticated script that sends about 30 `POST /mcp/oauth/register` requests, then about 100/hour, makes every new connector add (claude.ai and Claude Code) fail at DCR, for example while judges connect. Existing grants keep working. Mitigations:
+    - Connect every demo account (both claude.ai accounts and Claude Code) before judging, and check the connections still work on the day.
+    - Optional: front `/mcp/oauth/register` with our own HTTP action that applies a per-IP `@convex-dev/rate-limiter` keyed on `x-forwarded-for`, then delegates to the component. Whether our route can take precedence over the component's on the same `httpRouter`, and whether Convex sets `x-forwarded-for` so clients can't spoof it, are both [unverified]. Claude Code registers from user IPs, so an allowlist of Anthropic egress (§1) alone isn't enough.
 
 ## 6. Fallback: custom OAuth AS in Convex HTTP actions plus the Node `apps/mcp`
 
@@ -143,14 +161,16 @@ Use this only if the PoC fails. The fallback keeps the hard requirement literall
   - `oauth_refresh_tokens`, hashed and rotating, revoking the family on reuse;
   - grants recorded in `agent_connections`;
   - a cleanup cron.
-- **Consent (P3):** the same `/oauth/consent` page calls an `approve` mutation. The mutation must check that `identity.issuer === CONVEX_SITE_URL`, so the caller is a human session and not an agent token, then returns the redirect URL.
+- **Consent (P3):** the same `/oauth/consent` page calls an `approve` mutation. The mutation gets the user id from `requireHuman(ctx)` (§3), so the caller is a human session and not an agent token, then returns the redirect URL.
 - **Signing:** Convex signs RS256 access JWTs with a new `MCP_OAUTH_PRIVATE_KEY` (JWKS in `MCP_OAUTH_JWKS`). Claims:
   - `iss` = the issuer above;
   - `aud` = `MCP_RESOURCE_URL`;
-  - `sub` = `<usersId>|<agentConnectionId>`;
+  - `sub` = `mcp:<agentConnectionId>`, with no `|` and no users id;
   - `client_id`, `scope`, `iat` (Convex clients expect it), and `exp` = 1 h.
-  Convex Auth's `getAuthUserId` only splits `sub` on `|`, so it returns the users id unchanged [verified in `@convex-dev/auth@0.0.96` source]. `getAuthSessionId` would return the connection id, so never treat that as an `authSessions` id.
-- **Verification in Convex:** add `{ type: "customJwt", issuer, jwks: <site>/mcp-oauth/jwks, algorithm: "RS256", applicationID: process.env.MCP_RESOURCE_URL }` to `auth.config.ts`. Convex checks `aud` against `applicationID`. Functions tell agents from humans by `identity.issuer`. Use a data-URI `jwks` if self-fetch fails [unverified].
+  Agent tokens must **fail closed** on human-only functions. Convex Auth's `getAuthUserId` only splits `sub` on `|` and doesn't check `iss` [verified in `@convex-dev/auth@0.0.96` source]. With a `<usersId>|…` subject it would return the human's users id for an agent token, and every function gated by `getAuthUserId` would accept it. With `mcp:<agentConnectionId>` it returns a string that matches no `users` row or `workspace_members.user_id`, so membership checks fail [unverified whether `ctx.db.get` throws or returns null on it; either way no user is found]. `requireHuman` (§3) rejects the token by issuer before that.
+- **Verification in Convex:** add `{ type: "customJwt", issuer, jwks: <site>/mcp-oauth/jwks, algorithm: "RS256", applicationID: process.env.MCP_RESOURCE_URL }` to `auth.config.ts`. Convex checks `aud` against `applicationID`. Use a data-URI `jwks` if self-fetch fails [unverified]. This makes Convex accept agent JWTs on **every** public function, so:
+  - Human-only functions use `requireHuman(ctx)` only (§3).
+  - MCP-facing functions use `requireAgent(ctx)` only, in one module (§3 rules). It asserts `identity.issuer === ${CONVEX_SITE_URL}/mcp-oauth`, parses `agentConnectionId` from `sub`, loads the `agent_connections` row, rejects a revoked connection, and returns `{ userId, connectionId, clientId }` from that row. The user id comes from the row, never from the token or tool args, and `connectionId` + `clientId` are the agent attribution as in §2.3.
 - **apps/mcp (P1):**
   - `resolve()` returns `{ ok: true, actor, authInfo } | { ok: false, error: "invalid_token" | "insufficient_scope" }`. It verifies the JWT locally with `jose` (`iss`, `aud` equal to the MCP URL, `exp`, RS256 via remote JWKS).
   - Serve `/.well-known/oauth-protected-resource[/mcp]` before the 404 route.
