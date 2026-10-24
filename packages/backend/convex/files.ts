@@ -138,6 +138,37 @@ export const updateDocument = mutation({
   },
 });
 
+/** Restore content by appending a revision; prior revisions remain immutable. */
+export const restoreRevision = mutation({
+  args: {
+    fileId: v.id("files"),
+    version: v.number(),
+    expectedVersion: v.number(),
+  },
+  returns: fileValidator,
+  handler: async (ctx, args) => {
+    const file = await getAuthorizedFile(ctx, args.fileId);
+    const user = await requireUser(ctx);
+    if (!Number.isSafeInteger(args.version) || args.version < 1)
+      throw new ConvexError({ code: "INVALID_INPUT" });
+    const revision = await ctx.db
+      .query("file_revisions")
+      .withIndex("by_file_and_version", (q) =>
+        q.eq("fileId", file._id).eq("version", args.version),
+      )
+      .unique();
+    if (!revision) throw new ConvexError({ code: "INVALID_INPUT" });
+    const updated = await updateDocumentCore(ctx, {
+      file,
+      content: revision.content,
+      expectedVersion: args.expectedVersion,
+      actor: humanActor(user),
+      eventSummary: `Restored v${args.version} as v${file.version + 1} for ${file.name}`,
+    });
+    return toMetadata(updated);
+  },
+});
+
 export const getFileVersions = query({
   args: { fileId: v.id("files"), limit: v.optional(v.number()) },
   returns: v.array(

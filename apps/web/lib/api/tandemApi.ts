@@ -45,6 +45,8 @@ export interface TandemApi {
     fileId: string,
     update: FileUpdate,
   ): Promise<{ version: number }>;
+  /** Appends the selected content as a new human-authored head; optimistic locking applies. */
+  restoreRevision(fileId: string, version: number, expectedVersion: number): Promise<{ version: number }>;
   /** Newest first. Content may be omitted; fetch it with `getRevision`. */
   listRevisions(fileId: string): Promise<Revision[]>;
   /** One revision with its content, or null when that version doesn't exist. */

@@ -108,3 +108,23 @@ describe("mock TandemApi", () => {
     expect(err.details.updatedBy).toEqual(claude);
   });
 });
+
+describe("mock restoreRevision (#26)", () => {
+  it("appends old content as a new human-authored head and preserves prior revisions", async () => {
+    const api = createMockApi({ latencyMs: [0, 0], getActor: () => human });
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "restore.txt", mimeType: "text/plain", content: "v1" });
+    await api.updateFileContent(id, { expectedVersion: 1, content: "v2" });
+    api.__simulateExternalEdit(id, "v3", claude);
+    const before = await api.listRevisions(id);
+    expect(await api.restoreRevision(id, 1, 3)).toEqual({ version: 4 });
+    expect(await api.readFile(id)).toMatchObject({ version: 4, content: "v1", updatedBy: human });
+    const after = await api.listRevisions(id);
+    expect(after[0]).toMatchObject({ version: 4, content: "v1", ...human });
+    expect(after.slice(1)).toEqual(before);
+    expect((await expectApiError(api.restoreRevision(id, 1, 3))).code).toBe("VERSION_CONFLICT");
+    for (const version of [0, 1.5, 99]) {
+      expect((await expectApiError(api.restoreRevision(id, version, 4))).code).toBe("INVALID_INPUT");
+    }
+    expect(await api.listRevisions(id)).toEqual(after);
+  });
+});

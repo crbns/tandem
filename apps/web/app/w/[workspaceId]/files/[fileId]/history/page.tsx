@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeftIcon, InfoIcon } from "lucide-react";
 import { TandemApiError, useTandemApi, type FileDetail, type Revision } from "@/lib/api";
+import { RestoreRevisionDialog } from "@/components/history/RestoreRevisionDialog";
 import { useResource } from "@/lib/api/useResource";
 import { belongsToWorkspace, isMarkdown } from "@/lib/files";
 import { formatAbsolute } from "@/lib/time";
@@ -92,7 +93,7 @@ function RevisionViewer({ revision, previous, head, file }: RevisionViewerProps)
         />
       )}
       <p className="text-xs text-muted-foreground">
-        Read-only. Older versions are kept forever; nothing here changes the file.
+        Older versions are kept forever. Restoring creates a new version.
       </p>
     </div>
   );
@@ -180,12 +181,23 @@ export default function HistoryPage() {
           mimeType={file.mimeType}
           trail={{ label: "History", fileHref }}
         />
-        <Button variant="outline" size="sm" asChild>
-          <Link href={fileHref}>
-            <ArrowLeftIcon />
-            Back to file
-          </Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          {current && current.version !== head.version && file.permissions.canEdit && (
+            <RestoreRevisionDialog
+              fileId={fileId}
+              version={current.version}
+              expectedVersion={head.version}
+              onRestored={(version) => { setSelected(version); reload(); }}
+              onRefresh={reload}
+            />
+          )}
+          <Button variant="outline" size="sm" asChild>
+            <Link href={fileHref}>
+              <ArrowLeftIcon />
+              Back to file
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {!current ? (

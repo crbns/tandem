@@ -429,6 +429,24 @@ export function createMockApi({
       return { version: commit(file, content, getActor()) };
     },
 
+    async restoreRevision(fileId, version, expectedVersion) {
+      await delay();
+      const file = getFile(fileId);
+      if (!Number.isSafeInteger(version) || version < 1 ||
+          !Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
+        throw new TandemApiError("INVALID_INPUT");
+      const revision = file.revisions.find((r) => r.version === version);
+      if (!revision || revision.content === undefined) throw new TandemApiError("INVALID_INPUT");
+      if (expectedVersion !== file.summary.version) {
+        throw new TandemApiError("VERSION_CONFLICT", {
+          currentVersion: file.summary.version,
+          currentContent: file.content,
+          updatedBy: { ...file.summary.updatedBy },
+        });
+      }
+      return { version: commit(file, revision.content, getActor()) };
+    },
+
     async listRevisions(fileId) {
       await delay();
       return getFile(fileId)
