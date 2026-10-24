@@ -3086,7 +3086,7 @@ describe("sync brief and server instructions", () => {
     // A fresh workspace has no approved context, so sync asks to seed it from the files.
     const empty = (await tool("sync_workspace", { detail: "brief" })).next_steps;
     expect(empty).toEqual(syncNextSteps({ contextEmpty: true }));
-    expect(empty[0]).toMatch(/context is empty.*propose_context_change.*source_ids/);
+    expect(empty[0]).toMatch(/context is empty.*files you read or save.*propose_context_change.*source_ids.*no pending proposal/);
     expect(syncNextSteps({ contextEmpty: false })).toEqual(empty.slice(1));
     expect(empty.join(" ")).toMatch(/publish_work, even if no file changed/);
 
@@ -3096,7 +3096,7 @@ describe("sync brief and server instructions", () => {
     const { next_steps: savedSteps, ...file } = created;
     expect(file).toEqual(expect.objectContaining({ id: expect.any(String), path: "/loop.md", version: 1 }));
     expect(savedSteps[1]).toContain(`["${created.id}"]`);
-    expect(savedSteps[2]).toMatch(/propose_context_change.*approved context lacks/);
+    expect(savedSteps[2]).toMatch(/propose_context_change.*approved context lacks and no pending proposal/);
     expect(savedSteps[2]).toContain(`source_ids ["${created.id}"]`);
 
     const updated = await tool("update_document", { file_id: created.id, content: "v2", expected_version: 1 });
@@ -3121,6 +3121,29 @@ describe("sync brief and server instructions", () => {
     expect(applied.next_steps).toEqual(proposedNextSteps("applied"));
   });
 
+  it("treats a context whose only entry was resolved as empty again", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    await automatic(alex, workspaceId);
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const tool = async (name: string, args: Record<string, unknown> = {}) => {
+      const result = await callTool(t, apiKey, name, args);
+      expect(result.isError).toBeUndefined();
+      return result.structuredContent;
+    };
+    await tool("propose_context_change", { field: "open_questions", proposed_value: "Who reviews?", rationale: "Planning" });
+    const active = await tool("sync_workspace");
+    expect(active.next_steps).toEqual(syncNextSteps({ contextEmpty: false }));
+    const resolved = await tool("propose_context_change", {
+      field: "open_questions", operation: "resolve", entry_id: active.context.open_questions[0].id,
+      expected_version: active.context_version, rationale: "Answered",
+    });
+    expect(resolved.proposal.status).toBe("applied");
+    // Retained history isn't current context: only the resolved question is left.
+    const after = await tool("sync_workspace");
+    expect(after.context.open_questions).toMatchObject([{ status: "resolved" }]);
+    expect(after.next_steps).toEqual(syncNextSteps({ contextEmpty: true }));
+  });
+
   it("keeps next_steps off read results and error results", async () => {
     const { t, sam, workspaceId } = await setup();
     const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
@@ -3136,7 +3159,7 @@ describe("sync brief and server instructions", () => {
     const { MCP_INSTRUCTIONS } = await import("./mcp");
     for (const term of ["sync_workspace", "since", "cursor", "read_file", "update_document", "publish_work", "propose_context_change",
       "expected_version", "open_questions", "best effort", "without waiting to be asked", "private conversation history", "untrusted",
-      "even if no file changed", "create or edit", "that context lacks", "especially if empty"])
+      "even if no file changed", "create or edit", "that context lacks", "no pending proposal covers", "read brief first"])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);

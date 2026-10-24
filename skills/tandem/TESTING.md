@@ -220,16 +220,20 @@ workspace with no approved goal, scope or entries, after seeding `brief.md`
 with a goal, an owner and an open question in its text (turn 1 then finds no
 approved goal). Expected: the first
 `sync_workspace` result's `next_steps` starts with the "context is empty" step,
-and after each `create_document` / `update_document` the assistant calls
-`propose_context_change` for what the file shows (goal, scope, constraints,
-decisions, owners, open questions) with that file's id in `source_ids`. Check
-in the dashboard that the proposals are pending (manual workspace) and cite
-the file. Record yes / no / prompted per client.
+and the assistant seeds the context from the files it reads or saves: after
+reading `brief.md` and after each `create_document` / `update_document` it
+calls `propose_context_change` for what the file shows (goal, scope,
+constraints, decisions, owners, open questions) with that file's id in
+`source_ids`. The proposals stay pending (manual workspace), so later syncs
+still show the "context is empty" step; the assistant must not re-propose what
+is already pending (the brief's `blockers.pending_approvals`). Check in the
+dashboard that the proposals are pending, cite the file, and that each item
+was proposed once. Record yes / no / prompted per client.
 
-| Client         | Run | Empty-context step seen | Proposals after save | Cite file in `source_ids` | Notes |
-| -------------- | --- | ----------------------- | -------------------- | ------------------------- | ----- |
-| Claude web     |     | PENDING                 | PENDING              | PENDING                   |       |
-| Claude desktop |     | PENDING                 | PENDING              | PENDING                   |       |
+| Client         | Run | Empty-context step seen | Proposals after read/save | Cite file in `source_ids` | No duplicate proposals | Notes |
+| -------------- | --- | ----------------------- | ------------------------- | ------------------------- | ---------------------- | ----- |
+| Claude web     |     | PENDING                 | PENDING                   | PENDING                   | PENDING                |       |
+| Claude desktop |     | PENDING                 | PENDING                   | PENDING                   | PENDING                |       |
 
 ## Record and replay
 

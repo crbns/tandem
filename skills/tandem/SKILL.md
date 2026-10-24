@@ -47,10 +47,13 @@ to ask you to sync, read, save, or publish.
    read, did, saved and proposed.
 5. **Propose.** Changes to goal, scope, decisions or ownership go through
    `propose_context_change` and stay pending until a human approves them
-   (section 7). Raise team blockers as `open_questions`. After each file you
-   create or edit, propose any goal, scope, constraint, decision, owner or open
-   question it shows that the approved context lacks, especially when the
-   context is empty, citing the file in `source_ids`.
+   (section 7). Raise team blockers as `open_questions`. Grow the context from
+   files: when the approved context is empty, seed it from the files you read
+   or save; otherwise, after each file you create or edit, propose any goal,
+   scope, constraint, decision, owner or open question it shows. Either way,
+   cite the file in `source_ids` and propose only what neither the approved
+   context nor a pending proposal (the brief's `blockers.pending_approvals`)
+   already covers.
 6. **Report** in one line what you read, saved, published and proposed, with
    paths and versions, and anything you skipped and why.
 
@@ -225,10 +228,18 @@ Someone else saved a newer version since you read it.
 
 ## 7. Record working context and propose major changes
 
-- Grow the project context as much as you can, especially when the workspace
-  has none yet. Each time you create or edit a file, check whether it shows a
-  goal, scope, constraint, decision, owner, or open question the context lacks,
-  and propose each one, citing the file in `source_ids`.
+- Grow the project context from files. When the approved context is empty
+  (no goal, scope or active entries; `sync_workspace`'s `next_steps` then
+  starts with a "context is empty" step), seed it from the files you read or
+  save. Otherwise, each time you create or edit a file, check whether it shows
+  a goal, scope, constraint, decision, owner, or open question. Propose each
+  one, citing the file in `source_ids`.
+- Propose only what neither the approved context nor a pending proposal
+  already covers. Pending proposals are listed in the brief's
+  `blockers.pending_approvals` (and `pending_proposals` in a full sync). A
+  pending proposal doesn't count as approved context, so a workspace with only
+  pending proposals still reads as empty: don't propose the same goal again on
+  every sync or save. The server doesn't dedupe proposals.
 - Goal, scope, major decisions, and ownership change only through
   `propose_context_change`. Never change them directly, including by editing a
   file to claim they changed.
