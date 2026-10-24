@@ -220,6 +220,16 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
       );
       return { version: file.version };
     },
+    restoreRevision: async (fileId, version, expectedVersion) => {
+      const file = await call(() =>
+        convex.mutation(api.files.restoreRevision, {
+          fileId: fileId as Id<"files">,
+          version,
+          expectedVersion,
+        }),
+      );
+      return { version: file.version };
+    },
     listRevisions: (fileId) =>
       call(async () => {
         const revisions = await convex.query(api.files.getFileVersions, {

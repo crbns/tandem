@@ -145,6 +145,7 @@ export async function updateDocumentCore(
     content: string;
     expectedVersion: number;
     actor: Actor;
+    eventSummary?: string;
   },
 ): Promise<Doc<"files">> {
   const { file, actor, expectedVersion } = args;
@@ -188,7 +189,7 @@ export async function updateDocumentCore(
     kind: "file.updated",
     entityType: "file",
     entityId: file._id,
-    summary: `Updated ${file.name} to revision ${version}`,
+    summary: args.eventSummary ?? `Updated ${file.name} to revision ${version}`,
     actor,
   });
   const updated = await ctx.db.get(file._id);

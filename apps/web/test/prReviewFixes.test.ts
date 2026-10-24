@@ -12,6 +12,7 @@ import {
 import { sideBySide } from "@/lib/editor/lineDiff";
 import { normalizeError, TandemApiError } from "@/lib/api/errors";
 import { call } from "@/lib/api/convex";
+import { createMockApi, MOCK_WORKSPACE_ID } from "@/lib/api/mock";
 
 const head: Theirs = {
   version: 4,
@@ -62,6 +63,21 @@ describe("draft stash ownership", () => {
     vi.stubGlobal("window", { sessionStorage: proxied, dispatchEvent: () => true });
   });
   afterEach(() => vi.unstubAllGlobals());
+
+  it("keeps an unsaved draft across a revision restore and reopens it as a conflict", async () => {
+    const actor = { actorType: "human" as const, userId: "user_demo", userName: "Demo" };
+    const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "draft.txt", mimeType: "text/plain", content: "original" });
+    await api.updateFileContent(id, { expectedVersion: 1, content: "second" });
+    stashDraft("demo@x.dev", id, { draft: "unsaved work", baseVersion: 2 });
+    await api.restoreRevision(id, 1, 2);
+    const stash = readDraftStash("demo@x.dev", id);
+    expect(stash).toEqual({ draft: "unsaved work", baseVersion: 2 });
+    const file = await api.readFile(id);
+    const state = restoreSaveState({ version: file.version, content: file.content!, updatedBy: file.updatedBy }, stash);
+    expect(state.draft).toBe("unsaved work");
+    expect(state.phase).toMatchObject({ kind: "conflict", theirs: { version: 3, content: "original" } });
+  });
 
   it("normalizes the owner and refuses an unknown identity", () => {
     expect(draftOwnerKey(" Alex@X.dev ")).toBe("alex@x.dev");

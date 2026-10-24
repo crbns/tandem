@@ -269,3 +269,17 @@ describe("createConvexApi", () => {
     expect(normalizeError(new ConvexError({ code: backendCode })).code).toBe(code);
   });
 });
+
+describe("restoreRevision adapter (#26)", () => {
+  it("passes the selected and expected versions to the mutation", async () => {
+    const { client, calls } = fakeConvex({ "files:restoreRevision": { ...FILE, version: 4, updatedBy: ALEX } });
+    expect(await createConvexApi(client).restoreRevision("files_1", 1, 3)).toEqual({ version: 4 });
+    expect(calls).toEqual([{ name: "files:restoreRevision", args: { fileId: "files_1", version: 1, expectedVersion: 3 } }]);
+  });
+
+  it("preserves VERSION_CONFLICT details and never retries a stale restore", async () => {
+    const { client, calls } = fakeConvex({ "files:restoreRevision": new ConvexError({ code: "VERSION_CONFLICT", currentVersion: 4, currentContent: "newer" }) });
+    await expect(createConvexApi(client).restoreRevision("files_1", 1, 3)).rejects.toMatchObject({ code: "VERSION_CONFLICT", details: { currentVersion: 4, currentContent: "newer" } });
+    expect(calls).toHaveLength(1);
+  });
+});
