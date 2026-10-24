@@ -10,6 +10,7 @@ import { belongsToWorkspace, isTextMimeType } from "@/lib/files";
 import { BinaryPreview } from "@/components/files/BinaryPreview";
 import { useWorkspaceRefresh } from "@/lib/api/useWorkspace";
 import { FileEditor } from "@/components/editor/FileEditor";
+import { FileActions } from "@/components/files/FileActions";
 import { FileHeader } from "@/components/files/FileHeader";
 import { ErrorState } from "@/components/common/ErrorState";
 import { Button } from "@/components/ui/button";
@@ -49,6 +50,7 @@ export default function FilePage() {
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4">
       <FileHeader workspaceId={workspaceId} fileId={file.id} name={file.name} mimeType={file.mimeType} />
+      <FileActions file={file} onChanged={reload} redirectAfterDelete />
       {isTextMimeType(file.mimeType) && file.content !== null ? (
         // Keyed by id so a different file always starts a fresh save machine.
         <FileEditor key={file.id} file={file} historyHref={`${fileHref}/history`} />

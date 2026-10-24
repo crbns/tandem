@@ -202,6 +202,13 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
       );
       return { id: file.id, version: file.version };
     },
+    renameFile: async (fileId, name, expectedVersion) => {
+      const file = await call(() => convex.mutation(api.files.renameFile, { fileId: fileId as Id<"files">, name, expectedVersion }));
+      return { version: file.version };
+    },
+    deleteFile: async (fileId, expectedVersion) => {
+      await call(() => convex.mutation(api.files.deleteFile, { fileId: fileId as Id<"files">, expectedVersion }));
+    },
     uploadFile: async (workspaceId, file, options) => {
       try {
         // A late URL creates no file and cannot continue this timed-out chain.

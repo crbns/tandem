@@ -10,6 +10,8 @@ import {
 } from "./lib/auth";
 import {
   createDocumentCore,
+  renameFileCore,
+  deleteFileCore,
   toFileMetadata,
   updateDocumentCore,
 } from "./lib/ops";
@@ -45,7 +47,7 @@ async function getAuthorizedFile(
 ) {
   const user = await requireUser(ctx);
   const file = await ctx.db.get(fileId);
-  if (!file) throw new ConvexError({ code: "FILE_NOT_FOUND" });
+  if (!file || file.deletedAt !== undefined) throw new ConvexError({ code: "FILE_NOT_FOUND" });
   const membership = await ctx.db
     .query("workspace_members")
     .withIndex("by_workspace_and_user", (q) =>
@@ -78,22 +80,14 @@ export const listFiles = query({
     const needle = args.query?.trim();
     const rows = needle
       ? ctx.db.query("files").withSearchIndex("search_name", (q) => {
-          const search = q
-            .search("name", needle)
-            .eq("workspaceId", workspaceId!);
+          const search = q.search("name", needle).eq("workspaceId", workspaceId!).eq("deletedAt", undefined);
           return args.folderId ? search.eq("parentId", args.folderId) : search;
         })
       : args.folderId
-        ? ctx.db
-            .query("files")
-            .withIndex("by_workspace_and_parent", (q) =>
-              q.eq("workspaceId", workspaceId!).eq("parentId", args.folderId),
-            )
-        : ctx.db
-            .query("files")
-            .withIndex("by_workspace", (q) =>
-              q.eq("workspaceId", workspaceId!),
-            );
+        ? ctx.db.query("files").withIndex("by_workspace_and_deleted_at_and_parent", (q) =>
+            q.eq("workspaceId", workspaceId!).eq("deletedAt", undefined).eq("parentId", args.folderId),
+          )
+        : ctx.db.query("files").withIndex("by_workspace_and_deleted_at_and_updated_at", (q) => q.eq("workspaceId", workspaceId!).eq("deletedAt", undefined));
     const result = await rows.paginate(args.paginationOpts);
     return {
       page: result.page.map(toMetadata),
@@ -249,6 +243,27 @@ export const getFileRevision = query({
   },
 });
 
+export const renameFile = mutation({
+  args: { fileId: v.id("files"), name: v.string(), expectedVersion: v.number() },
+  returns: fileValidator,
+  handler: async (ctx, args) => {
+    const file = await getAuthorizedFile(ctx, args.fileId);
+    const user = await requireUser(ctx);
+    return toMetadata(await renameFileCore(ctx, { ...args, file, actor: humanActor(user) }));
+  },
+});
+
+export const deleteFile = mutation({
+  args: { fileId: v.id("files"), expectedVersion: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const file = await getAuthorizedFile(ctx, args.fileId);
+    const user = await requireUser(ctx);
+    await deleteFileCore(ctx, { ...args, file, actor: humanActor(user) });
+    return null;
+  },
+});
+
 /** Only members can obtain a storage upload URL; publication validates the stored blob. */
 export const generateUploadUrl = mutation({
   args: { workspaceId: v.id("workspaces") },
@@ -285,7 +300,7 @@ export const finalizeUpload = mutation({
     let name: string;
     if (args.fileId) {
       const file = await ctx.db.get(args.fileId);
-      if (!file || file.workspaceId !== args.workspaceId)
+      if (!file || file.deletedAt !== undefined || file.workspaceId !== args.workspaceId)
         throw new ConvexError({ code: "FILE_NOT_FOUND" });
       if (!file.storageId) throw new ConvexError({ code: "NOT_BINARY_FILE" });
       if (
@@ -395,7 +410,7 @@ export const getBinaryContent = internalQuery({
     await requireUser(ctx);
     const id = ctx.db.normalizeId("files", args.fileId);
     const file = id ? await ctx.db.get(id) : null;
-    if (!file) throw new ConvexError({ code: "FILE_NOT_FOUND" });
+    if (!file || file.deletedAt !== undefined) throw new ConvexError({ code: "FILE_NOT_FOUND" });
     await requireMembership(ctx, file.workspaceId);
     if (
       args.version !== undefined &&

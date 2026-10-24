@@ -106,6 +106,58 @@ describe("context lifecycle", () => {
     }
   });
 
+  it("edits, resolves, and removes a question after its source is deleted", async () => {
+    const { mock } = setup();
+    const file = await mock.createFile(workspaceId, { name: "source.md", mimeType: "text/markdown", content: "Evidence" });
+    await mock.proposeContextChange(workspaceId, { ...input, sourceFileIds: [file.id] });
+    await mock.deleteFile(file.id, file.version);
+    let context = await mock.getContextDetails(workspaceId);
+    const entry = context.openQuestions[0]!;
+    await mock.updateContextField(workspaceId, { ...input, proposedValue: "Edited", sourceFileIds: [file.id], entryId: entry.id, expectedVersion: context.version });
+    context = await mock.getContextDetails(workspaceId);
+    expect(context.openQuestions[0]).toMatchObject({ id: entry.id, text: "Edited", sourceFileIds: [file.id] });
+    await mock.proposeContextChange(workspaceId, { ...input, operation: "resolve", entryId: entry.id, sourceFileIds: [file.id], expectedVersion: context.version });
+    context = await mock.getContextDetails(workspaceId);
+    expect(context.openQuestions[0]).toMatchObject({ status: "resolved", sourceFileIds: [file.id] });
+    await mock.proposeContextChange(workspaceId, { ...input, operation: "remove", entryId: entry.id, sourceFileIds: [file.id], expectedVersion: context.version });
+    expect((await mock.getContextDetails(workspaceId)).openQuestions).toEqual([]);
+  });
+
+  it("rejects new deleted or nonexistent sources even when another entry already links them", async () => {
+    const { mock } = setup();
+    const file = await mock.createFile(workspaceId, { name: "source.md", mimeType: "text/markdown", content: "Evidence" });
+    await mock.proposeContextChange(workspaceId, { ...input, sourceFileIds: [file.id] });
+    await mock.deleteFile(file.id, file.version);
+    const context = await mock.getContextDetails(workspaceId);
+    for (const sourceFileIds of [[file.id], ["missing-file"]]) {
+      await expect(mock.updateContextField(workspaceId, { ...input, sourceFileIds, expectedVersion: context.version })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      await expect(mock.proposeContextChange(workspaceId, { ...input, field: "decision", sourceFileIds })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    }
+  });
+
+  it("edits and proposes an existing goal with a deleted source, then approves it", async () => {
+    const { mock } = setup();
+    const file = await mock.createFile(workspaceId, { name: "source.md", mimeType: "text/markdown", content: "Evidence" });
+    let context = await mock.getContextDetails(workspaceId);
+    const change = { ...input, field: "goal" as const, sourceFileIds: [file.id] };
+    await mock.updateContextField(workspaceId, { ...change, expectedVersion: context.version });
+    await mock.deleteFile(file.id, file.version);
+    context = await mock.getContextDetails(workspaceId);
+    await mock.updateContextField(workspaceId, { ...change, proposedValue: "Edited goal", expectedVersion: context.version });
+    const proposal = await mock.proposeContextChange(workspaceId, { ...change, proposedValue: "Proposed goal" });
+    await mock.decideProposal({ id: proposal.id, workspaceId }, "approved");
+    expect((await mock.getContextDetails(workspaceId)).goal).toMatchObject({ text: "Proposed goal", sourceFileIds: [file.id] });
+  });
+
+  it("approves a pending proposal whose source was deleted after submission", async () => {
+    const { mock } = setup();
+    const file = await mock.createFile(workspaceId, { name: "source.md", mimeType: "text/markdown", content: "Evidence" });
+    const proposal = await mock.proposeContextChange(workspaceId, { ...input, field: "decision", sourceFileIds: [file.id] });
+    await mock.deleteFile(file.id, file.version);
+    await mock.decideProposal({ id: proposal.id, workspaceId }, "approved");
+    expect((await mock.getContextDetails(workspaceId)).decisions.at(-1)).toMatchObject({ text: input.proposedValue, sourceFileIds: [file.id] });
+  });
+
   it("maps resolver actors without losing backend lifecycle IDs", () => {
     const entry = { id: "backend-stable-id", text: "Question", sourceFileIds: [], updatedBy: { type: "human" as const, label: "Owner" }, updatedAt: 1,
       status: "resolved" as const, resolvedBy: { type: "agent" as const, label: "Claude", client: "claude", userName: "Owner" }, resolvedAt: 2, supersededBy: null };

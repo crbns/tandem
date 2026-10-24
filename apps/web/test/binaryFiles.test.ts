@@ -89,6 +89,37 @@ describe("binary file adapter", () => {
 });
 
 describe("mock binary history", () => {
+  it("retains renamed binary bytes and blocks reads, restores and uploads after deletion", async () => {
+    const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
+    const blob = new File(["pdf bytes"], "report.pdf", { type: "application/pdf" });
+    const created = await api.uploadFile(MOCK_WORKSPACE_ID, blob);
+    if (created.pending) throw new Error("Mock upload must finish");
+    expect(await api.renameFile(created.id, "renamed.pdf", 1)).toEqual({ version: 2 });
+    for (const version of [undefined, 1, 2]) {
+      const content = await api.getFileBlob(created.id, version);
+      expect(content.type).toBe("application/pdf");
+      expect(await content.text()).toBe("pdf bytes");
+    }
+    expect((await api.listRevisions(created.id)).map((r) => r.version)).toEqual([2, 1]);
+    await api.deleteFile(created.id, 2);
+    await expect(api.getFileBlob(created.id)).rejects.toMatchObject({ code: "FILE_NOT_FOUND" });
+    await expect(api.getFileBlob(created.id, 1)).rejects.toMatchObject({ code: "FILE_NOT_FOUND" });
+    await expect(api.restoreRevision(created.id, 1, 2)).rejects.toMatchObject({ code: "FILE_NOT_FOUND" });
+    await expect(api.uploadFile(MOCK_WORKSPACE_ID, blob, { fileId: created.id, expectedVersion: 2 })).rejects.toMatchObject({ code: "FILE_NOT_FOUND" });
+    expect(await api.uploadFile(MOCK_WORKSPACE_ID, new File(["replacement"], "renamed.pdf", { type: "application/pdf" }))).toMatchObject({ version: 1 });
+  });
+
+  it("restores renamed text history and rejects restore on a deleted document", async () => {
+    const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
+    const file = await api.createFile(MOCK_WORKSPACE_ID, { name: "original.txt", mimeType: "text/plain", content: "original" });
+    await api.updateFileContent(file.id, { content: "updated", expectedVersion: 1 });
+    await api.renameFile(file.id, "renamed.txt", 2);
+    expect(await api.restoreRevision(file.id, 1, 3)).toEqual({ version: 4 });
+    expect(await api.readFile(file.id)).toMatchObject({ name: "renamed.txt", content: "original" });
+    await api.deleteFile(file.id, 4);
+    await expect(api.restoreRevision(file.id, 1, 4)).rejects.toMatchObject({ code: "FILE_NOT_FOUND" });
+  });
+
   it.each(["image/svg+xml", "text/plain", "video/mp4"])("rejects unsupported upload MIME %s without creating a file", async (type) => {
     const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
     const before = await api.listFiles(MOCK_WORKSPACE_ID);

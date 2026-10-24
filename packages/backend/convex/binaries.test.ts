@@ -39,6 +39,54 @@ async function setup() {
 }
 
 describe("binary uploads", () => {
+  it("keeps renamed binary heads and revisions downloadable with their MIME and size", async () => {
+    const { t, owner, workspaceId, upload, store } = await setup();
+    const file = await upload();
+    await owner.mutation(api.files.renameFile, { fileId: file.id, name: "renamed.pdf", expectedVersion: 1 });
+    const path = `/files/${file.id}/content`;
+    for (const suffix of ["", "?version=1", "?version=2"]) {
+      const response = await owner.fetch(path + suffix);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("application/pdf");
+      expect(response.headers.get("content-disposition")).toContain("renamed.pdf");
+      expect(await response.text()).toBe("pdf bytes");
+    }
+    const revision = await t.run((ctx) => ctx.db.query("file_revisions")
+      .withIndex("by_file_and_version", (q) => q.eq("fileId", file.id).eq("version", 2)).unique());
+    expect(revision).toMatchObject({ storageId: expect.any(String), mimeType: "application/pdf", size: 9 });
+    await owner.mutation(api.files.finalizeUpload, { workspaceId, fileId: file.id, name: "ignored.png", storageId: await store("png bytes", "image/png"), expectedVersion: 2 });
+    const historical = await owner.fetch(path + "?version=2");
+    expect(historical.headers.get("content-type")).toBe("application/pdf");
+    expect(await historical.text()).toBe("pdf bytes");
+    expect(await owner.query(api.files.readFile, { fileId: file.id })).toMatchObject({ file: { name: "renamed.pdf", version: 3 } });
+  });
+
+  it("blocks deleted binary content and finalization without appending history", async () => {
+    const { t, owner, workspaceId, upload, store } = await setup();
+    const file = await upload();
+    await owner.mutation(api.files.deleteFile, { fileId: file.id, expectedVersion: 1 });
+    for (const suffix of ["", "?version=1"]) {
+      expect((await owner.fetch(`/files/${file.id}/content${suffix}`)).status).toBe(404);
+    }
+    const storageId = await store("replacement");
+    await expect(owner.mutation(api.files.finalizeUpload, { workspaceId, fileId: file.id, name: file.name, storageId, expectedVersion: 1 })).rejects.toThrow("FILE_NOT_FOUND");
+    expect(await t.run((ctx) => ctx.db.query("file_revisions").collect())).toHaveLength(1);
+    expect(await t.run((ctx) => ctx.db.query("storage_objects").withIndex("by_storage_id", (q) => q.eq("storageId", storageId)).first())).toBeNull();
+    // Deletion frees the canonical name for a new upload.
+    expect(await upload()).toMatchObject({ name: file.name, version: 1 });
+  });
+
+  it("restores text history after rename and rejects restore after deletion", async () => {
+    const { owner, workspaceId } = await setup();
+    const file = await owner.mutation(api.files.createDocument, { workspaceId, name: "original.txt", mimeType: "text/plain", content: "original" });
+    await owner.mutation(api.files.updateDocument, { fileId: file.id, content: "updated", expectedVersion: 1 });
+    await owner.mutation(api.files.renameFile, { fileId: file.id, name: "renamed.txt", expectedVersion: 2 });
+    expect(await owner.mutation(api.files.restoreRevision, { fileId: file.id, version: 1, expectedVersion: 3 })).toMatchObject({ name: "renamed.txt", version: 4 });
+    expect(await owner.query(api.files.readFile, { fileId: file.id })).toMatchObject({ content: "original" });
+    await owner.mutation(api.files.deleteFile, { fileId: file.id, expectedVersion: 4 });
+    await expect(owner.mutation(api.files.restoreRevision, { fileId: file.id, version: 1, expectedVersion: 4 })).rejects.toThrow("FILE_NOT_FOUND");
+  });
+
   it("requires membership to generate URLs and finalize uploads", async () => {
     const { t, owner, outsider, workspaceId, store } = await setup();
     expect(

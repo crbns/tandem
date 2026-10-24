@@ -39,6 +39,8 @@ export interface TandemApi {
     workspaceId: string,
     input: CreateFileInput,
   ): Promise<{ id: string; version: number }>;
+  renameFile(fileId: string, name: string, expectedVersion: number): Promise<{ version: number }>;
+  deleteFile(fileId: string, expectedVersion: number): Promise<void>;
   /** Pending finalization may still commit later; it is not a failed upload. */
   uploadFile(workspaceId: string, file: File, options?: { fileId: string; expectedVersion: number }): Promise<{ id: string; version: number; pending?: false } | { pending: true }>;
   getFileBlob(fileId: string, version?: number): Promise<Blob>;

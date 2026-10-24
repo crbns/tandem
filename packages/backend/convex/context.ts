@@ -144,6 +144,11 @@ export const updateContextField = mutation({
       ctx,
       args.workspaceId,
       args.sourceFileIds,
+      key === null
+        ? context[args.field as "goal" | "scope"]?.sourceFileIds
+        : entryIndex !== undefined
+          ? context[key][entryIndex]?.sourceFileIds
+          : undefined,
     );
     const actor = humanActor(user);
     await applyApprovedProposal(
@@ -195,14 +200,8 @@ export const proposeContextChange = mutation({
   }),
   handler: async (ctx, args) => {
     const { user } = await requireMembership(ctx, args.workspaceId);
-    const sourceFileIds = await checkSourceFiles(
-      ctx,
-      args.workspaceId,
-      args.sourceFileIds,
-    );
     const proposal = await proposeContextChangeCore(ctx, {
       ...args,
-      sourceFileIds,
       actor: humanActor(user),
     });
     return {

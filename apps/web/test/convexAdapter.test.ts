@@ -96,6 +96,20 @@ function fakeConvex(responses: Record<string, unknown>) {
 }
 
 describe("createConvexApi", () => {
+  it("forwards rename and delete with the expected version", async () => {
+    const { client, calls } = fakeConvex({
+      "files:renameFile": { ...FILE, name: "renamed.md", version: 4 },
+      "files:deleteFile": null,
+    });
+    const tandem = createConvexApi(client);
+    expect(await tandem.renameFile("files_1", "renamed.md", 3)).toEqual({ version: 4 });
+    await tandem.deleteFile("files_1", 4);
+    expect(calls).toEqual([
+      { name: "files:renameFile", args: { fileId: "files_1", name: "renamed.md", expectedVersion: 3 } },
+      { name: "files:deleteFile", args: { fileId: "files_1", expectedVersion: 4 } },
+    ]);
+  });
+
   it("calls the backend's function names with exact args and maps what comes back", async () => {
     const { client, calls } = fakeConvex({
       "workspaces:listWorkspaces": WORKSPACES,
