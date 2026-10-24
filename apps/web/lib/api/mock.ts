@@ -1,4 +1,4 @@
-import { MAX_NAME_LENGTH, nameKey, storedName } from "@repo/backend/convex/lib/names.js";
+import { MAX_NAME_LENGTH, nameKey, storedName } from "@repo/backend/convex/lib/names.ts";
 import { TandemApiError } from "./errors";
 
 const MOCK_MCP_URL = "https://mock-deployment.convex.site/mcp";
