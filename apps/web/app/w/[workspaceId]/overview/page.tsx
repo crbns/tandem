@@ -1,14 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import { useParams } from "next/navigation";
 import { ArrowRightIcon, FolderIcon, RotateCwIcon } from "lucide-react";
 import { useTandemApi } from "@/lib/api";
 import { useResource, type Resource } from "@/lib/api/useResource";
-import { useWorkspaceRefresh } from "@/lib/api/useWorkspace";
+import { useWorkspaceFiles, useWorkspaceRefresh } from "@/lib/api/useWorkspace";
 import { clientName } from "@/lib/actors";
-import { folderHref } from "@/lib/folders";
+import { folderHref, plural } from "@/lib/folders";
 import { condenseTree, contextDigest, recentFiles, summarizeAgents, RECENT_ACTIVITY_MS } from "@/lib/overview";
 import { formatAbsolute, formatRelative } from "@/lib/time";
 import { useNow } from "@/lib/useNow";
@@ -29,16 +29,27 @@ export default function OverviewPage() {
 
   const loadAgents = useCallback(() => api.listAgentActivity(workspaceId), [api, workspaceId]);
   const agents = useResource(loadAgents);
-  const loadFiles = useCallback(async () => {
-    const [folders, files] = await Promise.all([api.listFolderTree(workspaceId), api.listFiles(workspaceId)]);
-    return { folders, files };
-  }, [api, workspaceId]);
-  const files = useResource(loadFiles);
+  const loadFolders = useCallback(() => api.listFolderTree(workspaceId), [api, workspaceId]);
+  const folders = useResource(loadFolders);
+  // The layout already lists the files for the rail's count; reuse that list.
+  const workspaceFiles = useWorkspaceFiles();
+  const files = useMemo(
+    () => ({
+      resource: bothReady(folders.resource, workspaceFiles.resource, (folders, files) => ({ folders, files })),
+      refreshing: folders.refreshing || workspaceFiles.refreshing,
+    }),
+    [folders.resource, folders.refreshing, workspaceFiles.resource, workspaceFiles.refreshing],
+  );
   const loadContext = useCallback(() => api.getContextDetails(workspaceId), [api, workspaceId]);
   const context = useResource(loadContext);
 
   const { reload: reloadAgents } = agents;
-  const { reload: reloadFiles } = files;
+  const { reload: reloadFolders } = folders;
+  const { reload: reloadWorkspaceFiles } = workspaceFiles;
+  const reloadFiles = useCallback(() => {
+    reloadFolders();
+    reloadWorkspaceFiles();
+  }, [reloadFolders, reloadWorkspaceFiles]);
   const { reload: reloadContext } = context;
   const reloadAll = useCallback(() => {
     reloadAgents();
@@ -65,11 +76,19 @@ export default function OverviewPage() {
       <AgentsPanel workspaceId={workspaceId} resource={agents.resource} onRetry={agents.reload} retrying={agents.refreshing} />
 
       <div className="grid items-start gap-5 lg:grid-cols-2">
-        <FilesPanel workspaceId={workspaceId} resource={files.resource} onRetry={files.reload} retrying={files.refreshing} />
+        <FilesPanel workspaceId={workspaceId} resource={files.resource} onRetry={reloadFiles} retrying={files.refreshing} />
         <ContextPanel workspaceId={workspaceId} resource={context.resource} onRetry={context.reload} retrying={context.refreshing} />
       </div>
     </div>
   );
+}
+
+/** Ready once both are, failing with the first error. */
+function bothReady<A, B, T>(a: Resource<A>, b: Resource<B>, combine: (a: A, b: B) => T): Resource<T> {
+  if (a.status === "error") return a;
+  if (b.status === "error") return b;
+  if (a.status === "loading" || b.status === "loading") return { status: "loading" };
+  return { status: "ready", data: combine(a.data, b.data) };
 }
 
 function Panel({
@@ -175,16 +194,19 @@ function FilesPanel({
 }: PanelProps<{ folders: FolderSummary[]; files: FileSummary[] }>) {
   const now = useNow();
   const fileHref = (file: FileSummary) => `/w/${workspaceId}/files/${file.id}`;
+  // Only the relative times need `now`; the tree and sort stay put between ticks.
+  const data = resource.status === "ready" ? resource.data : null;
+  const tree = useMemo(() => data && condenseTree(data.folders, data.files), [data]);
+  const recent = useMemo(() => data && recentFiles(data.files), [data]);
   return (
     <Panel id="overview-files" title="Files" href={folderHref(workspaceId, null)} linkLabel="Open files">
       {resource.status === "loading" && <Skeleton className="h-48" aria-label="Loading files" />}
       {resource.status === "error" && <ErrorState error={resource.error} onRetry={onRetry} retrying={retrying} />}
-      {resource.status === "ready" && (() => {
-        const { folders, files } = resource.data;
+      {data && tree && recent && (() => {
+        const { folders, files } = data;
         if (folders.length === 0 && files.length === 0) {
           return <p className="text-sm text-muted-foreground">No files yet.</p>;
         }
-        const tree = condenseTree(folders, files);
         return (
           <>
             <p className="label-caps text-muted-foreground">
@@ -227,7 +249,7 @@ function FilesPanel({
             )}
             <h3 className="label-caps mt-1 text-muted-foreground">Recently changed</h3>
             <ul aria-label="Recently changed files" className="flex flex-col text-sm">
-              {recentFiles(files).map((file) => (
+              {recent.map((file) => (
                 <li key={file.id}>
                   <Link href={fileHref(file)} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-accent">
                     <CustodyMark kind={file.updatedBy.actorType} />
@@ -286,8 +308,4 @@ function ContextPanel({ workspaceId, resource, onRetry, retrying }: PanelProps<C
       )}
     </Panel>
   );
-}
-
-function plural(n: number, word: string) {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }

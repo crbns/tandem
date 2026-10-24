@@ -181,8 +181,10 @@ export const listAgentConnections = query({
 /**
  * Every live (unrevoked) connection in the workspace, for any member, reduced
  * to the client and when Tandem last heard from it. No people, names or auth
- * details: this backs the dashboard's connected-assistant count. "Recently
- * active" is left to the caller, since queries can't read the clock.
+ * details: this backs the dashboard's connected-assistant count. Members see
+ * teammates' assistants' activity times on purpose (honest workspace
+ * presence); who owns each connection stays with listAgentConnections.
+ * "Recently active" is left to the caller, since queries can't read the clock.
  */
 export const listAgentActivity = query({
   args: { workspaceId: v.id("workspaces") },
@@ -197,17 +199,15 @@ export const listAgentActivity = query({
     await requireMembership(ctx, workspaceId);
     const connections = await ctx.db
       .query("agent_connections")
-      .withIndex("by_workspace_and_user", (q) =>
-        q.eq("workspaceId", workspaceId),
+      .withIndex("by_workspace_and_revoked_at", (q) =>
+        q.eq("workspaceId", workspaceId).eq("revokedAt", undefined),
       )
       .take(200);
-    return connections
-      .filter((connection) => connection.revokedAt === undefined)
-      .map((connection) => ({
-        client: connection.client,
-        lastMcpActionAt: connection.lastMcpActionAt ?? null,
-        lastSyncAt: connection.lastSyncAt ?? null,
-      }));
+    return connections.map((connection) => ({
+      client: connection.client,
+      lastMcpActionAt: connection.lastMcpActionAt ?? null,
+      lastSyncAt: connection.lastSyncAt ?? null,
+    }));
   },
 });
 

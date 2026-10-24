@@ -119,6 +119,8 @@ export default defineSchema({
     lastSyncAt: v.optional(v.number()),
   })
     .index("by_workspace_and_user", ["workspaceId", "userId"])
+    // Live (unrevoked) connections have no revokedAt, so they sort first.
+    .index("by_workspace_and_revoked_at", ["workspaceId", "revokedAt"])
     .index("by_user_and_client", ["userId", "client"])
     .index("by_token_hash", ["tokenHash"]),
 

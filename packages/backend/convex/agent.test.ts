@@ -257,6 +257,16 @@ describe("agent connections", () => {
         }),
       ),
     ).toMatchObject({ code: "FORBIDDEN" });
+    // A revoked connection drops out of the activity for everyone.
+    await alex.mutation(api.agentConnections.revokeAgentConnection, {
+      connectionId: alexConn.connectionId,
+    });
+    for (const member of [sam, alex]) {
+      const live = await member.query(api.agentConnections.listAgentActivity, {
+        workspaceId,
+      });
+      expect(live.map((a) => a.client)).toEqual(["claude"]);
+    }
   });
 
   it("refuses connections for a workspace the caller isn't in, and bad clients", async () => {

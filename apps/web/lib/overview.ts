@@ -75,9 +75,17 @@ export function condenseTree(
       subtreeFiles.set(id, (subtreeFiles.get(id) ?? 0) + 1);
     }
   }
+  // Pick level by level so one folder's subfolders never crowd out its
+  // siblings, and a folder only shows under a parent that shows.
+  const shown = new Set<string>();
+  for (let level = 1; level <= maxDepth && shown.size < maxFolders; level++) {
+    for (const { folder, depth } of ordered) {
+      if (shown.size >= maxFolders) break;
+      if (depth === level && (depth === 1 || (folder.parentId !== null && shown.has(folder.parentId)))) shown.add(folder.id);
+    }
+  }
   const folderRows = ordered
-    .filter(({ depth }) => depth <= maxDepth)
-    .slice(0, maxFolders)
+    .filter(({ folder }) => shown.has(folder.id))
     .map(({ folder, depth }): TreeRow => ({ kind: "folder", folder, depth, fileCount: subtreeFiles.get(folder.id) ?? 0 }));
   const rootFiles = files.filter((file) => file.parentId === null);
   const fileRows = [...rootFiles]

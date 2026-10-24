@@ -92,6 +92,25 @@ describe("condenseTree", () => {
     expect(tree.rows.flatMap((row) => (row.kind === "file" ? [row.file.id] : []))).toEqual(["new", "mid"]);
     expect(tree).toMatchObject({ hiddenFolders: 4, hiddenFiles: 1 });
   });
+
+  it("fills top-level folders before subfolders, so one folder's children never crowd out its siblings", () => {
+    const busy = [
+      folder("a", "a", null),
+      ...Array.from({ length: 7 }, (_, i) => folder(`a${i}`, `a${i}`, "a")),
+      folder("b", "b", null),
+      folder("c", "c", null),
+    ];
+    const tree = condenseTree(busy, [], { maxFolders: 5 });
+    // All three top-level folders, then a's first two children, still in tree order.
+    expect(tree.rows.map((row) => (row.kind === "folder" ? row.folder.id : row.file.id))).toEqual([
+      "a",
+      "a0",
+      "a1",
+      "b",
+      "c",
+    ]);
+    expect(tree).toMatchObject({ hiddenFolders: 5, hiddenFiles: 0 });
+  });
 });
 
 describe("recentFiles", () => {

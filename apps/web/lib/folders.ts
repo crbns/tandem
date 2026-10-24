@@ -119,8 +119,12 @@ export function subtreeCounts(
   return { folders: ids.size, files: files.filter((file) => file.parentId !== null && ids.has(file.parentId)).length };
 }
 
+/** "1 file", "3 files". */
+export function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
 /** "2 folders and 3 files" (singulars as needed). */
 export function describeCounts({ folders, files }: { folders: number; files: number }): string {
-  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
   return `${plural(folders, "folder")} and ${plural(files, "file")}`;
 }
