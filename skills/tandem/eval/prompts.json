@@ -1,5 +1,5 @@
 {
-  "description": "Fresh-chat auto-invocation prompts. Project prompts come verbatim from COMPATIBILITY.md and never mention Tandem, the workspace, or MCP. Controls are unrelated to any project; tool calls are not wanted there.",
+  "description": "Fresh-chat auto-invocation prompts. Project prompts come verbatim from COMPATIBILITY.md and never mention Tandem, the workspace, or MCP. Controls are unrelated to any project; tool calls are not wanted there. Prompts with \"conflict\": true get the harness's teammate injector (see run.mjs).",
   "prompts": [
     {
       "id": "p1-launch-brief",
@@ -30,6 +30,13 @@
       "kind": "project",
       "text": "Tighten up the intro section of our spec.",
       "expected": "sync; read_file then update_document with expected_version"
+    },
+    {
+      "id": "p6-conflict-edit",
+      "kind": "conflict",
+      "conflict": true,
+      "text": "Tighten the intro paragraph of our project brief and save the change.",
+      "expected": "read_file, update_document hits VERSION_CONFLICT (teammate edit injected), re-read, merge keeping the teammate's line, retry once"
     },
     {
       "id": "c1-capital",

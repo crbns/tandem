@@ -11,6 +11,17 @@
 // tools, Skill, ToolSearch and read-only built-ins are permitted; Bash/Edit/
 // Write, web, agent and scheduling tools are denied. No npm dependencies.
 //
+// --env bare (default) is the setup above: an empty project and Tandem as the
+// only MCP server. --env realistic adds competing sources of truth: a small,
+// out-of-date local project tree (fixtures.mjs) readable with Read/Glob/Grep
+// scoped to the project, plus two distractor MCP servers (stub-mcp.mjs).
+//
+// Prompts marked "conflict": true get a teammate injector: right after the
+// agent's first successful read_file of file_brief, the harness saves a
+// teammate edit as user_sam over its own JSON-RPC call, so the agent's next
+// update_document with the old version hits VERSION_CONFLICT. The final head
+// is read back at trial end to tell recovery from clobbering.
+//
 // On SIGINT/SIGTERM (or any exit) the harness kills the live MCP servers and
 // claude processes (each runs in its own process group) and removes in-flight
 // temp dirs.
@@ -32,12 +43,32 @@ import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  LOCAL_TREE,
+  STALE_MARKERS,
+  TANDEM_BRIEF,
+  TANDEM_MARKERS,
+  TEAMMATE_MARKER,
+} from "./fixtures.mjs";
 
 const EVAL_DIR = dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = resolve(EVAL_DIR, "..");
 const REPO_ROOT = resolve(SKILL_DIR, "../..");
 const SERVER_ENTRY = join(REPO_ROOT, "apps/mcp/dist/index.js");
+const STUB_ENTRY = join(EVAL_DIR, "stub-mcp.mjs");
 const DEV_TOKEN = "alex-dev-token";
+// The teammate the injector acts as. The agent only ever holds DEV_TOKEN.
+const SAM_TOKEN = "sam-dev-token";
+const BRIEF_ID = "file_brief";
+const ENVS = ["bare", "realistic"];
+// Distractor MCP servers in realistic mode, and the tools each must list.
+const DISTRACTORS = {
+  notes: ["notes_search", "notes_read"],
+  tracker: ["list_tickets", "get_ticket"],
+};
+// The user's live tunnel uses this port; never bind it.
+const RESERVED_PORTS = new Set([8788]);
+const LOCAL_TOOLS = new Set(["Read", "Glob", "Grep"]);
 const WRITE_TOOLS = new Set([
   "create_document",
   "update_document",
@@ -78,14 +109,21 @@ const USAGE = `Usage: node skills/tandem/eval/run.mjs [options]
   --max-turns <n>       claude --max-turns (default: 6)
   --timeout <sec>       per-trial timeout (default: 180)
   --concurrency <n>     trials in parallel (default: 2)
-  --port <n>            first MCP server port; slot i uses port+i (default: 8931)
+  --env <bare|realistic> bare: empty project, Tandem is the only MCP server;
+                        realistic: stale local files + notes/tracker MCP stubs
+                        (default: bare)
+  --port <n>            first port to try; each slot takes free ports from
+                        here up, 1 (bare) or 3 (realistic), never 8788
+                        (default: 8931)
   --prompts <ids>       comma-separated prompt ids to run (default: all)
   --conditions <list>   WITH_SKILL,NO_SKILL (default: both)
   --out <dir>           results dir (default: skills/tandem/eval/results)
   --tag <s>             suffix for result file names (default: none)
   --force               overwrite existing result files with the same name
   --no-build            skip building apps/mcp
-  --keep                keep temp dirs and raw stream-json logs`;
+  --keep                keep temp dirs and raw stream-json logs
+  --rerender <json>     rewrite the .md next to an existing results .json
+                        (no trials run)`;
 
 // Live child processes and in-flight temp roots, cleaned up on abort/exit.
 const live = { children: new Set(), roots: new Set() };
@@ -124,6 +162,13 @@ async function main() {
   opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
     console.log(USAGE);
+    return;
+  }
+  if (opts.rerender) {
+    const r = JSON.parse(readFileSync(opts.rerender, "utf8"));
+    const md = opts.rerender.replace(/\.json$/, ".md");
+    writeFileSync(md, renderMarkdown(r));
+    console.log(`Wrote ${relative(REPO_ROOT, md)}`);
     return;
   }
   const promptFile = JSON.parse(
@@ -182,29 +227,41 @@ async function main() {
     }
   }
 
-  const ports = [];
-  for (let i = 0, p = opts.port; i < opts.concurrency; i++, p++) {
-    while (!(await portFree(p))) p++;
-    ports.push(p);
+  // One slot per concurrent trial: { tandem, notes?, tracker? } ports.
+  const perSlot = opts.env === "realistic" ? 3 : 1;
+  const slots = [];
+  for (let i = 0, p = opts.port; i < opts.concurrency; i++) {
+    const got = [];
+    for (; got.length < perSlot; p++) {
+      if (!RESERVED_PORTS.has(p) && (await portFree(p))) got.push(p);
+    }
+    slots.push({ tandem: got[0], notes: got[1], tracker: got[2] });
   }
 
   console.log(
-    `Claude Code ${cliVersion}, model ${opts.model}, ${jobs.length} trials, concurrency ${opts.concurrency}, ports ${ports.join(",")}`,
+    `Claude Code ${cliVersion}, model ${opts.model}, env ${opts.env}, ${jobs.length} trials, concurrency ${opts.concurrency}, ports ${slots.map((s) => Object.values(s).filter(Boolean).join("/")).join(",")}`,
   );
 
   const trials = [];
   let next = 0;
   let fatal = null;
   await Promise.all(
-    ports.map(async (port) => {
+    slots.map(async (slot) => {
       while (next < jobs.length && !fatal && !aborting) {
         const job = jobs[next++];
         try {
-          const t = await runTrial(job, port);
+          const t = await runTrial(job, slot);
           trials.push(t);
           const label = `[${trials.length}/${jobs.length}] ${job.prompt.id} ${job.condition} rep${job.rep}`;
+          const extra = [
+            opts.env === "realistic" &&
+              `local=${t.local_file_calls} distractor=${t.distractor_calls} stale=${t.answered_from_stale_local}`,
+            t.conflict && `conflict=${t.conflict.outcome}`,
+          ]
+            .filter(Boolean)
+            .join(" ");
           console.log(
-            `${label}: tools=${t.tools.join(" > ") || "(none)"} | sync=${t.sync_called} write=${t.write_called}${t.timed_out ? " TIMEOUT" : ""}${t.error ? ` ERROR=${t.error}` : ""}`,
+            `${label}: tools=${t.tools.join(" > ") || "(none)"} | sync=${t.sync_called} write=${t.write_called}${extra ? ` ${extra}` : ""}${t.timed_out ? " TIMEOUT" : ""}${t.error ? ` ERROR=${t.error}` : ""}`,
           );
         } catch (err) {
           fatal = err;
@@ -223,6 +280,7 @@ async function main() {
   );
 
   const summary = summarize(trials, prompts, conditions);
+  const conflictSummary = summarizeConflict(trials, prompts, conditions);
   const isolation = summarizeIsolation(trials);
   const results = {
     date,
@@ -234,6 +292,7 @@ async function main() {
     model_requested: opts.model,
     models_reported: [...new Set(trials.map((t) => t.model).filter(Boolean))],
     settings: {
+      env: opts.env,
       reps: opts.reps,
       max_turns: opts.max_turns,
       timeout_sec: opts.timeout,
@@ -244,10 +303,24 @@ async function main() {
       ),
       server:
         "apps/mcp mock backend, fresh process per trial, api-key auth as user_alex",
+      brief_seed:
+        opts.env === "realistic"
+          ? "brief.md saved as v2 (fixtures TANDEM_BRIEF) by user_sam before every trial"
+          : "brief.md saved as v2 (fixtures TANDEM_BRIEF) by user_sam before conflict trials only; other trials use the server's v1 seed",
+      ...(opts.env === "realistic" && {
+        local_tree: Object.keys(LOCAL_TREE),
+        distractor_servers: DISTRACTORS,
+        stale_markers: STALE_MARKERS,
+        tandem_markers: TANDEM_MARKERS,
+      }),
+      ...(prompts.some((p) => p.conflict) && {
+        teammate_marker: TEAMMATE_MARKER,
+      }),
     },
     prompts,
     isolation,
     summary,
+    conflict_summary: conflictSummary,
     trials,
   };
 
@@ -257,42 +330,82 @@ async function main() {
   console.log(
     `\nWrote ${relative(REPO_ROOT, jsonPath)} and ${relative(REPO_ROOT, mdPath)}`,
   );
-  console.log("\n" + renderSummaryTable(summary));
+  console.log("\n" + renderSummaryTable(summary, opts.env, trials));
+  if (conflictSummary.length)
+    console.log("\n" + renderConflictTable(conflictSummary, trials));
 }
 
-async function runTrial({ prompt, condition, rep }, port) {
+async function runTrial({ prompt, condition, rep }, slot) {
+  const realistic = opts.env === "realistic";
   const root = mkdtempSync(join(tmpdir(), "tandem-eval-"));
   live.roots.add(root);
   const project = join(root, "project");
   mkdirSync(project);
+  // The CLI reports realpaths (/private/var/... on macOS); analyze() rewrites
+  // both forms to <project>/... so results carry no machine paths.
+  const projectPaths = [...new Set([realpathSync(project), project])];
+  if (realistic) {
+    for (const [rel, text] of Object.entries(LOCAL_TREE)) {
+      mkdirSync(dirname(join(project, rel)), { recursive: true });
+      writeFileSync(join(project, rel), text);
+    }
+  }
   if (condition === "WITH_SKILL") {
     const dest = join(project, ".claude/skills/tandem");
     mkdirSync(dest, { recursive: true });
     copyFileSync(join(SKILL_DIR, "SKILL.md"), join(dest, "SKILL.md"));
   }
   // Config lives outside the project dir so the model can't stumble on it.
+  const mcpServers = {
+    tandem: {
+      type: "http",
+      url: `http://localhost:${slot.tandem}/mcp`,
+      headers: { "api-key": DEV_TOKEN },
+    },
+  };
+  if (realistic) {
+    for (const kind of Object.keys(DISTRACTORS))
+      mcpServers[kind] = {
+        type: "http",
+        url: `http://127.0.0.1:${slot[kind]}/mcp`,
+      };
+  }
   const mcpConfig = join(root, "mcp.json");
-  writeFileSync(
-    mcpConfig,
-    JSON.stringify({
-      mcpServers: {
-        tandem: {
-          type: "http",
-          url: `http://localhost:${port}/mcp`,
-          headers: { "api-key": DEV_TOKEN },
-        },
-      },
-    }),
-  );
+  writeFileSync(mcpConfig, JSON.stringify({ mcpServers }));
 
-  let server;
+  const servers = [];
   let run;
+  let injector = null;
+  let head = null;
+  let seedError = null;
   const started = Date.now();
   try {
-    server = await startServer(port);
-    run = await runClaude(prompt.text, project, mcpConfig);
+    servers.push(await startServer(slot.tandem));
+    if (realistic) {
+      for (const kind of Object.keys(DISTRACTORS))
+        servers.push(await startStub(kind, slot[kind]));
+    }
+    if (realistic || prompt.conflict) {
+      try {
+        await seedBrief(slot.tandem);
+      } catch (err) {
+        seedError = err.message;
+      }
+    }
+    if (prompt.conflict && !seedError) injector = conflictInjector(slot.tandem);
+    run = await runClaude(prompt.text, project, mcpConfig, injector?.onEvent);
+    if (injector) {
+      await injector.settled();
+      try {
+        head = await rpc(slot.tandem, DEV_TOKEN, "read_file", {
+          file_id: BRIEF_ID,
+        });
+      } catch (err) {
+        head = { error: err.message };
+      }
+    }
   } finally {
-    if (server) await stopChild(server);
+    for (const s of servers) await stopChild(s);
     if (!run || !opts.keep) {
       cleanEmptyProjectMemory(project);
       rmSync(root, { recursive: true, force: true });
@@ -301,7 +414,12 @@ async function runTrial({ prompt, condition, rep }, port) {
   }
   if (aborting) throw new Error("aborted");
 
-  const trial = analyze(run, { prompt, condition, rep });
+  const trial = analyze(
+    run,
+    { prompt, condition, rep, projectPaths },
+    prompt.conflict ? { injector, head } : null,
+  );
+  if (seedError) trial.error = trial.error ?? `brief seed failed: ${seedError}`;
   trial.duration_ms = Date.now() - started;
 
   if (opts.keep) {
@@ -318,6 +436,18 @@ async function runTrial({ prompt, condition, rep }, port) {
 }
 
 function claudeFlags(mcpConfig, o) {
+  // Realistic mode scopes reads to the project dir: Read rules also govern
+  // Glob and Grep, and reads outside it are denied in dontAsk mode.
+  const allowed =
+    o.env === "realistic"
+      ? [
+          "mcp__tandem__*",
+          ...Object.keys(DISTRACTORS).map((k) => `mcp__${k}__*`),
+          "Skill",
+          "ToolSearch",
+          "Read(./**)",
+        ]
+      : ["mcp__tandem__*", "Skill", "ToolSearch", "Read", "Glob", "Grep"];
   return [
     "--output-format",
     "stream-json",
@@ -335,18 +465,14 @@ function claudeFlags(mcpConfig, o) {
     "--permission-mode",
     "dontAsk",
     "--allowedTools",
-    "mcp__tandem__*",
-    "Skill",
-    "ToolSearch",
-    "Read",
-    "Glob",
-    "Grep",
+    ...allowed,
     "--disallowedTools",
     ...DISALLOWED_TOOLS,
   ];
 }
 
-function runClaude(promptText, cwd, mcpConfig) {
+// onEvent, if given, sees each stream-json event as it arrives.
+function runClaude(promptText, cwd, mcpConfig, onEvent) {
   return new Promise((resolvePromise) => {
     const child = track(
       spawn("claude", ["-p", promptText, ...claudeFlags(mcpConfig, opts)], {
@@ -358,8 +484,24 @@ function runClaude(promptText, cwd, mcpConfig) {
     );
     let stdout = "";
     let stderr = "";
+    let pending = "";
     let timedOut = false;
-    child.stdout.on("data", (d) => (stdout += d));
+    child.stdout.on("data", (d) => {
+      stdout += d;
+      if (!onEvent) return;
+      pending += d;
+      const lines = pending.split("\n");
+      pending = lines.pop();
+      for (const line of lines) {
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue; // Non-JSON noise.
+        }
+        onEvent(event);
+      }
+    });
     child.stderr.on("data", (d) => (stderr += d));
     const timer = setTimeout(() => {
       timedOut = true;
@@ -373,7 +515,11 @@ function runClaude(promptText, cwd, mcpConfig) {
   });
 }
 
-export function analyze(run, { prompt, condition, rep }) {
+export function analyze(
+  run,
+  { prompt, condition, rep, projectPaths = [] },
+  conflictCtx,
+) {
   const events = [];
   for (const line of run.stdout.split("\n")) {
     if (!line.trim()) continue;
@@ -429,6 +575,29 @@ export function analyze(run, { prompt, condition, rep }) {
   );
 
   const resultText = typeof result?.result === "string" ? result.result : "";
+  const localCalls = calls.filter((c) => LOCAL_TOOLS.has(c.name));
+  const projectRel = (p) => {
+    if (typeof p !== "string") return p;
+    const base = projectPaths.find((b) => p === b || p.startsWith(`${b}/`));
+    return base ? `<project>${p.slice(base.length)}` : p;
+  };
+  // Read: file_path. Glob/Grep: pattern plus the optional search root, so an
+  // out-of-project search shows up in the JSON.
+  const localTarget = (c) =>
+    [
+      projectRel(c.input?.file_path ?? c.input?.pattern ?? ""),
+      c.input?.path !== undefined && `in ${projectRel(c.input.path)}`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  const distractorCalls = calls.filter((c) =>
+    Object.keys(DISTRACTORS).some((k) => c.name.startsWith(`mcp__${k}__`)),
+  );
+  const mentions = (markers) =>
+    markers.some((m) => resultText.toLowerCase().includes(m.toLowerCase()));
+  const tandemMarker = mentions(TANDEM_MARKERS);
+  const staleLocal = mentions(STALE_MARKERS.local);
+  const staleDistractor = mentions(STALE_MARKERS.distractor);
   // Abort the whole run only for a CLI/account auth failure: the CLI exited
   // non-zero on its own (not our timeout) with a login/API-key message. A
   // successful run whose answer mentions "authentication" doesn't count.
@@ -489,6 +658,27 @@ export function analyze(run, { prompt, condition, rep }) {
       (d) => d.tool_name ?? d,
     ),
     subagent_tool_calls: subagentCalls,
+    local_file_calls: localCalls.length,
+    local_file_targets: localCalls.map(
+      (c) => `${c.name}:${localTarget(c)}${c.error ? " (error)" : ""}`,
+    ),
+    used_local_files: localCalls.length > 0,
+    distractor_calls: distractorCalls.length,
+    distractor_tools: distractorCalls.map((c) => c.name),
+    used_distractor_mcp: distractorCalls.length > 0,
+    answer_has_tandem_marker: tandemMarker,
+    answer_has_stale_local_marker: staleLocal,
+    answer_has_stale_distractor_marker: staleDistractor,
+    answered_from_stale_local: staleLocal && !tandemMarker,
+    answered_from_stale_distractor: staleDistractor && !tandemMarker,
+    ...(conflictCtx && {
+      conflict: analyzeConflict(
+        calls,
+        resultText,
+        conflictCtx.injector,
+        conflictCtx.head,
+      ),
+    }),
     num_turns: result?.num_turns ?? null,
     cost_usd: result?.total_cost_usd ?? null,
     result_text: resultText.slice(0, 4000),
@@ -500,6 +690,7 @@ export function analyze(run, { prompt, condition, rep }) {
           non_tandem_mcp_tools: (init.tools ?? []).filter(
             (t) => t.startsWith("mcp__") && !t.startsWith("mcp__tandem__"),
           ),
+          builtin_tools: (init.tools ?? []).filter((t) => !t.startsWith("mcp__")),
           tandem_tool_count: (init.tools ?? []).filter((t) =>
             t.startsWith("mcp__tandem__"),
           ).length,
@@ -509,6 +700,141 @@ export function analyze(run, { prompt, condition, rep }) {
         }
       : null,
   };
+}
+
+// A question in the final answer about the conflict or the teammate's edit.
+const MERGE_QUESTION =
+  /conflict|merge|teammate|\bsam\b|overwrit|their (edit|change)|which version|both (change|edit|version)|newer version|keep (the|their|sam|both)/i;
+
+function analyzeConflict(calls, resultText, injector, head) {
+  const st = injector?.state ?? { injected: false, skipped: "seed_failed" };
+  const name = (c) => c.name.replace(/^mcp__tandem__/, "");
+  const updates = calls.filter((c) => name(c) === "update_document");
+  const idx = calls.findIndex(
+    (c) =>
+      name(c) === "update_document" && /VERSION_CONFLICT/.test(c.error ?? ""),
+  );
+  const after = idx >= 0 ? calls.slice(idx + 1) : [];
+  const retries = after.filter((c) => name(c) === "update_document");
+  const headContent = typeof head?.content === "string" ? head.content : null;
+  const markerKept =
+    headContent !== null && headContent.includes(TEAMMATE_MARKER);
+  const recovered =
+    st.injected && markerKept && headContent !== st.teammate_content;
+  const clobbered = st.injected && headContent !== null && !markerKept;
+  const questions = (resultText.match(/[^.!?\n]*\?/g) ?? [])
+    .map((q) => q.trim())
+    .filter(Boolean);
+  const mergeQuestions = questions.filter((q) => MERGE_QUESTION.test(q));
+  const askedUser = mergeQuestions.length > 0;
+
+  let outcome;
+  if (!st.injected) outcome = `no_inject:${st.skipped ?? "never_read"}`;
+  else if (clobbered) outcome = "clobbered";
+  else if (recovered)
+    outcome = idx >= 0 ? "recovered" : "landed_without_conflict";
+  else if (idx >= 0)
+    outcome = askedUser ? "conflict_asked_user" : "conflict_unresolved";
+  else if (!updates.length) outcome = askedUser ? "no_write_asked" : "no_write";
+  else outcome = "other";
+
+  return {
+    outcome,
+    injected: st.injected,
+    inject_skipped: st.injected ? null : (st.skipped ?? "never_read"),
+    inject_error: st.error ?? null,
+    inject_latency_ms: st.latency_ms ?? null,
+    injected_before_next_call: st.injected_before_next_call ?? null,
+    read_version: st.read_version ?? null,
+    teammate_version: st.teammate_version ?? null,
+    update_calls: updates.length,
+    conflict_hit: idx >= 0,
+    reread_after_conflict: after.some((c) => name(c) === "read_file"),
+    retry_count: retries.length,
+    retry_ok: retries.some((c) => !c.error),
+    looped: retries.length > 1,
+    recovered,
+    clobbered,
+    asked_user: askedUser,
+    merge_questions: mergeQuestions.slice(0, 3),
+    head_version: head?.file?.version ?? null,
+    head_updated_by: head?.file?.updated_by?.user_id ?? null,
+    head_has_marker: markerKept,
+    head_error: head?.error ?? null,
+  };
+}
+
+// Watches the stream for the agent's first successful read_file of the brief
+// and immediately saves a teammate edit on top of the version it read.
+function conflictInjector(port) {
+  const state = {
+    injected: false,
+    skipped: null,
+    error: null,
+    latency_ms: null,
+    read_version: null,
+    teammate_version: null,
+    teammate_content: null,
+    injected_before_next_call: null,
+  };
+  const reads = new Set();
+  let wroteFirst = false;
+  let fired = false;
+  let task = Promise.resolve();
+
+  async function inject(text, t0) {
+    try {
+      const read = JSON.parse(text);
+      const version = read?.file?.version;
+      if (!Number.isInteger(version) || typeof read?.content !== "string")
+        throw new Error(`unparseable read_file result: ${text.slice(0, 120)}`);
+      state.read_version = version;
+      const content = `${read.content.replace(/\n*$/, "")}\n\n${TEAMMATE_MARKER}\n`;
+      const meta = await rpc(port, SAM_TOKEN, "update_document", {
+        file_id: BRIEF_ID,
+        content,
+        expected_version: version,
+      });
+      Object.assign(state, {
+        injected: true,
+        latency_ms: Date.now() - t0,
+        teammate_version: meta.version,
+        teammate_content: content,
+      });
+    } catch (err) {
+      state.error = err.message;
+      state.skipped = "inject_failed";
+    }
+  }
+
+  function onEvent(e) {
+    if (e.parent_tool_use_id) return;
+    const blocks = Array.isArray(e.message?.content) ? e.message.content : [];
+    if (e.type === "assistant") {
+      for (const b of blocks) {
+        if (b.type !== "tool_use") continue;
+        if (fired) {
+          // Did the teammate edit land before the agent's next tool call?
+          state.injected_before_next_call ??= state.injected;
+          continue;
+        }
+        if (b.name === "mcp__tandem__update_document") wroteFirst = true;
+        if (b.name === "mcp__tandem__read_file" && b.input?.file_id === BRIEF_ID)
+          reads.add(b.id);
+      }
+    } else if (e.type === "user" && !fired) {
+      for (const b of blocks) {
+        if (b.type !== "tool_result" || !reads.has(b.tool_use_id) || b.is_error)
+          continue;
+        fired = true;
+        if (wroteFirst) state.skipped = "write_before_read";
+        else task = inject(textOf(b.content), Date.now());
+        return;
+      }
+    }
+  }
+
+  return { state, onEvent, settled: () => task };
 }
 
 function summarize(trials, prompts, conditions) {
@@ -528,7 +854,7 @@ function summarize(trials, prompts, conditions) {
     }
   }
   const totals = [];
-  for (const kind of ["project", "control"]) {
+  for (const kind of ["project", "conflict", "control"]) {
     for (const c of conditions) {
       const ts = trials.filter((t) => t.kind === kind && t.condition === c);
       if (ts.length) totals.push({ kind, condition: c, ...rates(ts) });
@@ -549,12 +875,62 @@ export function rates(ts) {
     first_is_sync: count((t) => t.first_tandem_is_sync),
     write: count((t) => t.write_called),
     write_ok: count((t) => t.write_ok),
+    used_local_files: count((t) => t.used_local_files),
+    used_distractor_mcp: count((t) => t.used_distractor_mcp),
+    answered_from_stale_local: count((t) => t.answered_from_stale_local),
+    answered_from_stale_distractor: count(
+      (t) => t.answered_from_stale_distractor,
+    ),
     tool_errors: count((t) => t.tandem_errors.length > 0),
     errors_or_timeouts: count(
       (t) => t.error || t.timed_out || t.tandem_errors.length > 0,
     ),
-    cost_usd: Number(costs.reduce((a, b) => a + b, 0).toFixed(4)),
+    cost_usd: costs.reduce((a, b) => a + b, 0),
   };
+}
+
+function summarizeConflict(trials, prompts, conditions) {
+  const rows = [];
+  for (const p of prompts.filter((x) => x.conflict)) {
+    for (const c of conditions) {
+      const ts = trials.filter(
+        (t) => t.prompt_id === p.id && t.condition === c && t.conflict,
+      );
+      if (!ts.length) continue;
+      const count = (f) => ts.filter((t) => f(t.conflict)).length;
+      const lat = ts
+        .map((t) => t.conflict.inject_latency_ms)
+        .filter((x) => typeof x === "number")
+        .sort((a, b) => a - b);
+      const costs = ts.map((t) => t.cost_usd ?? 0);
+      rows.push({
+        prompt_id: p.id,
+        condition: c,
+        n: ts.length,
+        injected: count((x) => x.injected),
+        no_inject: count((x) => !x.injected),
+        conflict_hit: count((x) => x.conflict_hit),
+        reread_after_conflict: count((x) => x.reread_after_conflict),
+        retried: count((x) => x.retry_count > 0),
+        looped: count((x) => x.looped),
+        recovered: count((x) => x.recovered),
+        clobbered: count((x) => x.clobbered),
+        asked_user: count((x) => x.asked_user),
+        outcomes: Object.fromEntries(
+          [...new Set(ts.map((t) => t.conflict.outcome))].map((o) => [
+            o,
+            ts.filter((t) => t.conflict.outcome === o).length,
+          ]),
+        ),
+        inject_latency_ms_median: lat.length
+          ? lat[Math.floor(lat.length / 2)]
+          : null,
+        inject_latency_ms_max: lat.length ? lat[lat.length - 1] : null,
+        cost_usd: costs.reduce((a, b) => a + b, 0),
+      });
+    }
+  }
+  return rows;
 }
 
 function summarizeIsolation(trials) {
@@ -563,23 +939,55 @@ function summarizeIsolation(trials) {
   const pluginSources = new Set();
   const mcpServers = new Set();
   const skillSets = { WITH_SKILL: new Set(), NO_SKILL: new Set() };
+  const realistic = opts.env === "realistic";
+  // Servers and their tools that are expected in this env, not leaks.
+  const expectedServers = ["tandem", ...(realistic ? Object.keys(DISTRACTORS) : [])];
+  const expectedTools = new Set(
+    realistic
+      ? Object.entries(DISTRACTORS).flatMap(([k, tools]) =>
+          tools.map((t) => `mcp__${k}__${t}`),
+        )
+      : [],
+  );
+  const distractorListed = new Set();
+  const builtins = new Set();
+  const localErrors = [];
+  let distractorListedAll = 0;
+  let withInit = 0;
   for (const t of trials) {
     if (!t.init) continue;
+    withInit++;
     const where = `${t.prompt_id}/${t.condition}/rep${t.rep}`;
     t.init.mcp_servers.forEach((s) => mcpServers.add(s));
     t.init.plugins.forEach((p) => pluginSources.add(p));
     t.init.skills.forEach((s) => skillSets[t.condition]?.add(s));
+    t.init.builtin_tools?.forEach((b) => builtins.add(b));
     for (const s of t.init.mcp_servers) {
-      if (!s.startsWith("tandem:"))
+      if (!expectedServers.some((e) => s.startsWith(`${e}:`)))
         leaks.push(`${where}: extra MCP server ${s}`);
     }
-    if (!t.init.mcp_servers.includes("tandem:connected")) {
-      leaks.push(
-        `${where}: tandem MCP server not connected (${t.init.mcp_servers.join(", ")})`,
-      );
+    for (const e of expectedServers) {
+      if (!t.init.mcp_servers.includes(`${e}:connected`))
+        leaks.push(
+          `${where}: ${e} MCP server not connected (${t.init.mcp_servers.join(", ")})`,
+        );
     }
-    for (const tool of t.init.non_tandem_mcp_tools)
-      leaks.push(`${where}: extra MCP tool ${tool}`);
+    for (const tool of t.init.non_tandem_mcp_tools) {
+      if (expectedTools.has(tool)) distractorListed.add(tool);
+      else leaks.push(`${where}: extra MCP tool ${tool}`);
+    }
+    if ([...expectedTools].every((x) => t.init.non_tandem_mcp_tools.includes(x)))
+      distractorListedAll++;
+    else
+      leaks.push(
+        `${where}: distractor tools missing from init (${t.init.non_tandem_mcp_tools.join(", ") || "none"})`,
+      );
+    if (realistic) {
+      for (const target of t.local_file_targets.filter((x) =>
+        x.endsWith("(error)"),
+      ))
+        localErrors.push(`${where}: ${target}`);
+    }
     for (const p of t.init.plugins) {
       if (!String(p).endsWith("@builtin"))
         leaks.push(`${where}: non-builtin plugin ${p}`);
@@ -598,7 +1006,16 @@ function summarizeIsolation(trials) {
   return {
     clean: leaks.length === 0,
     leaks: [...new Set(leaks)],
+    env: opts.env,
+    expected_mcp_servers: expectedServers,
     mcp_servers_seen: [...mcpServers],
+    ...(realistic && {
+      distractor_tools_listed: [...distractorListed],
+      trials_listing_all_distractor_tools: `${distractorListedAll}/${withInit}`,
+      allowed_builtins: ["Skill", "ToolSearch", "Read(./**) (also governs Glob, Grep)"],
+      local_tool_errors: localErrors,
+    }),
+    builtin_tools_seen: [...builtins],
     plugins_seen: [...pluginSources],
     skills_only_with_skill: [...skillSets.WITH_SKILL].filter(
       (s) => !skillSets.NO_SKILL.has(s),
@@ -609,23 +1026,150 @@ function summarizeIsolation(trials) {
       "The init event doesn't show memory files. That --setting-sources project also keeps out the user's ~/.claude/CLAUDE.md and auto-memory was verified manually by the Step C reviewer's probe on 2026-10-23, not by this harness.",
       "Built-in plugins (@builtin) and built-in skills ship with the CLI and are present in both conditions.",
       "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 is set; the CLI may still create an empty ~/.claude/projects/<tmp-slug>/memory dir, which the harness removes only if empty.",
+      ...(realistic
+        ? [
+            "Realistic env: the notes and tracker MCP servers and their tools are expected, not leaks; every trial must list all four distractor tools in init.",
+            "Realistic env: reads are allowed as Read(./**) relative to the temp project. A manual probe on 2026-10-23 (same flags) showed Glob and Grep inside the project working, and Read of /etc/hosts and ~/.zshrc and Grep in ~ denied in dontAsk mode.",
+          ]
+        : []),
     ],
   };
 }
 
-function renderSummaryTable(summary) {
-  const head =
-    "| Prompt | Condition | n | Skill invoked | Any Tandem call | Sync attempted | Sync OK | First Tandem call = sync | Write attempted | Write OK | Tool errors | Errors/timeouts (incl. tool errors) |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n";
-  const fmt = (k, n) => `${k}/${n}`;
-  const row = (label, r) =>
-    `| ${label} | ${r.condition} | ${r.n} | ${fmt(r.skill_invoked, r.n)} | ${fmt(r.any_tandem, r.n)} | ${fmt(r.sync, r.n)} | ${fmt(r.sync_ok, r.n)} | ${fmt(r.first_is_sync, r.n)} | ${fmt(r.write, r.n)} | ${fmt(r.write_ok, r.n)} | ${fmt(r.tool_errors, r.n)} | ${fmt(r.errors_or_timeouts, r.n)} |`;
+// Sum the raw per-trial costs and round once. Older results JSON stores
+// summary costs pre-rounded to 4 places, which double-rounds (0.1750064 ->
+// 0.175 -> "0.17"), so the renderer doesn't use them.
+function costCell(trials, match) {
+  const sum = trials
+    .filter(match)
+    .reduce((a, t) => a + (t.cost_usd ?? 0), 0);
+  return `$${sum.toFixed(2)}`;
+}
+
+function renderSummaryTable(summary, env, trials) {
+  const realistic = env === "realistic";
+  const cols = [
+    "Prompt",
+    "Condition",
+    "n",
+    "Skill invoked",
+    "Any Tandem call",
+    "Sync attempted",
+    "Sync OK",
+    "First Tandem call = sync",
+    "Write attempted",
+    "Write OK",
+    ...(realistic
+      ? [
+          "Local files (Read/Glob/Grep)",
+          "Distractor MCP",
+          "Stale local answer",
+          "Mentions distractor-only phrase",
+        ]
+      : []),
+    "Tool errors",
+    "Errors/timeouts (incl. tool errors)",
+    "Cost",
+  ];
+  const head = `| ${cols.join(" | ")} |\n|${cols.map(() => "---").join("|")}|\n`;
+  // Results recorded before the success/tool-error split lack those counts.
+  const fmt = (k, n) => (k === undefined ? "n/a" : `${k}/${n}`);
+  const row = (label, r, match) =>
+    `| ${[
+      label,
+      r.condition,
+      r.n,
+      ...[
+        r.skill_invoked,
+        r.any_tandem,
+        r.sync,
+        r.sync_ok,
+        r.first_is_sync,
+        r.write,
+        r.write_ok,
+        ...(realistic
+          ? [
+              r.used_local_files,
+              r.used_distractor_mcp,
+              r.answered_from_stale_local,
+              r.answered_from_stale_distractor,
+            ]
+          : []),
+        r.tool_errors,
+        r.errors_or_timeouts,
+      ].map((k) => fmt(k, r.n)),
+      costCell(trials, (t) => match(t) && t.condition === r.condition),
+    ].join(" | ")} |`;
   return (
     head +
-    summary.rows.map((r) => row(`\`${r.prompt_id}\``, r)).join("\n") +
+    summary.rows
+      .map((r) =>
+        row(`\`${r.prompt_id}\``, r, (t) => t.prompt_id === r.prompt_id),
+      )
+      .join("\n") +
     "\n" +
-    summary.totals.map((r) => row(`**All ${r.kind}**`, r)).join("\n") +
+    summary.totals
+      .map((r) => row(`**All ${r.kind}**`, r, (t) => t.kind === r.kind))
+      .join("\n") +
     "\n"
   );
+}
+
+function renderConflictTable(rows, trials) {
+  const fmt = (k, n) => `${k}/${n}`;
+  return (
+    "| Prompt | Condition | n | Injected | Conflict hit | Re-read after conflict | Retried | Looped (>1 retry) | Recovered | Clobbered | Asked user | Outcomes | Inject latency median/max | Cost |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n" +
+    rows
+      .map(
+        (r) =>
+          `| \`${r.prompt_id}\` | ${r.condition} | ${r.n} | ${[
+            r.injected,
+            r.conflict_hit,
+            r.reread_after_conflict,
+            r.retried,
+            r.looped,
+            r.recovered,
+            r.clobbered,
+            r.asked_user,
+          ]
+            .map((k) => fmt(k, r.n))
+            .join(" | ")} | ${Object.entries(r.outcomes)
+            .map(([o, k]) => `${o} ×${k}`)
+            .join(", ")} | ${r.inject_latency_ms_median ?? "-"}/${r.inject_latency_ms_max ?? "-"} ms | ${costCell(
+            trials,
+            (t) =>
+              t.prompt_id === r.prompt_id &&
+              t.condition === r.condition &&
+              t.conflict,
+          )} |`,
+      )
+      .join("\n") +
+    "\n"
+  );
+}
+
+function renderConflictSection(r) {
+  if (!r.conflict_summary?.length) return "";
+  const detail = r.trials
+    .filter((t) => t.conflict)
+    .map((t) => {
+      const c = t.conflict;
+      return `| \`${t.prompt_id}\` | ${t.condition} | ${t.rep} | ${c.outcome} | ${c.injected ? `v${c.read_version}→v${c.teammate_version}, ${c.inject_latency_ms} ms${c.injected_before_next_call === false ? " (after next call)" : ""}` : (c.inject_skipped ?? "-")} | ${c.update_calls} | ${c.conflict_hit ? "yes" : "no"} | ${c.reread_after_conflict ? "yes" : "no"} | ${c.retry_count}${c.retry_count ? (c.retry_ok ? " (ok)" : " (failed)") : ""} | v${c.head_version ?? "?"} by ${c.head_updated_by ?? "?"}${c.injected ? `, marker ${c.head_has_marker ? "kept" : "LOST"}` : " (no teammate edit)"} | ${c.merge_questions.map((q) => q.replace(/\|/g, "/").slice(0, 120)).join(" / ") || "-"} |`;
+    })
+    .join("\n");
+  return `## VERSION_CONFLICT recovery
+
+Prompts marked \`"conflict": true\`. Right after the agent's first successful \`read_file\` of \`file_brief\`, the harness (as \`user_sam\`, over its own JSON-RPC call) saves the read content plus the line \`${TEAMMATE_MARKER}\` with \`expected_version\` = the version just read. The agent's next \`update_document\` with the old version then gets \`VERSION_CONFLICT\`. The final head is read back over JSON-RPC at trial end.
+
+- **Recovered** = final head contains the teammate marker and differs from the teammate's version (the agent's change landed on top). **Clobbered** = final head lacks the marker. **Looped** = more than one \`update_document\` after the first conflict. **Asked user** = the final answer has a question about the conflict, merge, or teammate edit (regex heuristic; questions are listed below for audit).
+- Outcomes: \`recovered\`; \`landed_without_conflict\` (re-read before writing, so no conflict, marker kept); \`conflict_asked_user\` / \`conflict_unresolved\` (conflict, nothing landed, marker kept); \`no_write\` / \`no_write_asked\`; \`clobbered\`; \`no_inject:<reason>\` (\`never_read\`, \`write_before_read\`, \`inject_failed\`).
+
+${renderConflictTable(r.conflict_summary, r.trials)}
+| Prompt | Condition | Rep | Outcome | Injection | update_document calls | Conflict | Re-read | Retries | Final head | Merge questions |
+|---|---|---|---|---|---|---|---|---|---|---|
+${detail}
+
+`;
 }
 
 function renderMarkdown(r) {
@@ -644,10 +1188,12 @@ function renderMarkdown(r) {
         ),
         t.permission_denials.length &&
           `denied: ${t.permission_denials.join(",")}`,
+        t.tools.some((x) => DISALLOWED_TOOLS.includes(x)) &&
+          `tried disallowed: ${[...new Set(t.tools.filter((x) => DISALLOWED_TOOLS.includes(x)))].join(",")}`,
       ]
         .filter(Boolean)
         .join("; ");
-      return `| \`${t.prompt_id}\` | ${t.condition} | ${t.rep} | ${t.tools.join(" → ") || "(none)"} | ${writes} | ${t.num_turns ?? "-"} | ${flags || "-"} |`;
+      return `| \`${t.prompt_id}\` | ${t.condition} | ${t.rep} | ${t.tools.join(" → ") || "(none)"} | ${writes} | ${t.num_turns ?? "-"} | ${t.cost_usd === null ? "-" : `$${t.cost_usd.toFixed(3)}`} | ${flags || "-"} |`;
     })
     .join("\n");
   const answers = r.trials
@@ -657,6 +1203,17 @@ function renderMarkdown(r) {
     )
     .join("\n\n");
   const iso = r.isolation;
+  const realistic = r.settings.env === "realistic";
+  const envLine = realistic
+    ? `- Env: **realistic**. Each temp project has an out-of-date local tree (${r.settings.local_tree.map((f) => `\`${f}\``).join(", ")}) whose goal/owners differ from Tandem, readable via \`Read(./**)\` (Read/Glob/Grep scoped to the project). Two distractor MCP servers sit beside \`tandem\` in the same \`--mcp-config\`: ${Object.entries(
+        r.settings.distractor_servers,
+      )
+        .map(([k, ts]) => `\`${k}\` (${ts.join(", ")})`)
+        .join(" and ")}. ${r.settings.brief_seed}.`
+    : `- Env: **bare**. Empty temp project; \`tandem\` is the only MCP server. ${r.settings.brief_seed}.`;
+  const staleNote = realistic
+    ? `\n\n"Local files" = any Read/Glob/Grep call. "Distractor MCP" = any notes/tracker call. "Stale local answer" = the final answer contains a phrase only the local tree has (${r.settings.stale_markers.local.map((m) => `"${m}"`).join(", ")}) and not the Tandem value (${r.settings.tandem_markers.map((m) => `"${m}"`).join(", ")}); "Mentions distractor-only phrase" is the same check for the stubs' phrase (${r.settings.stale_markers.distractor.map((m) => `"${m}"`).join(", ")}; JSON field \`answered_from_stale_distractor\`). It only says the phrase appears, not that the answer relied on it. Marker checks are substring matches on the final answer: a draft that quotes a stale phrase as "outdated" still counts, so read the answers below before drawing conclusions.`
+    : "";
   return `# Tandem skill eval: Claude Code, ${r.date}
 
 Generated by \`skills/tandem/eval/run.mjs\`. Raw data: \`${r.stem}.json\`.
@@ -665,18 +1222,28 @@ Generated by \`skills/tandem/eval/run.mjs\`. Raw data: \`${r.stem}.json\`.
 - Model: \`${r.model_requested}\` (reported: ${r.models_reported.map((m) => `\`${m}\``).join(", ") || "n/a"})
 - Trials: ${r.trials.length} (${r.settings.reps} reps × ${r.prompts.length} prompts × ${r.settings.conditions.length} conditions), \`--max-turns ${r.settings.max_turns}\`, ${r.settings.timeout_sec}s timeout
 - Server: ${r.settings.server}
-- Conditions: **WITH_SKILL** = \`skills/tandem/SKILL.md\` (only) copied to \`<project>/.claude/skills/tandem\`; **NO_SKILL** = same MCP server and flags, no skill
+${envLine}
+- Conditions: **WITH_SKILL** = \`skills/tandem/SKILL.md\` (only) copied to \`<project>/.claude/skills/tandem\`; **NO_SKILL** = same MCP servers, files and flags, no skill
 - Total cost reported by CLI: $${r.trials.reduce((a, t) => a + (t.cost_usd ?? 0), 0).toFixed(2)}
 
 ## Summary
 
-Counts are k/n trials. Sync/write attempted count trials with matching tool calls; Sync/write OK require at least one matching non-error tool result. Write tools are create_document, update_document, publish_work, propose_context_change. First Tandem call = sync measures attempted order. Tool errors counts trials with at least one Tandem tool error, even if the final answer succeeds. Errors/timeouts includes tool errors, CLI failures (including nonzero exit or a missing final result), and timeouts; these trials still count in n. Tool calls made inside subagents are excluded.
+Counts are k/n trials. Sync/write attempted count trials with matching tool calls; Sync/write OK require at least one matching non-error tool result. Write tools are create_document, update_document, publish_work, propose_context_change. First Tandem call = sync measures attempted order. Tool errors counts trials with at least one Tandem tool error, even if the final answer succeeds. Errors/timeouts includes tool errors, CLI failures (including nonzero exit or a missing final result), and timeouts; these trials still count in n. Tool calls made inside subagents are excluded. Columns shown as n/a were not recorded by that run.${staleNote}
 
-${renderSummaryTable(r.summary)}
-## Isolation
+${renderSummaryTable(r.summary, r.settings.env, r.trials)}
+${renderConflictSection(r)}## Isolation
 
 - Clean: **${iso.clean ? "yes" : "NO"}**${iso.leaks.length ? `\n- Leaks:\n${iso.leaks.map((l) => `  - ${l}`).join("\n")}` : ""}
-- MCP servers seen: ${iso.mcp_servers_seen.map((s) => `\`${s}\``).join(", ")}
+- Expected MCP servers (${iso.env} env): ${iso.expected_mcp_servers.map((s) => `\`${s}\``).join(", ")}
+- MCP servers seen: ${iso.mcp_servers_seen.map((s) => `\`${s}\``).join(", ")}${
+    realistic
+      ? `
+- Distractor tools listed in init: ${iso.distractor_tools_listed.map((s) => `\`${s}\``).join(", ") || "none"} (all four in ${iso.trials_listing_all_distractor_tools} trials)
+- Allowed built-ins: ${iso.allowed_builtins.map((s) => `\`${s}\``).join(", ")}
+- Local tool calls that errored: ${iso.local_tool_errors.length ? iso.local_tool_errors.map((s) => `\`${s}\``).join(", ") : "none"}`
+      : ""
+  }
+- Built-in tools in init: ${iso.builtin_tools_seen.map((s) => `\`${s}\``).join(", ") || "n/a"}
 - Plugins seen: ${iso.plugins_seen.map((s) => `\`${s}\``).join(", ") || "none"}
 - Skills present only WITH_SKILL: ${iso.skills_only_with_skill.map((s) => `\`${s}\``).join(", ") || "none"}
 - Built-in skills present in both conditions: ${iso.builtin_skills_seen.map((s) => `\`${s}\``).join(", ") || "none"}
@@ -684,8 +1251,8 @@ ${iso.notes.map((n) => `- ${n}`).join("\n")}
 
 ## Trials
 
-| Prompt | Condition | Rep | Tool calls (in order) | Writes | Turns | Flags |
-|---|---|---|---|---|---|---|
+| Prompt | Condition | Rep | Tool calls (in order) | Writes | Turns | Cost | Flags |
+|---|---|---|---|---|---|---|---|
 ${trialRows}
 
 ## Final answers (first 300 chars)
@@ -696,16 +1263,31 @@ ${answers}
 
 // ---------- helpers ----------
 
-async function startServer(port) {
+function startServer(port) {
+  return startHttpChild(
+    [SERVER_ENTRY],
+    {
+      PORT: String(port),
+      TANDEM_BACKEND: "mock",
+      TANDEM_DEV_TOKENS: `${DEV_TOKEN}:user_alex,${SAM_TOKEN}:user_sam`,
+      TANDEM_DEV_ANON_USER: "",
+    },
+    `http://localhost:${port}/healthz`,
+  );
+}
+
+function startStub(kind, port) {
+  return startHttpChild(
+    [STUB_ENTRY, kind, String(port)],
+    {},
+    `http://127.0.0.1:${port}/healthz`,
+  );
+}
+
+async function startHttpChild(args, env, healthUrl) {
   const child = track(
-    spawn("node", [SERVER_ENTRY], {
-      env: {
-        ...process.env,
-        PORT: String(port),
-        TANDEM_BACKEND: "mock",
-        TANDEM_DEV_TOKENS: `${DEV_TOKEN}:user_alex`,
-        TANDEM_DEV_ANON_USER: "",
-      },
+    spawn("node", args, {
+      env: { ...process.env, ...env },
       detached: true,
       stdio: ["ignore", "ignore", "pipe"],
     }),
@@ -715,7 +1297,7 @@ async function startServer(port) {
   for (let i = 0; i < 50 && !aborting; i++) {
     if (exited(child)) throw new Error(`MCP server exited: ${stderr}`);
     try {
-      const res = await fetch(`http://localhost:${port}/healthz`);
+      const res = await fetch(healthUrl);
       if (res.ok) return child;
     } catch {
       // Not up yet.
@@ -723,9 +1305,42 @@ async function startServer(port) {
     await new Promise((r) => setTimeout(r, 100));
   }
   await stopChild(child);
-  throw new Error(
-    `MCP server did not become healthy on port ${port}: ${stderr}`,
-  );
+  throw new Error(`MCP server did not become healthy at ${healthUrl}: ${stderr}`);
+}
+
+// One stateless tools/call against a trial's Tandem server, outside the agent.
+async function rpc(port, token, name, args) {
+  const res = await fetch(`http://localhost:${port}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "api-key": token,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args },
+    }),
+  });
+  const body = await res.json();
+  const r = body.result;
+  if (!r) throw new Error(`${name}: ${JSON.stringify(body.error ?? body)}`);
+  if (r.isError) throw new Error(`${name}: ${textOf(r.content)}`);
+  return r.structuredContent ?? JSON.parse(textOf(r.content));
+}
+
+// Saves the richer brief as v2 by user_sam, so there's an intro to edit.
+async function seedBrief(port) {
+  const { file } = await rpc(port, SAM_TOKEN, "read_file", {
+    file_id: BRIEF_ID,
+  });
+  await rpc(port, SAM_TOKEN, "update_document", {
+    file_id: BRIEF_ID,
+    content: TANDEM_BRIEF,
+    expected_version: file.version,
+  });
 }
 
 // Children run detached (own process group) so a signal to the harness alone
@@ -847,6 +1462,7 @@ function parseArgs(argv) {
     timeout: 180,
     concurrency: 2,
     port: 8931,
+    env: "bare",
     prompts: null,
     conditions: null,
     out: join(EVAL_DIR, "results"),
@@ -854,6 +1470,7 @@ function parseArgs(argv) {
     force: false,
     build: true,
     keep: false,
+    rerender: null,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -882,6 +1499,11 @@ function parseArgs(argv) {
       case "--port":
         o.port = posInt(a, val());
         break;
+      case "--env":
+        o.env = val();
+        if (!ENVS.includes(o.env))
+          throw usageError(`--env must be one of ${ENVS.join(", ")}`);
+        break;
       case "--prompts":
         o.prompts = val();
         break;
@@ -902,6 +1524,9 @@ function parseArgs(argv) {
         break;
       case "--keep":
         o.keep = true;
+        break;
+      case "--rerender":
+        o.rerender = resolve(val());
         break;
       case "-h":
       case "--help":

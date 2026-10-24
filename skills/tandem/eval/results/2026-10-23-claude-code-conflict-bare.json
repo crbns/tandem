@@ -1,0 +1,1058 @@
+{
+  "date": "2026-10-23",
+  "stem": "2026-10-23-claude-code-conflict-bare",
+  "started_at": "2026-10-24T05:52:46.750Z",
+  "finished_at": "2026-10-24T05:54:20.430Z",
+  "client": "claude-code",
+  "cli_version": "2.1.310 (Claude Code)",
+  "model_requested": "sonnet",
+  "models_reported": [
+    "claude-sonnet-5-5"
+  ],
+  "settings": {
+    "env": "bare",
+    "reps": 3,
+    "max_turns": 8,
+    "timeout_sec": 240,
+    "concurrency": 1,
+    "conditions": [
+      "WITH_SKILL",
+      "NO_SKILL"
+    ],
+    "claude_flags": [
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--mcp-config",
+      "--strict-mcp-config",
+      "--setting-sources",
+      "project",
+      "--no-session-persistence",
+      "--model",
+      "sonnet",
+      "--max-turns",
+      "8",
+      "--permission-mode",
+      "dontAsk",
+      "--allowedTools",
+      "mcp__tandem__*",
+      "Skill",
+      "ToolSearch",
+      "Read",
+      "Glob",
+      "Grep",
+      "--disallowedTools",
+      "Bash",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      "Task",
+      "Agent",
+      "TaskStop",
+      "ListAgents",
+      "SendMessage",
+      "Workflow",
+      "Monitor",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "ScheduleWakeup",
+      "RemoteTrigger",
+      "PushNotification",
+      "EnterWorktree",
+      "ExitWorktree",
+      "DesignSync",
+      "ReportFindings"
+    ],
+    "server": "apps/mcp mock backend, fresh process per trial, api-key auth as user_alex",
+    "brief_seed": "brief.md saved as v2 (fixtures TANDEM_BRIEF) by user_sam before conflict trials only; other trials use the server's v1 seed",
+    "teammate_marker": "Teammate note (sam): budget approved — keep this line."
+  },
+  "prompts": [
+    {
+      "id": "p6-conflict-edit",
+      "kind": "conflict",
+      "conflict": true,
+      "text": "Tighten the intro paragraph of our project brief and save the change.",
+      "expected": "read_file, update_document hits VERSION_CONFLICT (teammate edit injected), re-read, merge keeping the teammate's line, retry once"
+    }
+  ],
+  "isolation": {
+    "clean": true,
+    "leaks": [],
+    "env": "bare",
+    "expected_mcp_servers": [
+      "tandem"
+    ],
+    "mcp_servers_seen": [
+      "tandem:connected"
+    ],
+    "builtin_tools_seen": [
+      "Glob",
+      "Grep",
+      "Read",
+      "Skill",
+      "ToolSearch"
+    ],
+    "plugins_seen": [
+      "cc-plugin-agents-md@builtin",
+      "cc-plugin-telemetry@builtin",
+      "cc-plugin-plugin-authoring@builtin"
+    ],
+    "skills_only_with_skill": [
+      "tandem"
+    ],
+    "builtin_skills_seen": [
+      "deep-research",
+      "design",
+      "design-sync",
+      "dataviz",
+      "update-config",
+      "verify",
+      "debug",
+      "code-review",
+      "simplify",
+      "batch",
+      "fewer-permission-prompts",
+      "doctor",
+      "loop",
+      "schedule",
+      "claude-api",
+      "workflow-authoring",
+      "run",
+      "run-skill-generator",
+      "plugin-authoring"
+    ],
+    "notes": [
+      "--setting-sources project and --strict-mcp-config exclude user settings, user plugins and user/claude.ai MCP servers.",
+      "The init event doesn't show memory files. That --setting-sources project also keeps out the user's ~/.claude/CLAUDE.md and auto-memory was verified manually by the Step C reviewer's probe on 2026-10-23, not by this harness.",
+      "Built-in plugins (@builtin) and built-in skills ship with the CLI and are present in both conditions.",
+      "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 is set; the CLI may still create an empty ~/.claude/projects/<tmp-slug>/memory dir, which the harness removes only if empty."
+    ]
+  },
+  "summary": {
+    "rows": [
+      {
+        "prompt_id": "p6-conflict-edit",
+        "kind": "conflict",
+        "condition": "WITH_SKILL",
+        "n": 3,
+        "skill_invoked": 3,
+        "any_tandem": 3,
+        "sync": 3,
+        "first_is_sync": 3,
+        "write": 3,
+        "used_local_files": 0,
+        "used_distractor_mcp": 0,
+        "answered_from_stale_local": 0,
+        "answered_from_stale_distractor": 0,
+        "errors_or_timeouts": 0,
+        "cost_usd": 0.2072
+      },
+      {
+        "prompt_id": "p6-conflict-edit",
+        "kind": "conflict",
+        "condition": "NO_SKILL",
+        "n": 3,
+        "skill_invoked": 0,
+        "any_tandem": 3,
+        "sync": 0,
+        "first_is_sync": 0,
+        "write": 3,
+        "used_local_files": 3,
+        "used_distractor_mcp": 0,
+        "answered_from_stale_local": 0,
+        "answered_from_stale_distractor": 0,
+        "errors_or_timeouts": 0,
+        "cost_usd": 0.1385
+      }
+    ],
+    "totals": [
+      {
+        "kind": "conflict",
+        "condition": "WITH_SKILL",
+        "n": 3,
+        "skill_invoked": 3,
+        "any_tandem": 3,
+        "sync": 3,
+        "first_is_sync": 3,
+        "write": 3,
+        "used_local_files": 0,
+        "used_distractor_mcp": 0,
+        "answered_from_stale_local": 0,
+        "answered_from_stale_distractor": 0,
+        "errors_or_timeouts": 0,
+        "cost_usd": 0.2072
+      },
+      {
+        "kind": "conflict",
+        "condition": "NO_SKILL",
+        "n": 3,
+        "skill_invoked": 0,
+        "any_tandem": 3,
+        "sync": 0,
+        "first_is_sync": 0,
+        "write": 3,
+        "used_local_files": 3,
+        "used_distractor_mcp": 0,
+        "answered_from_stale_local": 0,
+        "answered_from_stale_distractor": 0,
+        "errors_or_timeouts": 0,
+        "cost_usd": 0.1385
+      }
+    ]
+  },
+  "conflict_summary": [
+    {
+      "prompt_id": "p6-conflict-edit",
+      "condition": "WITH_SKILL",
+      "n": 3,
+      "injected": 3,
+      "no_inject": 0,
+      "conflict_hit": 3,
+      "reread_after_conflict": 3,
+      "retried": 3,
+      "looped": 0,
+      "recovered": 3,
+      "clobbered": 0,
+      "asked_user": 0,
+      "outcomes": {
+        "recovered": 3
+      },
+      "inject_latency_ms_median": 5,
+      "inject_latency_ms_max": 9,
+      "cost_usd": 0.2072
+    },
+    {
+      "prompt_id": "p6-conflict-edit",
+      "condition": "NO_SKILL",
+      "n": 3,
+      "injected": 3,
+      "no_inject": 0,
+      "conflict_hit": 3,
+      "reread_after_conflict": 3,
+      "retried": 3,
+      "looped": 0,
+      "recovered": 3,
+      "clobbered": 0,
+      "asked_user": 0,
+      "outcomes": {
+        "recovered": 3
+      },
+      "inject_latency_ms_median": 6,
+      "inject_latency_ms_max": 8,
+      "cost_usd": 0.1385
+    }
+  ],
+  "trials": [
+    {
+      "prompt_id": "p6-conflict-edit",
+      "kind": "conflict",
+      "condition": "WITH_SKILL",
+      "rep": 1,
+      "model": "claude-sonnet-5-5",
+      "exit_code": 0,
+      "timed_out": false,
+      "error": null,
+      "auth_error": null,
+      "tools": [
+        "Skill:tandem",
+        "ToolSearch",
+        "mcp__tandem__sync_workspace",
+        "mcp__tandem__search_files",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document"
+      ],
+      "tandem_tools": [
+        "sync_workspace",
+        "search_files",
+        "read_file",
+        "update_document",
+        "read_file",
+        "update_document"
+      ],
+      "tandem_called": true,
+      "sync_called": true,
+      "first_tandem_is_sync": true,
+      "skill_invoked": true,
+      "write_called": true,
+      "write_tools": [
+        {
+          "tool": "update_document",
+          "ok": false,
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        },
+        {
+          "tool": "update_document",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "tandem_errors": [
+        {
+          "tool": "update_document",
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        }
+      ],
+      "permission_denials": [],
+      "subagent_tool_calls": 0,
+      "local_file_calls": 0,
+      "local_file_targets": [],
+      "used_local_files": false,
+      "distractor_calls": 0,
+      "distractor_tools": [],
+      "used_distractor_mcp": false,
+      "answer_has_tandem_marker": true,
+      "answer_has_stale_local_marker": false,
+      "answer_has_stale_distractor_marker": false,
+      "answered_from_stale_local": false,
+      "answered_from_stale_distractor": false,
+      "conflict": {
+        "outcome": "recovered",
+        "injected": true,
+        "inject_skipped": null,
+        "inject_error": null,
+        "inject_latency_ms": 5,
+        "injected_before_next_call": true,
+        "read_version": 2,
+        "teammate_version": 3,
+        "update_calls": 2,
+        "conflict_hit": true,
+        "reread_after_conflict": true,
+        "retry_count": 1,
+        "retry_ok": true,
+        "looped": false,
+        "recovered": true,
+        "clobbered": false,
+        "asked_user": false,
+        "merge_questions": [],
+        "head_version": 4,
+        "head_updated_by": "user_alex",
+        "head_has_marker": true,
+        "head_error": null
+      },
+      "num_turns": 10,
+      "cost_usd": 0.0686967,
+      "result_text": "I tightened the intro paragraph of `brief.md` and saved it as v4. The file is canonical, so everyone in the workspace can see the change now.\n\n- **Intro change:** I kept the first sentence and shortened the second to \"Read this brief first: it explains what we are building, why, and what is out of scope for the Cal Hacks 13.0 demo.\" I also dropped \"its\" before \"project context\" in the first sentence.\n- **Version conflict:** My first save failed because Sam saved v3 in the meantime. Their change was a note at the bottom, \"budget approved — keep this line.\" I re-read the file, kept their note as it was, and saved again on top of v3.\n- **Unchanged:** I didn't touch the Goal, Scope or Owners sections.",
+      "init": {
+        "mcp_servers": [
+          "tandem:connected"
+        ],
+        "non_tandem_mcp_tools": [],
+        "builtin_tools": [
+          "Glob",
+          "Grep",
+          "Read",
+          "Skill",
+          "ToolSearch"
+        ],
+        "tandem_tool_count": 11,
+        "skills": [
+          "tandem",
+          "deep-research",
+          "design",
+          "design-sync",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "plugins": [
+          "cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring@builtin"
+        ],
+        "permission_mode": "dontAsk"
+      },
+      "duration_ms": 14734
+    },
+    {
+      "prompt_id": "p6-conflict-edit",
+      "kind": "conflict",
+      "condition": "WITH_SKILL",
+      "rep": 2,
+      "model": "claude-sonnet-5-5",
+      "exit_code": 0,
+      "timed_out": false,
+      "error": null,
+      "auth_error": null,
+      "tools": [
+        "Skill:tandem",
+        "ToolSearch",
+        "mcp__tandem__sync_workspace",
+        "mcp__tandem__search_files",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document"
+      ],
+      "tandem_tools": [
+        "sync_workspace",
+        "search_files",
+        "read_file",
+        "update_document",
+        "read_file",
+        "update_document"
+      ],
+      "tandem_called": true,
+      "sync_called": true,
+      "first_tandem_is_sync": true,
+      "skill_invoked": true,
+      "write_called": true,
+      "write_tools": [
+        {
+          "tool": "update_document",
+          "ok": false,
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        },
+        {
+          "tool": "update_document",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "tandem_errors": [
+        {
+          "tool": "update_document",
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        }
+      ],
+      "permission_denials": [],
+      "subagent_tool_calls": 0,
+      "local_file_calls": 0,
+      "local_file_targets": [],
+      "used_local_files": false,
+      "distractor_calls": 0,
+      "distractor_tools": [],
+      "used_distractor_mcp": false,
+      "answer_has_tandem_marker": true,
+      "answer_has_stale_local_marker": false,
+      "answer_has_stale_distractor_marker": false,
+      "answered_from_stale_local": false,
+      "answered_from_stale_distractor": false,
+      "conflict": {
+        "outcome": "recovered",
+        "injected": true,
+        "inject_skipped": null,
+        "inject_error": null,
+        "inject_latency_ms": 5,
+        "injected_before_next_call": true,
+        "read_version": 2,
+        "teammate_version": 3,
+        "update_calls": 2,
+        "conflict_hit": true,
+        "reread_after_conflict": true,
+        "retry_count": 1,
+        "retry_ok": true,
+        "looped": false,
+        "recovered": true,
+        "clobbered": false,
+        "asked_user": false,
+        "merge_questions": [],
+        "head_version": 4,
+        "head_updated_by": "user_alex",
+        "head_has_marker": true,
+        "head_error": null
+      },
+      "num_turns": 10,
+      "cost_usd": 0.0687882,
+      "result_text": "I tightened the intro paragraph of `brief.md` and saved it as v4. The workspace is shared, so teammates can see the change now.\n\nThe intro went from about 100 words to about 60. It still says what Tandem is, that people should read the brief first, and what the Cal Hacks 13.0 demo leaves out. I cut the repeated phrasing (\"we are building, why we are building it\") and the wordy lead-in.\n\nMy first save failed with a version conflict, because Sam had saved v3 in the meantime. Sam's change was a note at the bottom of the file (\"budget approved — keep this line\"), which didn't touch the intro. I re-read the file, applied my edit on top of v3, and kept Sam's note as it was.\n\nI didn't change the Goal, Scope, or Owners sections.",
+      "init": {
+        "mcp_servers": [
+          "tandem:connected"
+        ],
+        "non_tandem_mcp_tools": [],
+        "builtin_tools": [
+          "Glob",
+          "Grep",
+          "Read",
+          "Skill",
+          "ToolSearch"
+        ],
+        "tandem_tool_count": 11,
+        "skills": [
+          "tandem",
+          "deep-research",
+          "design",
+          "design-sync",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "plugins": [
+          "cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring@builtin"
+        ],
+        "permission_mode": "dontAsk"
+      },
+      "duration_ms": 16565
+    },
+    {
+      "prompt_id": "p6-conflict-edit",
+      "kind": "conflict",
+      "condition": "WITH_SKILL",
+      "rep": 3,
+      "model": "claude-sonnet-5-5",
+      "exit_code": 0,
+      "timed_out": false,
+      "error": null,
+      "auth_error": null,
+      "tools": [
+        "Skill:tandem",
+        "ToolSearch",
+        "mcp__tandem__sync_workspace",
+        "mcp__tandem__search_files",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document"
+      ],
+      "tandem_tools": [
+        "sync_workspace",
+        "search_files",
+        "read_file",
+        "update_document",
+        "read_file",
+        "update_document"
+      ],
+      "tandem_called": true,
+      "sync_called": true,
+      "first_tandem_is_sync": true,
+      "skill_invoked": true,
+      "write_called": true,
+      "write_tools": [
+        {
+          "tool": "update_document",
+          "ok": false,
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        },
+        {
+          "tool": "update_document",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "tandem_errors": [
+        {
+          "tool": "update_document",
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        }
+      ],
+      "permission_denials": [],
+      "subagent_tool_calls": 0,
+      "local_file_calls": 0,
+      "local_file_targets": [],
+      "used_local_files": false,
+      "distractor_calls": 0,
+      "distractor_tools": [],
+      "used_distractor_mcp": false,
+      "answer_has_tandem_marker": true,
+      "answer_has_stale_local_marker": false,
+      "answer_has_stale_distractor_marker": false,
+      "answered_from_stale_local": false,
+      "answered_from_stale_distractor": false,
+      "conflict": {
+        "outcome": "recovered",
+        "injected": true,
+        "inject_skipped": null,
+        "inject_error": null,
+        "inject_latency_ms": 9,
+        "injected_before_next_call": true,
+        "read_version": 2,
+        "teammate_version": 3,
+        "update_calls": 2,
+        "conflict_hit": true,
+        "reread_after_conflict": true,
+        "retry_count": 1,
+        "retry_ok": true,
+        "looped": false,
+        "recovered": true,
+        "clobbered": false,
+        "asked_user": false,
+        "merge_questions": [],
+        "head_version": 4,
+        "head_updated_by": "user_alex",
+        "head_has_marker": true,
+        "head_error": null
+      },
+      "num_turns": 10,
+      "cost_usd": 0.0697605,
+      "result_text": "I tightened the intro paragraph in `brief.md` and saved it as v4. The workspace is shared, so teammates can see the change now.\n\nThe intro went from 3 lines to 2. The rewrite cuts the wordiness, such as \"which reads and updates\" and \"starting point for anyone who is joining\". It keeps the same points: what Tandem is, that people should read the brief first, and that it covers what we're building, why, and what's out of scope for the Cal Hacks 13.0 demo.\n\nMy first save failed with a version conflict because Sam had saved v3 in the meantime. Sam's change only added a note at the end, \"budget approved — keep this line\". I re-read the file, kept that note as it was, and saved again. I didn't touch anything else in the brief.",
+      "init": {
+        "mcp_servers": [
+          "tandem:connected"
+        ],
+        "non_tandem_mcp_tools": [],
+        "builtin_tools": [
+          "Glob",
+          "Grep",
+          "Read",
+          "Skill",
+          "ToolSearch"
+        ],
+        "tandem_tool_count": 11,
+        "skills": [
+          "tandem",
+          "deep-research",
+          "design",
+          "design-sync",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "plugins": [
+          "cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring@builtin"
+        ],
+        "permission_mode": "dontAsk"
+      },
+      "duration_ms": 14714
+    },
+    {
+      "prompt_id": "p6-conflict-edit",
+      "kind": "conflict",
+      "condition": "NO_SKILL",
+      "rep": 1,
+      "model": "claude-sonnet-5-5",
+      "exit_code": 0,
+      "timed_out": false,
+      "error": null,
+      "auth_error": null,
+      "tools": [
+        "Glob",
+        "ToolSearch",
+        "mcp__tandem__list_files",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document"
+      ],
+      "tandem_tools": [
+        "list_files",
+        "read_file",
+        "update_document",
+        "read_file",
+        "update_document"
+      ],
+      "tandem_called": true,
+      "sync_called": false,
+      "first_tandem_is_sync": false,
+      "skill_invoked": false,
+      "write_called": true,
+      "write_tools": [
+        {
+          "tool": "update_document",
+          "ok": false,
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        },
+        {
+          "tool": "update_document",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "tandem_errors": [
+        {
+          "tool": "update_document",
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        }
+      ],
+      "permission_denials": [],
+      "subagent_tool_calls": 0,
+      "local_file_calls": 1,
+      "local_file_targets": [
+        "Glob:**/*brief*"
+      ],
+      "used_local_files": true,
+      "distractor_calls": 0,
+      "distractor_tools": [],
+      "used_distractor_mcp": false,
+      "answer_has_tandem_marker": true,
+      "answer_has_stale_local_marker": false,
+      "answer_has_stale_distractor_marker": false,
+      "answered_from_stale_local": false,
+      "answered_from_stale_distractor": false,
+      "conflict": {
+        "outcome": "recovered",
+        "injected": true,
+        "inject_skipped": null,
+        "inject_error": null,
+        "inject_latency_ms": 6,
+        "injected_before_next_call": true,
+        "read_version": 2,
+        "teammate_version": 3,
+        "update_calls": 2,
+        "conflict_hit": true,
+        "reread_after_conflict": true,
+        "retry_count": 1,
+        "retry_ok": true,
+        "looped": false,
+        "recovered": true,
+        "clobbered": false,
+        "asked_user": false,
+        "merge_questions": [],
+        "head_version": 4,
+        "head_updated_by": "user_alex",
+        "head_has_marker": true,
+        "head_error": null
+      },
+      "num_turns": 8,
+      "cost_usd": 0.046889799999999995,
+      "result_text": "I tightened the intro paragraph of `brief.md` and saved it as version 4.\n\nMy first save failed because a teammate had edited the file in the meantime. I re-read the latest version and applied my change on top of it. Sam's note (\"budget approved — keep this line\") is still there, and nothing else in the file changed.\n\nThe intro went from two sentences to two shorter ones:\n\n> Tandem is a shared workspace where a team keeps its canonical files and project context in one place, and where every teammate can keep using their own AI assistant, which reads and updates those files through a remote MCP server. Read this brief before any other document: it explains what we are building, why, and what is deliberately out of scope for the demo at Cal Hacks 13.0.\n\nI cut \"its\" before \"project context\", the line \"is the starting point for anyone who is joining the project\", and the wordy \"version that we are going to demo\". The meaning is the same.",
+      "init": {
+        "mcp_servers": [
+          "tandem:connected"
+        ],
+        "non_tandem_mcp_tools": [],
+        "builtin_tools": [
+          "Glob",
+          "Grep",
+          "Read",
+          "Skill",
+          "ToolSearch"
+        ],
+        "tandem_tool_count": 11,
+        "skills": [
+          "deep-research",
+          "design",
+          "design-sync",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "plugins": [
+          "cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring@builtin"
+        ],
+        "permission_mode": "dontAsk"
+      },
+      "duration_ms": 13591
+    },
+    {
+      "prompt_id": "p6-conflict-edit",
+      "kind": "conflict",
+      "condition": "NO_SKILL",
+      "rep": 2,
+      "model": "claude-sonnet-5-5",
+      "exit_code": 0,
+      "timed_out": false,
+      "error": null,
+      "auth_error": null,
+      "tools": [
+        "Glob",
+        "ToolSearch",
+        "mcp__tandem__list_files",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document"
+      ],
+      "tandem_tools": [
+        "list_files",
+        "read_file",
+        "update_document",
+        "read_file",
+        "update_document"
+      ],
+      "tandem_called": true,
+      "sync_called": false,
+      "first_tandem_is_sync": false,
+      "skill_invoked": false,
+      "write_called": true,
+      "write_tools": [
+        {
+          "tool": "update_document",
+          "ok": false,
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        },
+        {
+          "tool": "update_document",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "tandem_errors": [
+        {
+          "tool": "update_document",
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        }
+      ],
+      "permission_denials": [],
+      "subagent_tool_calls": 0,
+      "local_file_calls": 1,
+      "local_file_targets": [
+        "Glob:**/*brief*"
+      ],
+      "used_local_files": true,
+      "distractor_calls": 0,
+      "distractor_tools": [],
+      "used_distractor_mcp": false,
+      "answer_has_tandem_marker": true,
+      "answer_has_stale_local_marker": false,
+      "answer_has_stale_distractor_marker": false,
+      "answered_from_stale_local": false,
+      "answered_from_stale_distractor": false,
+      "conflict": {
+        "outcome": "recovered",
+        "injected": true,
+        "inject_skipped": null,
+        "inject_error": null,
+        "inject_latency_ms": 6,
+        "injected_before_next_call": true,
+        "read_version": 2,
+        "teammate_version": 3,
+        "update_calls": 2,
+        "conflict_hit": true,
+        "reread_after_conflict": true,
+        "retry_count": 1,
+        "retry_ok": true,
+        "looped": false,
+        "recovered": true,
+        "clobbered": false,
+        "asked_user": false,
+        "merge_questions": [],
+        "head_version": 4,
+        "head_updated_by": "user_alex",
+        "head_has_marker": true,
+        "head_error": null
+      },
+      "num_turns": 8,
+      "cost_usd": 0.04572430000000001,
+      "result_text": "I tightened the intro paragraph of `brief.md` and saved it as version 4.\n\nThe intro is now two sentences instead of one long one. It keeps the same meaning: what Tandem is, that people should read the brief first, and what's out of scope for the Cal Hacks 13.0 demo.\n\nMy first save failed because someone else had edited the file in the meantime. I re-read it and merged my change into the latest version. That version had a new line from Sam (\"budget approved — keep this line\"), and I left it in place. Nothing else in the file changed.",
+      "init": {
+        "mcp_servers": [
+          "tandem:connected"
+        ],
+        "non_tandem_mcp_tools": [],
+        "builtin_tools": [
+          "Glob",
+          "Grep",
+          "Read",
+          "Skill",
+          "ToolSearch"
+        ],
+        "tandem_tool_count": 11,
+        "skills": [
+          "deep-research",
+          "design",
+          "design-sync",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "plugins": [
+          "cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring@builtin"
+        ],
+        "permission_mode": "dontAsk"
+      },
+      "duration_ms": 15816
+    },
+    {
+      "prompt_id": "p6-conflict-edit",
+      "kind": "conflict",
+      "condition": "NO_SKILL",
+      "rep": 3,
+      "model": "claude-sonnet-5-5",
+      "exit_code": 0,
+      "timed_out": false,
+      "error": null,
+      "auth_error": null,
+      "tools": [
+        "Glob",
+        "ToolSearch",
+        "mcp__tandem__list_files",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document"
+      ],
+      "tandem_tools": [
+        "list_files",
+        "read_file",
+        "update_document",
+        "read_file",
+        "update_document"
+      ],
+      "tandem_called": true,
+      "sync_called": false,
+      "first_tandem_is_sync": false,
+      "skill_invoked": false,
+      "write_called": true,
+      "write_tools": [
+        {
+          "tool": "update_document",
+          "ok": false,
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        },
+        {
+          "tool": "update_document",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "tandem_errors": [
+        {
+          "tool": "update_document",
+          "error": "VERSION_CONFLICT: File file_brief is at version 3, not 2; someone else changed it. Re-read the file with read_file, merge your changes into the latest content, then retry update_document with expected_version=3."
+        }
+      ],
+      "permission_denials": [],
+      "subagent_tool_calls": 0,
+      "local_file_calls": 1,
+      "local_file_targets": [
+        "Glob:**/*brief*"
+      ],
+      "used_local_files": true,
+      "distractor_calls": 0,
+      "distractor_tools": [],
+      "used_distractor_mcp": false,
+      "answer_has_tandem_marker": true,
+      "answer_has_stale_local_marker": false,
+      "answer_has_stale_distractor_marker": false,
+      "answered_from_stale_local": false,
+      "answered_from_stale_distractor": false,
+      "conflict": {
+        "outcome": "recovered",
+        "injected": true,
+        "inject_skipped": null,
+        "inject_error": null,
+        "inject_latency_ms": 8,
+        "injected_before_next_call": true,
+        "read_version": 2,
+        "teammate_version": 3,
+        "update_calls": 2,
+        "conflict_hit": true,
+        "reread_after_conflict": true,
+        "retry_count": 1,
+        "retry_ok": true,
+        "looped": false,
+        "recovered": true,
+        "clobbered": false,
+        "asked_user": false,
+        "merge_questions": [],
+        "head_version": 4,
+        "head_updated_by": "user_alex",
+        "head_has_marker": true,
+        "head_error": null
+      },
+      "num_turns": 8,
+      "cost_usd": 0.04586309999999999,
+      "result_text": "I tightened the intro paragraph of `brief.md` and saved it as version 4.\n\nThe intro is now two sentences instead of two long ones. It keeps the same points: what Tandem is, that you should read the brief first, and what's out of scope for the Cal Hacks 13.0 demo. I dropped the filler phrases such as \"the starting point for anyone who is joining the project\" and \"the version that we are going to demo\".\n\nMy first save failed with a version conflict because someone added a note to the file while I was editing. I re-read the file and applied my change on top of the latest version. Sam's note (\"budget approved — keep this line\") is still there, and nothing else in the file changed.",
+      "init": {
+        "mcp_servers": [
+          "tandem:connected"
+        ],
+        "non_tandem_mcp_tools": [],
+        "builtin_tools": [
+          "Glob",
+          "Grep",
+          "Read",
+          "Skill",
+          "ToolSearch"
+        ],
+        "tandem_tool_count": 11,
+        "skills": [
+          "deep-research",
+          "design",
+          "design-sync",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "plugins": [
+          "cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring@builtin"
+        ],
+        "permission_mode": "dontAsk"
+      },
+      "duration_ms": 18237
+    }
+  ]
+}
