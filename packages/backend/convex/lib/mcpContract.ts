@@ -27,7 +27,8 @@ interface ProposalRow {
   proposedValue: string;
   rationale: string;
   sourceFileIds: string[];
-  status: "pending" | "approved" | "rejected" | "stale";
+  status: "pending" | "applied" | "approved" | "rejected" | "stale";
+  supersedes: string | null;
   createdBy: Actor;
   createdAt: number;
   decidedBy: Actor | null;
@@ -37,6 +38,11 @@ interface ProposalRow {
 }
 
 interface ContextEntry {
+  id: string;
+  status: "active" | "resolved" | "superseded";
+  resolvedBy: Actor | null;
+  resolvedAt: number | null;
+  supersededBy: string | null;
   text: string;
   sourceFileIds: string[];
   updatedAt: number;
@@ -295,6 +301,7 @@ export function toProposal(p: ProposalRow, contextRevision: number) {
     rationale: p.rationale,
     source_ids: p.sourceFileIds,
     status: p.status,
+    supersedes: p.supersedes,
     proposed_by: toAttribution(p.createdBy),
     created_at: iso(p.createdAt),
     ...(p.decidedBy && p.decidedAt !== null
@@ -306,31 +313,49 @@ export function toProposal(p: ProposalRow, contextRevision: number) {
   };
 }
 
+function toContextEntry(e: ContextEntry) {
+  return {
+    source_ids: e.sourceFileIds,
+    updated_at: iso(e.updatedAt),
+    updated_by: toAttribution(e.updatedBy),
+    id: e.id,
+    text: e.text,
+    status: e.status,
+    resolved_by: e.resolvedBy ? toAttribution(e.resolvedBy) : null,
+    resolved_at: e.resolvedAt,
+    superseded_by: e.supersededBy,
+  };
+}
+
 function toContext(c: ContextRow) {
   return {
     goal: c.goal?.text ?? "",
     scope: c.scope?.text ?? "",
-    constraints: c.constraints.map((e) => e.text),
-    // Decisions and open questions are append-only, so the position is a stable id.
-    decisions: c.decisions.map((e, i) => ({
-      id: `decision_${i + 1}`,
-      text: e.text,
-      status: "approved" as const,
+    constraints: c.constraints.map(toContextEntry),
+    decisions: c.decisions.map((e) => ({
+      ...toContextEntry(e),
       decided_at: iso(e.updatedAt),
       source_ids: e.sourceFileIds,
     })),
     ownership: c.ownership.map((e) => {
       if (e.ownerUserId !== null && e.ownerArea !== null)
-        return { area: e.ownerArea, owner_user_id: e.ownerUserId };
+        return {
+          ...toContextEntry(e),
+          area: e.ownerArea,
+          owner_user_id: e.ownerUserId,
+        };
       // Legacy free-text entry ("area: owner").
       const sep = e.text.lastIndexOf(": ");
       return sep > 0
-        ? { area: e.text.slice(0, sep), owner_user_id: e.text.slice(sep + 2) }
-        : { area: e.text, owner_user_id: "" };
+        ? {
+            ...toContextEntry(e),
+            area: e.text.slice(0, sep),
+            owner_user_id: e.text.slice(sep + 2),
+          }
+        : { ...toContextEntry(e), area: e.text, owner_user_id: "" };
     }),
-    open_questions: c.openQuestions.map((e, i) => ({
-      id: `question_${i + 1}`,
-      text: e.text,
+    open_questions: c.openQuestions.map((e) => ({
+      ...toContextEntry(e),
       created_at: iso(e.updatedAt),
       created_by: toAttribution(e.updatedBy),
     })),
@@ -342,7 +367,7 @@ function toContext(c: ContextRow) {
 export function toSyncResult(r: {
   workspace: { id: string; name: string };
   context: ContextRow;
-  pendingProposals: Pick<ProposalRow, "id" | "field" | "rationale" | "createdBy" | "createdAt">[];
+  pendingProposals: Pick<ProposalRow, "id" | "field" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt">[];
   changedFiles: FileRow[];
   filesTruncated: boolean;
   recentWork: Parameters<typeof toPublished>[0][];
@@ -356,6 +381,9 @@ export function toSyncResult(r: {
     context: toContext(r.context),
     context_version: r.context.revision,
     pending_proposals: r.pendingProposals.map((p) => ({
+      proposed_value: p.proposedValue,
+      supersedes: p.supersedes,
+      status: "pending" as const,
       id: p.id,
       field: toProposalField(p.field),
       rationale: p.rationale,
@@ -402,14 +430,19 @@ export function toPublished(w: {
   };
 }
 
-type ContextField = "goal" | "scope" | "constraints" | "decisions" | "ownership";
+type ContextField = "goal" | "scope" | "constraints" | "decisions" | "ownership" | "open_questions";
 type ProposedValue = string | { area: string; owner_user_id: string };
 
 /** Convex's context model is canonical: one text value per proposal (plus the owner for ownership). */
 export function toBackendProposal(
   field: ContextField,
-  value: ProposedValue,
-): { field: Field; proposedValue: string; ownerUserId?: string } {
+  value: ProposedValue | undefined,
+  operation: "add" | "resolve" | "remove" = "add",
+): { field: Field; proposedValue?: string; ownerUserId?: string } {
+  if (operation !== "add") {
+    const fieldMap = { constraints: "constraint", decisions: "decision", open_questions: "open_question" } as const;
+    return { field: field === "constraints" || field === "decisions" || field === "open_questions" ? fieldMap[field] : field };
+  }
   const invalid = (expected: string) =>
     invalidInput(`proposed_value for ${field} must be ${expected}.`, { field });
   switch (field) {
@@ -417,6 +450,9 @@ export function toBackendProposal(
     case "scope":
       if (typeof value !== "string") throw invalid("the full new text, as a string");
       return { field, proposedValue: value };
+    case "open_questions":
+      if (typeof value !== "string") throw invalid("question text, as a string");
+      return { field: "open_question", proposedValue: value };
     case "decisions":
       if (typeof value !== "string") throw invalid("the decision text, as a string");
       return { field: "decision", proposedValue: value };
@@ -428,7 +464,7 @@ export function toBackendProposal(
       );
     case "ownership":
       // Convex checks that the owner is a current member, now and on approval.
-      if (typeof value === "object") return { field: "ownership", proposedValue: value.area, ownerUserId: value.owner_user_id };
+      if (value && typeof value === "object") return { field: "ownership", proposedValue: value.area, ownerUserId: value.owner_user_id };
       throw invalid("{ area, owner_user_id }, where owner_user_id is a workspace member");
   }
 }

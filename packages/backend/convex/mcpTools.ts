@@ -361,6 +361,9 @@ export const syncWorkspace = internalMutation({
         id: v.id("context_proposals"),
         field: contextFieldValidator,
         rationale: v.string(),
+        proposedValue: v.string(),
+        supersedes: v.union(v.string(), v.null()),
+        status: v.literal("pending"),
         createdBy: actorValidator,
         createdAt: v.number(),
       }),
@@ -419,8 +422,12 @@ export const proposeContextChange = internalMutation({
   args: {
     principal,
     workspaceId: v.optional(v.string()),
+    operation: v.optional(v.union(v.literal("add"), v.literal("resolve"), v.literal("remove"))),
+    entryId: v.optional(v.string()),
+    supersedes: v.optional(v.string()),
+    expectedVersion: v.optional(v.number()),
     field: contextFieldValidator,
-    proposedValue: v.string(),
+    proposedValue: v.optional(v.string()),
     rationale: v.string(),
     sourceFileIds: v.array(v.string()),
     /** Required for ownership (proposedValue is then the area); else omitted. */
@@ -436,7 +443,12 @@ export const proposeContextChange = internalMutation({
     const proposal = await proposeContextChangeCore(ctx, {
       workspaceId,
       field: args.field,
-      proposedValue: boundedText(args.proposedValue, 2000, "proposedValue"),
+      operation: args.operation,
+      entryId: args.entryId,
+      supersedes: args.supersedes,
+      expectedVersion: args.expectedVersion,
+      proposedValue: (args.operation ?? "add") === "add"
+        ? boundedText(args.proposedValue ?? "", 2000, "proposedValue") : undefined,
       rationale: boundedText(args.rationale, 2000, "rationale"),
       sourceFileIds: await checkSourceFiles(ctx, workspaceId, args.sourceFileIds),
       ownerUserId: args.ownerUserId,

@@ -66,6 +66,20 @@ pnpm demo:reset
 
 Deletes and rebuilds only the demo workspace (Alex, Blake and Casey, `brief.md` v1, an approved goal and scope, one agent connection each), then prints sign-in credentials and agent tokens. `pnpm test:demo` runs the P0 slice on the seeded workspace. See [demo-seed.md](demo-seed.md) for pinning the password and tokens, cloud deployments, and the rehearsal checklist.
 
+## Existing deployments: context entry IDs
+
+Deploy the widened schema/functions before backfilling older context rows. With
+that deployment selected in `packages/backend/.env.local`, run from the repo root:
+
+```sh
+pnpm --filter @repo/backend exec convex run contextMigrations:backfillEntryIds '{"paginationOpts":{"cursor":null,"numItems":50}}'
+```
+
+Repeat with the returned `continueCursor` as `cursor` until `isDone` is true.
+The migration is idempotent and preserves the IDs already exposed by legacy
+reads. Stored IDs remain optional so older snapshots/seeds can still load;
+new list writes include IDs and reads tolerate rows awaiting backfill.
+
 ## Tests
 
 ```sh

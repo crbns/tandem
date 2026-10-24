@@ -126,13 +126,21 @@ export interface FileVersions {
   versions: FileVersion[];
 }
 
-export interface Decision {
+/** Stable context identity and retained lifecycle history. */
+export interface ContextEntry {
+  source_ids: string[];
+  updated_at: string;
+  updated_by: Attribution;
   id: string;
   text: string;
-  /** Only approved decisions live in the context; pending ones are proposals. */
-  status: "approved";
+  status: "active" | "resolved" | "superseded";
+  resolved_by: Attribution | null;
+  resolved_at: number | null;
+  superseded_by: string | null;
+}
+
+export interface Decision extends ContextEntry {
   decided_at: string;
-  /** File ids that support the decision. */
   source_ids: string[];
 }
 
@@ -141,55 +149,36 @@ export interface Ownership {
   owner_user_id: string;
 }
 
-export interface OpenQuestion {
-  id: string;
-  text: string;
+export interface OpenQuestion extends ContextEntry {
   created_at: string;
   created_by: Attribution;
 }
 
-/**
- * The workspace's approved project context. It references files by id instead
- * of copying their content. Goal, scope, constraints, decisions and ownership
- * change only through a human decision (decideProposal or a human
- * applyContextChange); each change bumps the workspace's context_version.
- */
+/** Current context and retained resolved/superseded entries. */
 export interface StructuredContext {
   goal: string;
   scope: string;
-  constraints: string[];
+  constraints: ContextEntry[];
   decisions: Decision[];
-  ownership: Ownership[];
+  ownership: (Ownership & ContextEntry)[];
   open_questions: OpenQuestion[];
   updated_at: string;
   updated_by: Attribution;
 }
 
 export type ContextField =
-  "goal" | "scope" | "constraints" | "decisions" | "ownership";
+  | "goal"
+  | "scope"
+  | "constraints"
+  | "decisions"
+  | "ownership"
+  | "open_questions";
 
-/**
- * Must match the field, else INVALID_INPUT:
- * - goal, scope: the full new text (string).
- * - constraints: one new constraint (string); approval appends it. Existing
- *   constraints can't be edited or removed through a proposal.
- * - decisions: the text of one new decision (string); approval appends it.
- * - ownership: one { area, owner_user_id }; approval replaces that area's owner
- *   (area compared trimmed, case-insensitively). owner_user_id must be a member
- *   of the workspace, checked on proposal and again on approval.
- * Constraints and decisions are append-only and ownership is upsert-by-area:
- * no proposal can remove any of them yet (intentional for the MVP).
- */
+/** Text for context fields, or a structured owner for ownership. */
 export type ProposedValue = string | Ownership;
-
-export type ProposalStatus = "pending" | "approved" | "rejected";
-
-/**
- * Convex also stores open-question proposals (made in the dashboard) and marks
- * proposals "stale" when the context they were based on changed before
- * approval. Neither can be requested through the MCP tools.
- */
-export type ProposalField = ContextField | "open_questions";
+export type ContextOperation = "add" | "resolve" | "remove";
+export type ProposalStatus = "pending" | "applied" | "approved" | "rejected";
+export type ProposalField = ContextField;
 
 export interface ContextProposal {
   /** Context version this proposal was based on; stale proposals cannot be approved. */
@@ -197,6 +186,7 @@ export interface ContextProposal {
   id: string;
   workspace_id: string;
   field: ProposalField;
+  supersedes: string | null;
   proposed_value: ProposedValue;
   rationale: string;
   source_ids: string[];
@@ -209,11 +199,17 @@ export interface ContextProposal {
   decision_note?: string;
 }
 
-/** What sync_workspace returns per pending proposal: no proposed_value. */
+/** Pending changes stay explicitly proposed and retain replacement links. */
 export type ProposalSummary = Pick<
   ContextProposal,
-  "id" | "field" | "rationale" | "proposed_by" | "created_at"
->;
+  | "id"
+  | "field"
+  | "proposed_value"
+  | "supersedes"
+  | "rationale"
+  | "proposed_by"
+  | "created_at"
+> & { status: "pending" };
 
 export interface PublishedWork {
   id: string;
@@ -229,6 +225,10 @@ export interface PublishedWork {
 export type WorkspaceEventType =
   | "file.created"
   | "file.updated"
+  | "context.migrated"
+  | "context.recorded"
+  | "context.resolved"
+  | "context.removed"
   | "context.proposed"
   | "context.approved"
   | "context.rejected"
@@ -314,8 +314,12 @@ export interface SyncResult {
 }
 
 export interface ProposeContextChangeInput {
+  operation?: ContextOperation;
+  entry_id?: string;
+  supersedes?: string;
+  expected_version?: number;
   field: ContextField;
-  proposed_value: ProposedValue;
+  proposed_value?: ProposedValue;
   rationale: string;
   /** Each must be a file in the same workspace, else FILE_NOT_FOUND. */
   source_ids?: string[];
@@ -363,7 +367,9 @@ export interface TandemBackend {
    * Members of the actor's default workspace only (at most 100; `truncated`
    * when there are more). Empty if the actor has no workspace.
    */
-  listMembers(actor: Actor): Promise<{ members: WorkspaceMember[]; truncated: boolean }>;
+  listMembers(
+    actor: Actor,
+  ): Promise<{ members: WorkspaceMember[]; truncated: boolean }>;
   /** The actor's own (user, client) presence; nulls if it never synced or wrote. */
   getConnection(actor: Actor): Promise<AgentConnection>;
   /**
@@ -377,8 +383,8 @@ export interface TandemBackend {
    */
   syncWorkspace(actor: Actor, input: SyncInput): Promise<SyncResult>;
   /**
-   * Creates a pending proposal and a context.proposed event. Never changes the
-   * context. Any member (agent or human) may propose.
+   * Authoritative additions await approval; working additions and question
+   * resolution apply immediately. Only humans may remove working entries.
    */
   proposeContextChange(
     actor: Actor,

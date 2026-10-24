@@ -11,7 +11,7 @@ import {
   withDevAnon,
 } from "../src/auth.js";
 import { MockBackend } from "../src/backend/mock.js";
-import type { Actor } from "../src/backend/types.js";
+import type { Actor, StructuredContext } from "../src/backend/types.js";
 import { TandemError } from "../src/errors.js";
 import { nameKey, storedName } from "../src/names.js";
 import { createApp, parseAllowedOrigins } from "../src/server.js";
@@ -801,12 +801,7 @@ describe("context tools", () => {
 
   interface Synced {
     workspace: { id: string; name: string };
-    context: {
-      goal: string;
-      constraints: string[];
-      decisions: { text: string; source_ids: string[] }[];
-      ownership: { area: string; owner_user_id: string }[];
-    };
+    context: StructuredContext;
     context_version: number;
     pending_proposals: Record<string, unknown>[];
     changed_files: { id: string; name: string; workspace_id: string }[];
@@ -853,8 +848,14 @@ describe("context tools", () => {
     expect(first.workspace).toEqual({ id: "ws_demo", name: "Demo workspace" });
     expect(first.context).toMatchObject({
       goal: expect.stringContaining("Tandem"),
-      constraints: expect.arrayContaining([expect.any(String)]),
-      decisions: [expect.objectContaining({ status: "approved" })],
+      constraints: expect.arrayContaining([
+        expect.objectContaining({
+          id: expect.any(String),
+          text: expect.any(String),
+          status: "active",
+        }),
+      ]),
+      decisions: [expect.objectContaining({ status: "active" })],
       ownership: [{ area: "MCP server", owner_user_id: "user_alex" }],
     });
     expect(first.context_version).toBe(1);
@@ -988,14 +989,22 @@ describe("context tools", () => {
     const published = [];
     for (let i = 0; i < 21; i++) {
       const result = await call(alex, "publish_work", {
-        kind: "finding", title: `Finding ${i}`, summary: `Full finding ${i}`, file_ids: ["file_brief"],
+        kind: "finding",
+        title: `Finding ${i}`,
+        summary: `Full finding ${i}`,
+        file_ids: ["file_brief"],
       });
       expect(result.isError).toBeFalsy();
-      published.push((result.structuredContent as { published: unknown }).published);
+      published.push(
+        (result.structuredContent as { published: unknown }).published,
+      );
     }
     const after = await sync(sam, { since: before.cursor });
     expect(after.recent_work).toEqual(published.slice(-20).reverse());
-    expect(after.recent_work[0]).toMatchObject({ summary: "Full finding 20", file_ids: ["file_brief"] });
+    expect(after.recent_work[0]).toMatchObject({
+      summary: "Full finding 20",
+      file_ids: ["file_brief"],
+    });
     expect(after.work_truncated).toBe(true);
     expect((await sync(sam)).recent_work).toEqual(after.recent_work);
     const empty = await sync(sam, { since: after.cursor });
@@ -1023,6 +1032,7 @@ describe("context tools", () => {
       rationale: "Judges reward ambition.",
       source_ids: ["file_brief"],
       status: "pending",
+      supersedes: null,
       proposed_by: {
         actor_type: "agent",
         user_id: "user_alex",
@@ -1037,6 +1047,9 @@ describe("context tools", () => {
     expect(after.context).toEqual(before.context);
     expect(after.context_version).toBe(before.context_version);
     expect(after.pending_proposals).toContainEqual({
+      proposed_value: "Win the Cal Hacks grand prize.",
+      status: "pending",
+      supersedes: null,
       id: proposal.id,
       field: "goal",
       rationale: "Judges reward ambition.",
@@ -1171,12 +1184,12 @@ describe("context tools", () => {
       source_ids: ["file_brief"],
     });
     await backend.decideProposal(alexHuman, decision.id, "approve");
-    // Same as Convex: one constraint per proposal, appended on approval.
+    // Working constraints apply immediately.
     const constraint = await propose(alex, {
       field: "constraints",
       proposed_value: " Keep the demo under three minutes. ",
     });
-    await backend.decideProposal(alexHuman, constraint.id, "approve");
+    expect(constraint).toMatchObject({ status: "applied" });
     const owner = await propose(alex, {
       field: "ownership",
       proposed_value: { area: "mcp SERVER ", owner_user_id: "user_sam" },
@@ -1196,15 +1209,22 @@ describe("context tools", () => {
     const latest = await sync(alex);
     expect(latest.context.decisions.at(-1)).toMatchObject({
       text: "Demo on Claude first, ChatGPT second.",
-      status: "approved",
+      status: "active",
       source_ids: ["file_brief"],
     });
     expect(latest.context.ownership).toEqual([
-      { area: "mcp SERVER", owner_user_id: "user_sam" },
+      expect.objectContaining({
+        area: "mcp SERVER",
+        owner_user_id: "user_sam",
+        status: "active",
+      }),
     ]);
     expect(latest.context.constraints).toEqual([
       ...after.context.constraints,
-      "Keep the demo under three minutes.",
+      expect.objectContaining({
+        text: "Keep the demo under three minutes.",
+        status: "active",
+      }),
     ]);
     expect(latest.context_version).toBe(after.context_version + 3);
     expect(latest.events.at(-1)).toMatchObject({
@@ -1214,6 +1234,143 @@ describe("context tools", () => {
     const listed = await call(alex, "get_approvals", { status: "rejected" });
     expect(listed.structuredContent).toMatchObject({
       proposals: [{ id: rejected.id, decision_note: "Too broad." }],
+    });
+    await alex.close();
+  });
+
+  it("applies working questions immediately, resolves with version checks, and permits only human removal", async () => {
+    const alex = await connect("alex-token", url);
+    const before = await backend.syncWorkspace(alexAgent, {});
+    const added = await propose(alex, {
+      field: "open_questions",
+      proposed_value: "Which client first?",
+    });
+    expect(added).toMatchObject({ status: "applied", supersedes: null });
+    const active = await backend.syncWorkspace(alexAgent, {});
+    const question = active.context.open_questions.at(-1)!;
+    expect(question).toMatchObject({
+      id: expect.any(String),
+      status: "active",
+      resolved_by: null,
+      resolved_at: null,
+    });
+    expect(active.context_version).toBe(before.context_version + 1);
+    expect(active.pending_proposals).not.toContainEqual(
+      expect.objectContaining({ id: added.id }),
+    );
+    const resolve = {
+      field: "open_questions" as const,
+      rationale: "Answered",
+      operation: "resolve" as const,
+      entry_id: question.id,
+    };
+    await expect(
+      backend.proposeContextChange(alexAgent, resolve),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(
+      backend.proposeContextChange(alexAgent, {
+        ...resolve,
+        expected_version: before.context_version,
+      }),
+    ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+    const resolved = await propose(alex, {
+      ...resolve,
+      expected_version: active.context_version,
+    });
+    expect(resolved).toMatchObject({ status: "applied" });
+    const after = await backend.syncWorkspace(alexAgent, {});
+    expect(after.context.open_questions.at(-1)).toMatchObject({
+      id: question.id,
+      status: "resolved",
+      resolved_by: { actor_type: "agent" },
+      resolved_at: expect.any(Number),
+    });
+    const constraint = after.context.constraints[0]!;
+    const remove = {
+      field: "constraints" as const,
+      proposed_value: constraint.text,
+      rationale: "Outdated",
+      operation: "remove" as const,
+      entry_id: constraint.id,
+      expected_version: after.context_version,
+    };
+    await expect(
+      backend.proposeContextChange(alexAgent, remove),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      backend.proposeContextChange(alexHuman, remove),
+    ).resolves.toMatchObject({ status: "applied" });
+    expect(
+      (await backend.syncWorkspace(alexAgent, {})).context.constraints.map(
+        (e) => e.id,
+      ),
+    ).not.toContain(constraint.id);
+    await alex.close();
+  });
+
+  it("resolves long dashboard questions using their stored value and ignores supplied proposed_value", async () => {
+    const alex = await connect("alex-token", url);
+    try {
+      for (const supplied of [undefined, null, { ignored: true }, "x".repeat(3000)]) {
+        const questionText = `Dashboard question: ${"q".repeat(2100)}`;
+        await backend.applyContextChange(alexHuman, {
+          field: "open_questions",
+          value: questionText,
+        });
+        const active = await sync(alex);
+        const question = active.context.open_questions.at(-1)!;
+        const result = await call(alex, "propose_context_change", {
+          field: "open_questions",
+          operation: "resolve",
+          entry_id: question.id,
+          expected_version: active.context_version,
+          rationale: "Answered",
+          ...(supplied === undefined ? {} : { proposed_value: supplied }),
+        });
+        expect(result.isError).toBeFalsy();
+        expect(result.structuredContent).toMatchObject({
+          proposal: { status: "applied", proposed_value: questionText },
+        });
+        expect((await sync(alex)).context.open_questions.at(-1)).toMatchObject({
+          id: question.id,
+          text: questionText,
+          status: "resolved",
+          resolved_by: { actor_type: "agent" },
+          resolved_at: expect.any(Number),
+        });
+      }
+    } finally {
+      await alex.close();
+    }
+  });
+
+  it("retains decision identity and history until a superseding proposal is approved", async () => {
+    const alex = await connect("alex-token", url);
+    const old = (await backend.syncWorkspace(alexAgent, {})).context
+      .decisions[0]!;
+    const replacement = await propose(alex, {
+      field: "decisions",
+      proposed_value: "Use Convex with scoped MCP tokens.",
+      supersedes: old.id,
+    });
+    expect(replacement).toMatchObject({
+      status: "pending",
+      supersedes: old.id,
+    });
+    expect(
+      (await backend.syncWorkspace(alexAgent, {})).context.decisions[0],
+    ).toEqual(old);
+    await backend.decideProposal(alexHuman, replacement.id, "approve");
+    const history = (await backend.syncWorkspace(alexAgent, {})).context
+      .decisions;
+    expect(history[0]).toMatchObject({
+      id: old.id,
+      status: "superseded",
+      superseded_by: history.at(-1)!.id,
+    });
+    expect(history.at(-1)).toMatchObject({
+      status: "active",
+      text: "Use Convex with scoped MCP tokens.",
     });
     await alex.close();
   });

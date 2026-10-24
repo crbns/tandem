@@ -65,6 +65,7 @@ describe("project context mapping", () => {
   const userId = "users_owner" as Id<"users">;
   const source = "files_plan" as Id<"files">;
   const entry = {
+    id: "entry_1", status: "active" as const, resolvedBy: null, resolvedAt: null, supersededBy: null,
     text: "Ship",
     sourceFileIds: [source],
     updatedBy: { type: "human" as const, label: "Owner", userId },
@@ -133,7 +134,7 @@ describe("project context mapping", () => {
     const fake = fakeConvex({
       "context:getDetails": backend,
       "context:updateContextField": { version: 8 },
-      "context:proposeContextChange": "proposal_1",
+      "context:proposeContextChange": { id: "proposal_1", status: "pending" },
       "context:listPublishedWork": {
         page: [backendWork],
         isDone: false,
@@ -162,7 +163,7 @@ describe("project context mapping", () => {
         ...change,
         rationale: "Owner agreed",
       }),
-    ).toBe("proposal_1");
+    ).toEqual({ id: "proposal_1", status: "pending" });
     expect(
       (await adapter.listPublishedWork("ws", "cursor", 2)).page[0]?.createdBy,
     ).toEqual({
@@ -208,6 +209,25 @@ describe("project context mapping", () => {
     });
     expect(fake.calls.at(-1)?.args).not.toHaveProperty("ownerUserId");
   });
+  it("forwards stable entry IDs, lifecycle operations, versions and superseding targets", async () => {
+    const fake = fakeConvex({
+      "context:updateContextField": { version: 8 },
+      "context:proposeContextChange": { id: "proposal_2", status: "applied" },
+    });
+    const adapter = createConvexApi(fake.client);
+    const input = { field: "open_question" as const, proposedValue: "When?", sourceFileIds: [], expectedVersion: 7, entryId: "backend-entry" };
+    await adapter.updateContextField("ws", input);
+    expect(fake.calls.at(-1)).toEqual({ name: "context:updateContextField", args: { workspaceId: "ws", ...input } });
+    for (const operation of ["resolve", "remove"] as const) {
+      const change = { ...input, operation, rationale: "Done" };
+      expect(await adapter.proposeContextChange("ws", change)).toEqual({ id: "proposal_2", status: "applied" });
+      expect(fake.calls.at(-1)).toEqual({ name: "context:proposeContextChange", args: { workspaceId: "ws", ...change } });
+    }
+    const replacement = { field: "decision" as const, proposedValue: "Use two clients", sourceFileIds: [], rationale: "Approved plan", supersedes: "decision-stable-id" };
+    await adapter.proposeContextChange("ws", replacement);
+    expect(fake.calls.at(-1)?.args).toEqual({ workspaceId: "ws", ...replacement });
+  });
+
 });
 
 describe("mock project context parity", () => {
@@ -264,7 +284,7 @@ describe("mock project context parity", () => {
             expectedVersion: before.version,
           }),
         ).rejects.toMatchObject({ code: "FORBIDDEN" });
-        const id = await mock.proposeContextChange(MOCK_WORKSPACE_ID, {
+        const { id } = await mock.proposeContextChange(MOCK_WORKSPACE_ID, {
           ...change,
           rationale: "Team agreed",
         });

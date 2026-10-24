@@ -62,12 +62,14 @@ const REVISION: BackendRevision = {
 
 const entry = (text: string, updatedAt = 1_700_000_000_000): BackendContext["constraints"][number] => ({
   text,
+  id: `entry_${text}`, status: "active", resolvedBy: null, resolvedAt: null, supersededBy: null,
   sourceFileIds: [],
   updatedAt,
   updatedBy: ALEX,
 });
 
 const EMPTY_CONTEXT: BackendContext = {
+  updatedBy: ALEX,
   goal: null,
   scope: null,
   constraints: [],
@@ -139,6 +141,16 @@ describe("createConvexApi", () => {
       { name: "files:getFileRevision", args: { fileId: "files_1", version: 1 } },
       { name: "workspaces:getWorkspaceContext", args: { workspaceId: "workspaces_1" } },
     ]);
+  });
+
+  it("keeps superseded decisions out of compact context summaries", async () => {
+    const { client } = fakeConvex({ "workspaces:getWorkspaceContext": {
+      ...EMPTY_CONTEXT, goal: entry("Ship"), decisions: [
+        { ...entry("Old decision"), status: "superseded", supersededBy: "replacement" },
+        { ...entry("Current decision"), id: "replacement" },
+      ],
+    } });
+    expect((await createConvexApi(client).getContext("workspaces_1"))?.decisions).toEqual(["Current decision"]);
   });
 
   it("maps a file in full, naming both the person and the assistant on agent writes", async () => {

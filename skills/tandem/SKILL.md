@@ -39,8 +39,8 @@ not.
 - At the start of meaningful project work in a conversation, call
   `sync_workspace` with no arguments (add `workspace_id` only if the user means
   a non-default workspace; `get_workspace_info` lists them).
-- It returns the approved `context` (goal, scope, constraints, decisions,
-  ownership, open questions) and its `context_version`, `pending_proposals`
+- It returns `context` (approved goal, scope, decisions and ownership;
+  working constraints and open questions, plus retained history) and its `context_version`, `pending_proposals`
   (summaries, not yet in effect), `changed_files` (metadata only), recent
   `events`, `recent_work` (published findings and deliverables), and a `cursor`.
   Read `recent_work` before starting project work, then orient before answering
@@ -127,42 +127,56 @@ Someone else saved a newer version since you read it.
   questions) that teammates' assistants would need. Major context changes go
   through section 7.
 
-## 7. Propose major context changes
+## 7. Record working context and propose major changes
 
 - Goal, scope, major decisions, and ownership are human-approved. Never change
   them directly, including by editing a file to claim they changed.
 - Call `propose_context_change` with `field`, `proposed_value`, a short
   `rationale`, and `source_ids` (ids of files that support it). Value by field:
   - `goal` or `scope`: the full new text.
-  - `constraints`: the text of one new constraint, as a string; approval
-    appends it. Send each new constraint as its own proposal. Existing
-    constraints can't be edited or removed through a proposal: ask the user
-    to change them in the dashboard.
-  - `decisions`: the text of one new decision.
+  - `constraints` or `open_questions`: one constraint or question as text.
+    These working additions apply immediately with attribution; no approval.
+    Send each entry separately.
+  - `decisions`: the text of one new decision. To replace a decision, pass
+    `supersedes` with its stable entry `id` from sync. The proposal stays
+    pending; approval marks the old entry `superseded` and links its
+    `superseded_by` to the replacement without deleting history.
   - `ownership`: `{ area, owner_user_id }` for one area; approval replaces
     that area's owner. Get the owner's `user_id` from
     `get_workspace_info.members` (match the person the user named; ask if
     it's ambiguous). The owner must be a current workspace member, otherwise
     it fails with `INVALID_INPUT`.
-- It returns a `proposal` with `status: "pending"` and changes nothing. Tell
+- `operation` defaults to `add`. To resolve an open question, sync first and
+  call the same tool with `operation: "resolve"`, `field: "open_questions"`,
+  `entry_id` and `expected_version: <context_version>`, plus a short `rationale`.
+  Omit `proposed_value` for resolve/remove: the server loads the target entry
+  by ID and ignores any supplied value. Agents and humans may resolve
+  questions; only humans may `remove` working entries.
+  Resolve/remove require `expected_version`; on conflict sync and reconcile.
+- Read list entry `id`, `status` (`active`, `resolved`, `superseded`),
+  `resolved_by`, `resolved_at`, and `superseded_by`; retain history and use
+  only active entries as current context. IDs stay stable across syncs.
+- Working additions and resolutions return `proposal.status: "applied"` and
+  appear in the next sync immediately. Authoritative additions return
+  `proposal.status: "pending"` and await approval. For pending changes, tell
   the user it awaits a human owner or admin's approval in the dashboard and has not
   taken effect. Use `get_approvals` (default `status: "pending"`; also
-  `"approved"`, `"rejected"`, `"stale"`, `"all"`) to check when asked. A
+  `"applied"`, `"approved"`, `"rejected"`, `"stale"`, `"all"`) to check when asked. A
   `stale` proposal was not applied because the context changed first; reread
   with `sync_workspace` and propose again against the current value.
 - Until approved, treat the current approved context as authoritative.
 
 ## 8. Error codes
 
-| Code | What to do |
-|---|---|
-| `UNAUTHENTICATED` (usually not a tool result: the connector fails or asks to re-authenticate) | Ask the user to reconnect or re-authorize the Tandem connector. Don't retry until they do. |
-| `FORBIDDEN` | Tell the user they don't have access to that workspace or file. Don't retry or try workarounds. |
-| `FILE_NOT_FOUND` | Re-run `list_files`/`search_files` to get current ids. Don't guess ids. |
-| `VERSION_CONFLICT` | Follow section 4. |
-| `NAME_EXISTS` | A file with that name already exists in that folder (`file_id`, `name`, `current_version` in the error). Read it with `read_file`. If it is the same deliverable, merge your content into it per section 3. Otherwise ask the user whether to update it or use a different name. Never replace its content wholesale. |
-| `APPROVAL_REQUIRED` | The change needs human approval. Switch to `propose_context_change` and tell the user. |
-| `INVALID_INPUT` or `Input validation error` (MCP error -32602) | Your arguments were rejected. Read the error message, fix the arguments, retry once. If `expected_version` was wrong (newer than the file), re-read with `read_file` and use its `file.version` rather than retrying with a guess. |
+| Code                                                                                          | What to do                                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UNAUTHENTICATED` (usually not a tool result: the connector fails or asks to re-authenticate) | Ask the user to reconnect or re-authorize the Tandem connector. Don't retry until they do.                                                                                                                                                                                                                            |
+| `FORBIDDEN`                                                                                   | Tell the user they don't have access to that workspace or file. Don't retry or try workarounds.                                                                                                                                                                                                                       |
+| `FILE_NOT_FOUND`                                                                              | Re-run `list_files`/`search_files` to get current ids. Don't guess ids.                                                                                                                                                                                                                                               |
+| `VERSION_CONFLICT`                                                                            | Follow section 4.                                                                                                                                                                                                                                                                                                     |
+| `NAME_EXISTS`                                                                                 | A file with that name already exists in that folder (`file_id`, `name`, `current_version` in the error). Read it with `read_file`. If it is the same deliverable, merge your content into it per section 3. Otherwise ask the user whether to update it or use a different name. Never replace its content wholesale. |
+| `APPROVAL_REQUIRED`                                                                           | The change needs human approval. Switch to `propose_context_change` and tell the user.                                                                                                                                                                                                                                |
+| `INVALID_INPUT` or `Input validation error` (MCP error -32602)                                | Your arguments were rejected. Read the error message, fix the arguments, retry once. If `expected_version` was wrong (newer than the file), re-read with `read_file` and use its `file.version` rather than retrying with a guess.                                                                                    |
 
 For any other error, report it to the user in plain words and don't invent a
 success.

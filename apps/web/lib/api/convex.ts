@@ -61,6 +61,7 @@ function toProposal(proposal: BackendProposal): ContextProposal {
     rationale: proposal.rationale,
     sourceFileIds: proposal.sourceFileIds,
     status: proposal.status,
+    supersedes: proposal.supersedes,
     createdBy: toActor(proposal.createdBy),
     createdAt: proposal.createdAt,
     decidedBy: proposal.decidedBy ? toActor(proposal.decidedBy) : null,
@@ -105,6 +106,7 @@ function toFileSummary(file: BackendFileMetadata): FileSummary {
 export function toContextDetails(context: FunctionReturnType<typeof api.context.getDetails>): ContextDetails {
   const entry = (value: NonNullable<typeof context.goal>): ContextEntry => ({
     ...value, sourceFileIds: [...value.sourceFileIds], updatedBy: toActor(value.updatedBy),
+    resolvedBy: value.resolvedBy ? toActor(value.resolvedBy) : null,
   });
   return {
     goal: context.goal ? entry(context.goal) : null,
@@ -255,8 +257,8 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
         return {
           goal: context.goal.text,
           scope: context.scope?.text ?? "",
-          constraints: context.constraints.map(({ text }) => text),
-          decisions: context.decisions.map(({ text }) => text),
+          constraints: context.constraints.filter((entry) => entry.status === "active").map(({ text }) => text),
+          decisions: context.decisions.filter((entry) => entry.status === "active").map(({ text }) => text),
           version: context.revision,
           approvedBy: toActor(context.goal.updatedBy),
           approvedAt: context.goal.updatedAt,

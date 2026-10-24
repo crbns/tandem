@@ -68,7 +68,8 @@ interface Draft {
   ownerUserId: string;
   rationale: string;
   expectedVersion: number;
-  entryIndex?: number;
+  entryId?: string;
+  supersedes?: string;
 }
 
 export function ContextFieldPanel({
@@ -87,18 +88,17 @@ export function ContextFieldPanel({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const open = (entry?: ContextEntry, index?: number) => {
+  const open = (entry?: ContextEntry, supersedes?: string) => {
     setError(null);
     setDraft({
-      text:
+      text: supersedes ? "" :
         field === "ownership" ? (entry?.ownerArea ?? "") : (entry?.text ?? ""),
       sourceFileIds: [...(entry?.sourceFileIds ?? [])],
       ownerUserId: entry?.ownerUserId ?? "",
       rationale: "",
       expectedVersion: version,
-      ...(index === undefined || replacesValue(field)
-        ? {}
-        : { entryIndex: index }),
+      ...(entry && !supersedes && !replacesValue(field) ? { entryId: entry.id } : {}),
+      ...(supersedes ? { supersedes } : {}),
     });
   };
   async function save(event: FormEvent) {
@@ -113,24 +113,23 @@ export function ContextFieldPanel({
       ...(field === "ownership" ? { ownerUserId: draft.ownerUserId } : {}),
     };
     try {
-      if (canEdit)
+      let message = `${FIELD_LABELS[field]} saved.`;
+      if (canEdit && !draft.supersedes)
         await api.updateContextField(workspaceId, {
           ...input,
           expectedVersion: draft.expectedVersion,
-          ...(draft.entryIndex === undefined
-            ? {}
-            : { entryIndex: draft.entryIndex }),
+          ...(draft.entryId ? { entryId: draft.entryId } : {}),
         });
-      else
-        await api.proposeContextChange(workspaceId, {
+      else {
+        const result = await api.proposeContextChange(workspaceId, {
           ...input,
           rationale: draft.rationale,
+          expectedVersion: draft.expectedVersion,
+          ...(draft.supersedes ? { supersedes: draft.supersedes } : {}),
         });
-      toast.success(
-        canEdit
-          ? `${FIELD_LABELS[field]} saved.`
-          : "Proposal sent to Approvals.",
-      );
+        message = result.status === "applied" ? `${FIELD_LABELS[field]} recorded.` : "Proposal sent to Approvals.";
+      }
+      toast.success(message);
       setDraft(null);
       onSaved();
     } catch (err) {
@@ -143,6 +142,27 @@ export function ContextFieldPanel({
       onSaved();
     } finally {
       setBusy(false);
+    }
+  }
+  async function changeStatus(entry: ContextEntry, operation: "resolve" | "remove") {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.proposeContextChange(workspaceId, {
+        field, operation, entryId: entry.id, expectedVersion: version,
+        sourceFileIds: entry.sourceFileIds,
+        rationale: operation === "resolve" ? "Resolved from project context." : "Removed from project context.",
+      });
+      toast.success(operation === "resolve" ? "Question resolved." : `${FIELD_LABELS[field]} removed.`);
+      setDraft(null);
+    } catch (err) {
+      const failure = normalizeError(err);
+      setError(failure.code === "VERSION_CONFLICT"
+        ? "Context changed. Review the refreshed entries before trying again."
+        : ERROR_COPY[failure.code].description);
+    } finally {
+      setBusy(false);
+      onSaved();
     }
   }
   return (
@@ -165,7 +185,7 @@ export function ContextFieldPanel({
               ? replacesValue(field)
                 ? "Edit"
                 : "Add"
-              : "Propose change"}
+              : field === "constraint" || field === "open_question" ? "Add" : "Propose change"}
           </Button>
         )}
       </div>
@@ -176,23 +196,44 @@ export function ContextFieldPanel({
       ) : (
         <ul className="divide-y">
           {entries.map((entry, index) => (
-            <li key={index} className="flex flex-col gap-2 py-3 last:pb-0">
+            <li key={entry.id} className="flex flex-col gap-2 py-3 last:pb-0">
               <div className="flex items-start justify-between gap-3">
                 <p className="whitespace-pre-wrap break-words text-sm">
                   {entry.text}
                 </p>
-                {canEdit && !replacesValue(field) && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    aria-label={`Edit ${FIELD_LABELS[field]} ${index + 1}`}
-                    onClick={() => open(entry, index)}
-                  >
-                    Edit
-                  </Button>
-                )}
+                <div className="flex shrink-0 gap-1">
+                  {canEdit && entry.status === "active" && !replacesValue(field) && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      aria-label={`Edit ${FIELD_LABELS[field]} ${index + 1}`}
+                      onClick={() => open(entry)}
+                    >
+                      Edit
+                    </Button>
+                  )}
+                  {(canEdit || canPropose) && entry.status === "active" && field === "decision" && (
+                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => open(entry, entry.id)} aria-label={`Supersede decision ${index + 1}`}>Supersede</Button>
+                  )}
+                  {(canEdit || canPropose) && entry.status === "active" && field === "open_question" && (
+                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => void changeStatus(entry, "resolve")} aria-label={`Resolve open question ${index + 1}`}>Resolve</Button>
+                  )}
+                  {(canEdit || canPropose) && (field === "constraint" || field === "open_question") && (
+                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => void changeStatus(entry, "remove")} aria-label={`Remove ${FIELD_LABELS[field]} ${index + 1}`}>Remove</Button>
+                  )}
+                </div>
               </div>
+              {entry.status === "resolved" && (
+                <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>Resolved</span>
+                  {entry.resolvedBy && <ActorBadge actor={entry.resolvedBy} />}
+                  {entry.resolvedAt !== null && <time dateTime={new Date(entry.resolvedAt).toISOString()}>{formatAbsolute(entry.resolvedAt)}</time>}
+                </p>
+              )}
+              {entry.status === "superseded" && (
+                <p className="text-xs text-muted-foreground">Superseded{entry.supersededBy ? ` by ${displayId(entry.supersededBy)}` : ""}</p>
+              )}
               <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                 <span>Set by</span>
                 <ActorBadge actor={entry.updatedBy} />
@@ -209,11 +250,13 @@ export function ContextFieldPanel({
           ))}
         </ul>
       )}
+      {error && !draft && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
       {draft && (
         <form
           onSubmit={(event) => void save(event)}
           className="mt-4 flex flex-col gap-3 border-t pt-4"
         >
+          {draft.supersedes && <p className="text-xs text-muted-foreground">Propose a replacement decision. The existing decision stays active until approval.</p>}
           <Label htmlFor={`value-${field}`}>
             {field === "ownership"
               ? "Area of responsibility"
@@ -268,7 +311,7 @@ export function ContextFieldPanel({
               </select>
             </>
           )}
-          {!canEdit && (
+          {(!canEdit || draft.supersedes) && (
             <>
               <Label htmlFor={`reason-${field}`}>Reason for change</Label>
               <Input
@@ -316,7 +359,7 @@ export function ContextFieldPanel({
           )}
           <div className="flex gap-2">
             <Button size="sm" disabled={busy}>
-              {busy ? "Saving…" : canEdit ? "Save" : "Send proposal"}
+              {busy ? "Saving…" : draft.supersedes ? "Send proposal" : canEdit ? "Save" : field === "constraint" || field === "open_question" ? "Record" : "Send proposal"}
             </Button>
             <Button
               type="button"

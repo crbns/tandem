@@ -12,6 +12,17 @@ const actor = v.object({
 });
 
 const contextValue = v.object({
+  id: v.optional(v.string()),
+  status: v.optional(
+    v.union(
+      v.literal("active"),
+      v.literal("resolved"),
+      v.literal("superseded"),
+    ),
+  ),
+  resolvedBy: v.optional(actor),
+  resolvedAt: v.optional(v.number()),
+  supersededBy: v.optional(v.string()),
   text: v.string(),
   sourceFileIds: v.array(v.id("files")),
   updatedBy: actor,
@@ -186,6 +197,7 @@ export default defineSchema({
     proposedValue: v.string(),
     rationale: v.string(),
     sourceFileIds: v.array(v.id("files")),
+    supersedes: v.optional(v.string()),
     contextRevision: v.optional(v.number()),
     // Snapshot the scalar field a proposal is based on. Append-only fields do
     // not need a base value because separate proposals do not overwrite them.
@@ -196,6 +208,7 @@ export default defineSchema({
     ownerArea: v.optional(v.string()),
     status: v.union(
       v.literal("pending"),
+      v.literal("applied"),
       v.literal("approved"),
       v.literal("rejected"),
       v.literal("stale"),

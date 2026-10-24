@@ -1,5 +1,6 @@
 import type {
   ContextChangeInput,
+  ContextProposalInput,
   ContextDetails,
   PublishedWorkPage,
   WorkspaceMember,
@@ -52,8 +53,8 @@ export interface TandemApi {
   getContext(workspaceId: string): Promise<ProjectContext | null>;
   getContextDetails(workspaceId: string): Promise<ContextDetails>;
   listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]>;
-  updateContextField(workspaceId: string, input: ContextChangeInput & { expectedVersion: number; entryIndex?: number }): Promise<{ version: number }>;
-  proposeContextChange(workspaceId: string, input: ContextChangeInput & { rationale: string }): Promise<string>;
+  updateContextField(workspaceId: string, input: ContextChangeInput & { expectedVersion: number; entryId?: string; entryIndex?: number }): Promise<{ version: number }>;
+  proposeContextChange(workspaceId: string, input: ContextProposalInput): Promise<{ id: string; status: "pending" | "applied" }>;
   /** Newest first, cursor-paginated; maximum page size is 100. */
   listPublishedWork(workspaceId: string, cursor?: string | null, pageSize?: number): Promise<PublishedWorkPage>;
   /** Newest first, at most 100. Every member may read them. */

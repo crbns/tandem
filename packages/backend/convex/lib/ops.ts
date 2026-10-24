@@ -231,25 +231,61 @@ export function ownershipText(area: string, owner: Doc<"users">): string {
   return `${area}: ${owner.name ?? owner.email ?? "Workspace member"}`;
 }
 
+/** Deterministic fallback IDs keep legacy reads stable until the backfill runs. */
+export function normalizeContext(context: Doc<"structured_context">) {
+  const entries = (
+    key: "constraints" | "decisions" | "ownership" | "openQuestions",
+  ) =>
+    context[key].map((entry, index) => ({
+      ...entry,
+      id: entry.id ?? `${context._id}:${key}:${index}`,
+    }));
+  return {
+    ...context,
+    constraints: entries("constraints"),
+    decisions: entries("decisions"),
+    ownership: entries("ownership"),
+    openQuestions: entries("openQuestions"),
+  };
+}
+
 export async function proposeContextChangeCore(
   ctx: MutationCtx,
   args: {
     workspaceId: Id<"workspaces">;
     field: ContextField;
     /** For ownership, the area being assigned. */
-    proposedValue: string;
+    proposedValue?: string;
     rationale: string;
     sourceFileIds: Id<"files">[];
     /** Untrusted; required for ownership and rejected for every other field. */
     ownerUserId?: string;
     actor: Actor;
+    operation?: "add" | "resolve" | "remove";
+    entryId?: string;
+    supersedes?: string;
+    expectedVersion?: number;
   },
 ): Promise<Doc<"context_proposals">> {
   const { workspaceId, actor, field } = args;
-  let proposedValue = args.proposedValue;
+  const operation = args.operation ?? "add";
+  const working = field === "constraint" || field === "open_question";
+  if (
+    (operation === "resolve" && field !== "open_question") ||
+    (operation === "remove" && (!working || actor.type !== "human")) ||
+    (operation !== "add" &&
+      (!args.entryId || args.expectedVersion === undefined)) ||
+    (operation === "add" && args.entryId !== undefined) ||
+    (args.supersedes !== undefined &&
+      (field !== "decision" || operation !== "add"))
+  )
+    throw new ConvexError({ code: "INVALID_INPUT" });
+  let proposedValue = (args.proposedValue ?? "").trim();
+  if (operation === "add" && (!proposedValue || proposedValue.length > 10000))
+    throw new ConvexError({ code: "INVALID_INPUT", field: "proposedValue" });
   let owner: { ownerUserId: Id<"users">; ownerArea: string } | undefined;
   if (field === "ownership") {
-    const area = args.proposedValue.trim();
+    const area = proposedValue;
     if (!area || area.length > MAX_OWNER_AREA_LENGTH)
       throw new ConvexError({ code: "INVALID_INPUT", field: "proposedValue" });
     if (args.ownerUserId === undefined)
@@ -265,6 +301,60 @@ export async function proposeContextChangeCore(
     .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
     .unique();
   if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
+  if (
+    args.expectedVersion !== undefined &&
+    args.expectedVersion !== context.revision
+  )
+    throw new ConvexError({
+      code: "VERSION_CONFLICT",
+      currentVersion: context.revision,
+    });
+  const normalized = normalizeContext(context);
+  if (
+    args.supersedes !== undefined &&
+    !normalized.decisions.some(
+      (e) => e.id === args.supersedes && (!e.status || e.status === "active"),
+    )
+  )
+    throw new ConvexError({ code: "INVALID_INPUT", field: "supersedes" });
+  if (operation !== "add") {
+    const key = field === "constraint" ? "constraints" : "openQuestions";
+    const target = normalized[key].find((e) => e.id === args.entryId);
+    if (!target || (operation === "resolve" && target.status === "resolved"))
+      throw new ConvexError({ code: "INVALID_INPUT", field: "entryId" });
+    const now = Date.now();
+    const entries =
+      operation === "remove"
+        ? normalized[key].filter((e) => e.id !== args.entryId)
+        : normalized[key].map((e) =>
+            e.id === args.entryId
+              ? {
+                  ...e,
+                  status: "resolved" as const,
+                  resolvedBy: actor,
+                  resolvedAt: now,
+                }
+              : e,
+          );
+    await ctx.db.patch(context._id, {
+      constraints: normalized.constraints,
+      decisions: normalized.decisions,
+      ownership: normalized.ownership,
+      openQuestions: normalized.openQuestions,
+      [key]: entries,
+      revision: context.revision + 1,
+      updatedBy: actor,
+      updatedAt: now,
+    });
+    proposedValue = target.text;
+  } else if (working) {
+    await applyApprovedProposal(
+      ctx,
+      { workspaceId, field, proposedValue, sourceFileIds: args.sourceFileIds },
+      actor,
+      Date.now(),
+    );
+  }
   const currentField =
     field === "goal"
       ? (context.goal?.text ?? null)
@@ -278,10 +368,11 @@ export async function proposeContextChangeCore(
     proposedValue,
     rationale: args.rationale,
     sourceFileIds: args.sourceFileIds,
-    contextRevision: context.revision,
+    contextRevision: context.revision + (working ? 1 : 0),
+    ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
     ...(currentField !== undefined ? { baseValue: currentField } : {}),
     ...owner,
-    status: "pending",
+    status: working ? "applied" : "pending",
     createdBy: actor,
     createdAt: now,
     updatedBy: actor,
@@ -290,10 +381,12 @@ export async function proposeContextChangeCore(
   });
   await recordWorkspaceEvent(ctx, {
     workspaceId,
-    kind: "context.proposed",
+    kind: working
+      ? `context.${operation === "add" ? "recorded" : operation === "resolve" ? "resolved" : "removed"}`
+      : "context.proposed",
     entityType: "context_proposal",
     entityId: proposalId,
-    summary: `Proposed a change to ${field.replaceAll("_", " ")}`,
+    summary: `${working ? "Applied" : "Proposed"} ${operation} to ${field.replaceAll("_", " ")}`,
     actor,
   });
   const proposal = await ctx.db.get(proposalId);
@@ -307,6 +400,7 @@ export function toProposal(proposal: Doc<"context_proposals">) {
     workspaceId: proposal.workspaceId,
     field: proposal.field,
     proposedValue: proposal.proposedValue,
+    supersedes: proposal.supersedes ?? null,
     rationale: proposal.rationale,
     sourceFileIds: proposal.sourceFileIds,
     status: proposal.status,
@@ -397,33 +491,36 @@ export function toPublishedWork(work: Doc<"published_work">) {
 }
 
 /** Approved context in the same compact shape as workspaces:getWorkspaceContext. */
-export async function loadContext(
-  ctx: ReadCtx,
-  workspaceId: Id<"workspaces">,
-) {
+export async function loadContext(ctx: ReadCtx, workspaceId: Id<"workspaces">) {
   const context = await ctx.db
     .query("structured_context")
     .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
     .unique();
   if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
   type ContextEntry = NonNullable<Doc<"structured_context">["goal"]>;
-  const compact = ({ text, sourceFileIds, updatedAt, updatedBy }: ContextEntry) => ({
-    text,
-    sourceFileIds,
-    updatedAt,
-    updatedBy,
+  const normalized = normalizeContext(context);
+  const compact = (entry: ContextEntry) => ({
+    text: entry.text,
+    sourceFileIds: entry.sourceFileIds,
+    updatedAt: entry.updatedAt,
+    updatedBy: entry.updatedBy,
+    id: entry.id ?? `${context._id}:scalar`,
+    status: entry.status ?? ("active" as const),
+    resolvedBy: entry.resolvedBy ?? null,
+    resolvedAt: entry.resolvedAt ?? null,
+    supersededBy: entry.supersededBy ?? null,
   });
   return {
     goal: context.goal ? compact(context.goal) : null,
     scope: context.scope ? compact(context.scope) : null,
-    constraints: context.constraints.map(compact),
-    decisions: context.decisions.map(compact),
-    ownership: context.ownership.map((entry) => ({
+    constraints: normalized.constraints.map(compact),
+    decisions: normalized.decisions.map(compact),
+    ownership: normalized.ownership.map((entry) => ({
       ...compact(entry),
       ownerUserId: entry.ownerUserId ?? null,
       ownerArea: entry.ownerArea ?? null,
     })),
-    openQuestions: context.openQuestions.map(compact),
+    openQuestions: normalized.openQuestions.map(compact),
     revision: context.revision,
     updatedAt: context.updatedAt,
     updatedBy: context.updatedBy,
@@ -475,7 +572,10 @@ export async function searchFilesCore(
     if (!nameMatch && at === -1) continue;
     results.push({
       file: toFileMetadata(file),
-      snippet: at === -1 ? snippet(content, 0, 0) : snippet(content, at, needle.length),
+      snippet:
+        at === -1
+          ? snippet(content, 0, 0)
+          : snippet(content, at, needle.length),
       match: nameMatch ? "name" : "content",
     });
   }
@@ -491,7 +591,10 @@ export async function searchFilesCore(
 /** ~SNIPPET_CHARS of `content` centred on [at, at+length), whitespace collapsed. */
 function snippet(content: string, at: number, length: number): string {
   const lead = Math.max(0, Math.floor((SNIPPET_CHARS - length) / 2));
-  const start = Math.max(0, Math.min(at - lead, content.length - SNIPPET_CHARS));
+  const start = Math.max(
+    0,
+    Math.min(at - lead, content.length - SNIPPET_CHARS),
+  );
   const end = start + SNIPPET_CHARS;
   const text = content.slice(start, end).replace(/\s+/g, " ").trim();
   return (start > 0 ? "…" : "") + text + (end < content.length ? "…" : "");
@@ -600,7 +703,8 @@ export async function syncCore(
     const publications = await ctx.db
       .query("workspace_events")
       .withIndex("by_workspace_and_kind_and_seq", (q) =>
-        q.eq("workspaceId", workspaceId)
+        q
+          .eq("workspaceId", workspaceId)
           .eq("kind", "work.published")
           .gt("seq", sinceSeq)
           .lte("seq", cursorSeq),
@@ -622,6 +726,9 @@ export async function syncCore(
       id: p._id,
       field: p.field,
       rationale: p.rationale,
+      proposedValue: p.proposedValue,
+      supersedes: p.supersedes ?? null,
+      status: "pending" as const,
       createdBy: p.createdBy,
       createdAt: p.createdAt,
     })),
@@ -634,4 +741,126 @@ export async function syncCore(
     headSeq,
     cursorSeq,
   };
+}
+
+export async function applyApprovedProposal(
+  ctx: MutationCtx,
+  proposal: Pick<
+    Doc<"context_proposals">,
+    | "workspaceId"
+    | "field"
+    | "proposedValue"
+    | "sourceFileIds"
+    | "ownerUserId"
+    | "ownerArea"
+    | "supersedes"
+  >,
+  actor: Actor,
+  now: number,
+  entryIndex?: number,
+) {
+  const stored = await ctx.db
+    .query("structured_context")
+    .withIndex("by_workspace", (q) => q.eq("workspaceId", proposal.workspaceId))
+    .unique();
+  if (!stored) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
+  const context = normalizeContext(stored);
+  const value = {
+    id: crypto.randomUUID(),
+    status: "active" as const,
+    text: proposal.proposedValue,
+    sourceFileIds: proposal.sourceFileIds,
+    updatedBy: actor,
+    updatedAt: now,
+  };
+  const next = {
+    constraints: context.constraints,
+    decisions: context.decisions,
+    ownership: context.ownership,
+    openQuestions: context.openQuestions,
+    revision: context.revision + 1,
+    updatedAt: now,
+    updatedBy: actor,
+  };
+  const put = <T extends { id?: string }>(entries: T[], entry: T) =>
+    entryIndex === undefined
+      ? [...entries, entry]
+      : entries.map((old, index) =>
+          index === entryIndex ? { ...entry, id: old.id } : old,
+        );
+  switch (proposal.field) {
+    case "goal":
+      await ctx.db.patch(context._id, { ...next, goal: value });
+      break;
+    case "scope":
+      await ctx.db.patch(context._id, { ...next, scope: value });
+      break;
+    case "constraint":
+      await ctx.db.patch(context._id, {
+        ...next,
+        constraints: put(context.constraints, value),
+      });
+      break;
+    case "decision": {
+      const old = proposal.supersedes
+        ? context.decisions.find((e) => e.id === proposal.supersedes)
+        : null;
+      if (
+        proposal.supersedes &&
+        (!old || (old.status && old.status !== "active"))
+      )
+        throw new ConvexError({ code: "INVALID_INPUT", field: "supersedes" });
+      const decisions = context.decisions.map((e) =>
+        e.id === proposal.supersedes
+          ? { ...e, status: "superseded" as const, supersededBy: value.id }
+          : e,
+      );
+      await ctx.db.patch(context._id, {
+        ...next,
+        decisions: put(decisions, value),
+      });
+      break;
+    }
+    case "ownership": {
+      // Re-checked on approval: the owner may have left since the proposal.
+      // Legacy free-text proposals have no owner to check and can't be approved.
+      if (!proposal.ownerUserId || !proposal.ownerArea)
+        throw new ConvexError({ code: "INVALID_INPUT", field: "ownerUserId" });
+      const owner = await requireOwnerMember(
+        ctx,
+        proposal.workspaceId,
+        proposal.ownerUserId,
+      );
+      // One owner per area: approval replaces the owner of an equal area.
+      const area = nameKey(proposal.ownerArea);
+      await ctx.db.patch(context._id, {
+        ...next,
+        ownership: [
+          ...context.ownership.filter(
+            (entry, index) =>
+              index !== entryIndex &&
+              (entry.ownerArea === undefined ||
+                nameKey(entry.ownerArea) !== area),
+          ),
+          {
+            ...value,
+            id:
+              entryIndex === undefined
+                ? value.id
+                : context.ownership[entryIndex]!.id,
+            text: ownershipText(proposal.ownerArea, owner),
+            ownerUserId: owner._id,
+            ownerArea: proposal.ownerArea,
+          },
+        ],
+      });
+      break;
+    }
+    case "open_question":
+      await ctx.db.patch(context._id, {
+        ...next,
+        openQuestions: put(context.openQuestions, value),
+      });
+      break;
+  }
 }

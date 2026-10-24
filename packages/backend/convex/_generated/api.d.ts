@@ -11,6 +11,7 @@
 import type * as agentConnections from "../agentConnections.js";
 import type * as auth from "../auth.js";
 import type * as context from "../context.js";
+import type * as contextMigrations from "../contextMigrations.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as lib_agent from "../lib/agent.js";
@@ -36,6 +37,7 @@ declare const fullApi: ApiFromModules<{
   agentConnections: typeof agentConnections;
   auth: typeof auth;
   context: typeof context;
+  contextMigrations: typeof contextMigrations;
   files: typeof files;
   http: typeof http;
   "lib/agent": typeof lib_agent;

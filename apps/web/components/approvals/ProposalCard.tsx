@@ -53,6 +53,10 @@ export function ProposalCard({ proposal, current, canDecide, deciding, busy, onD
             <dd className={cn(!current && "text-muted-foreground")}>{current || `No ${label.toLowerCase()} approved yet`}</dd>
           </>
         )}
+        {proposal.supersedes && (<>
+          <dt className="label-caps pt-0.5 text-muted-foreground">Supersedes</dt>
+          <dd>{displayId(proposal.supersedes)}</dd>
+        </>)}
         <dt className="label-caps pt-0.5 text-muted-foreground">Why</dt>
         <dd className={cn(!proposal.rationale && "text-muted-foreground")}>{proposal.rationale || "No reason given"}</dd>
         {proposal.sourceFileIds.length > 0 && (
@@ -91,6 +95,7 @@ export function ProposalCard({ proposal, current, canDecide, deciding, busy, onD
 
 const STATUS_STYLE: Record<ContextProposal["status"], { label: string; className: string }> = {
   pending: { label: "Pending", className: "text-muted-foreground" },
+  applied: { label: "Recorded", className: "text-archive" },
   approved: { label: "Approved", className: "text-archive" },
   rejected: { label: "Rejected", className: "text-muted-foreground" },
   stale: { label: "Stale", className: "text-warn" },
@@ -112,11 +117,11 @@ export function DecidedProposal({ proposal }: { proposal: ContextProposal }) {
         </span>
       </div>
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-        <span>proposed by</span>
+        <span>{proposal.status === "applied" ? "recorded by" : "proposed by"}</span>
         <ActorBadge actor={proposal.createdBy} />
         {proposal.decidedBy ? (
           <>
-            <span>· {proposal.status === "approved" ? "approved" : "rejected"} by</span>
+            <span>· {proposal.status === "applied" ? "recorded" : proposal.status === "approved" ? "approved" : "rejected"} by</span>
             <ActorBadge actor={proposal.decidedBy} />
           </>
         ) : (

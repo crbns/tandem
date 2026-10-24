@@ -954,7 +954,7 @@ describe("ownership proposals (review M1)", () => {
 
     // Alex (still a member) is approved, and a later proposal for the same
     // area (trimmed, case-insensitive) replaces the owner instead of adding one.
-    const first = await alex.mutation(api.context.proposeContextChange, {
+    const { id: first } = await alex.mutation(api.context.proposeContextChange, {
       workspaceId,
       field: "ownership",
       proposedValue: "Payments",
@@ -1072,7 +1072,7 @@ describe("list_files query (review L4)", () => {
 describe("decideContextProposal (review L5)", () => {
   it("checks the caller before revealing whether a proposal exists", async () => {
     const { t, alex, workspaceId } = await setup();
-    const proposalId = await alex.mutation(api.context.proposeContextChange, {
+    const { id: proposalId } = await alex.mutation(api.context.proposeContextChange, {
       workspaceId,
       field: "goal",
       proposedValue: "Ship",
@@ -1223,7 +1223,7 @@ describe("dashboard project context (#24)", () => {
       await errorData(sam.mutation(api.context.updateContextField, input)),
     ).toMatchObject({ code: "FORBIDDEN" });
     const { expectedVersion: _, ...proposalInput } = input;
-    const id = await sam.mutation(api.context.proposeContextChange, {
+    const { id } = await sam.mutation(api.context.proposeContextChange, {
       ...proposalInput,
       rationale: "Agreed in standup",
     });
@@ -1693,5 +1693,323 @@ describe("OAuth consent", () => {
       scopes_supported: ["tandem:read", "tandem:write"],
     });
     expect(asm.device_authorization_endpoint).toBeUndefined();
+  });
+});
+
+describe("context tiers (#25)", () => {
+  it("records working context immediately and retains resolved questions with attribution", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
+    const before = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    const { proposal } = await t.mutation(internal.mcpTools.proposeContextChange, {
+      principal: token,
+      field: "open_question",
+      proposedValue: "Who reviews the demo?",
+      rationale: "Needs an answer",
+      sourceFileIds: [],
+    });
+    expect(proposal.status).toBe("applied");
+    const added = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: token,
+      sinceSeq: before.cursorSeq,
+    });
+    const question = added.context.openQuestions[0]!;
+    expect(question).toMatchObject({
+      text: "Who reviews the demo?",
+      status: "active",
+      updatedBy: { type: "agent" },
+    });
+    expect(question.id).toBeTruthy();
+    expect(added.context.revision).toBe(before.context.revision + 1);
+    expect(added.pendingProposals).toEqual([]);
+    expect(added.events.some((e) => e.kind === "context.recorded")).toBe(true);
+    const resolve = {
+      principal: token,
+      field: "open_question" as const,
+      operation: "resolve" as const,
+      entryId: question.id,
+      proposedValue: "Resolved",
+      rationale: "Alex reviews",
+      sourceFileIds: [],
+      expectedVersion: added.context.revision,
+    };
+    expect(
+      (await t.mutation(internal.mcpTools.proposeContextChange, resolve)).proposal.status,
+    ).toBe("applied");
+    const resolved = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    expect(resolved.context.openQuestions).toHaveLength(1);
+    expect(resolved.context.openQuestions[0]).toMatchObject({
+      id: question.id,
+      status: "resolved",
+      resolvedBy: { type: "agent" },
+      resolvedAt: expect.any(Number),
+    });
+    expect(
+      await errorData(
+        t.mutation(internal.mcpTools.proposeContextChange, {
+          ...resolve,
+          operation: "remove",
+          expectedVersion: resolved.context.revision,
+        }),
+      ),
+    ).toMatchObject({ code: "INVALID_INPUT" });
+    await alex.mutation(api.context.proposeContextChange, {
+      workspaceId,
+      field: "open_question",
+      operation: "remove",
+      entryId: question.id,
+      proposedValue: "Remove",
+      rationale: "Cleanup",
+      sourceFileIds: [],
+      expectedVersion: resolved.context.revision,
+    });
+    expect(
+      (await alex.query(api.context.getDetails, { workspaceId })).openQuestions,
+    ).toEqual([]);
+  });
+
+  it("keeps a superseding decision pending until approval and marks the previous entry as history", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId,
+      field: "decision",
+      proposedValue: "D1",
+      sourceFileIds: [],
+      expectedVersion: 1,
+    });
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
+    const initial = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    const d1 = initial.context.decisions[0]!;
+    const { proposal } = await t.mutation(internal.mcpTools.proposeContextChange, {
+      principal: token,
+      field: "decision",
+      proposedValue: "D2",
+      rationale: "New evidence",
+      sourceFileIds: [],
+      supersedes: d1.id,
+    });
+    expect(proposal.status).toBe("pending");
+    const pending = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    expect(pending.context.decisions).toMatchObject([
+      { id: d1.id, status: "active" },
+    ]);
+    expect(pending.pendingProposals).toMatchObject([
+      { status: "pending", proposedValue: "D2", supersedes: d1.id },
+    ]);
+    await alex.mutation(api.context.decideContextProposal, {
+      proposalId: proposal.id,
+      decision: "approved",
+    });
+    const approved = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    expect(approved.context.decisions).toHaveLength(2);
+    expect(approved.context.decisions[0]).toMatchObject({
+      id: d1.id,
+      status: "superseded",
+      supersededBy: approved.context.decisions[1]!.id,
+    });
+    expect(approved.context.decisions[1]).toMatchObject({
+      text: "D2",
+      status: "active",
+    });
+    expect(approved.pendingProposals).toEqual([]);
+    // A second proposal based on the same old decision becomes stale on approval.
+    const stale = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("context_proposals", {
+        workspaceId,
+        field: "decision",
+        proposedValue: "D3",
+        rationale: "old",
+        sourceFileIds: [],
+        supersedes: d1.id,
+        contextRevision: 2,
+        status: "pending",
+        createdBy: d1.updatedBy,
+        updatedBy: d1.updatedBy,
+        createdAt: 1,
+        updatedAt: 1,
+        revision: 1,
+      });
+      return id;
+    });
+    await alex.mutation(api.context.decideContextProposal, {
+      proposalId: stale,
+      decision: "approved",
+    });
+    expect((await t.run((ctx) => ctx.db.get(stale)))?.status).toBe("stale");
+  });
+
+  it("backfills legacy IDs in pages, preserves read IDs and is idempotent", async () => {
+    const { t, alex, workspaceId } = await setup();
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("structured_context")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
+        .unique();
+      await ctx.db.patch(row!._id, {
+        constraints: [
+          {
+            text: "Legacy",
+            sourceFileIds: [],
+            updatedBy: row!.updatedBy,
+            updatedAt: 1,
+          },
+        ],
+        decisions: [
+          {
+            text: "Old decision",
+            sourceFileIds: [],
+            updatedBy: row!.updatedBy,
+            updatedAt: 1,
+          },
+        ],
+      });
+    });
+    const before = await alex.query(api.context.getDetails, { workspaceId });
+    const { internal } = await import("./_generated/api");
+    const result = await t.mutation(
+      internal.contextMigrations.backfillEntryIds,
+      { paginationOpts: { numItems: 50, cursor: null } },
+    );
+    expect(result.migrated).toBe(1);
+    const after = await alex.query(api.context.getDetails, { workspaceId });
+    expect(after.constraints[0]!.id).toBe(before.constraints[0]!.id);
+    expect(after.decisions[0]!.id).toBe(before.decisions[0]!.id);
+    expect(after.revision).toBe(before.revision + 1);
+    expect(
+      (
+        await t.mutation(internal.contextMigrations.backfillEntryIds, {
+          paginationOpts: { numItems: 50, cursor: null },
+        })
+      ).migrated,
+    ).toBe(0);
+    expect(
+      (await alex.query(api.context.getDetails, { workspaceId })).revision,
+    ).toBe(after.revision);
+  });
+});
+
+describe("context lifecycle review regressions", () => {
+  it("preserves ownership identity when editing by ID or legacy index", async () => {
+    const { alex, samId, workspaceId } = await setup();
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId,
+      field: "ownership",
+      proposedValue: "Original area",
+      ownerUserId: samId,
+      sourceFileIds: [],
+      expectedVersion: 1,
+    });
+    let context = await alex.query(api.context.getDetails, { workspaceId });
+    const id = context.ownership[0]!.id;
+    for (const target of [{ entryId: id }, { entryIndex: 0 }]) {
+      await alex.mutation(api.context.updateContextField, {
+        workspaceId,
+        field: "ownership",
+        proposedValue: `Renamed ${context.revision}`,
+        ownerUserId: samId,
+        sourceFileIds: [],
+        expectedVersion: context.revision,
+        ...target,
+      });
+      context = await alex.query(api.context.getDetails, { workspaceId });
+      expect(context.ownership).toMatchObject([{ id, ownerUserId: samId }]);
+      expect(context.ownership).toHaveLength(1);
+    }
+  });
+
+  it.each([undefined, "Ignored".repeat(500)])(
+    "resolves a dashboard-created long question without depending on the supplied value (%#)",
+    async (proposedValue) => {
+      const { t, alex, sam, workspaceId } = await setup();
+      const text = "Q".repeat(3000);
+      await alex.mutation(api.context.updateContextField, {
+        workspaceId,
+        field: "open_question",
+        proposedValue: text,
+        sourceFileIds: [],
+        expectedVersion: 1,
+      });
+      const { token } = await connect(sam, { workspaceId, client: "claude" });
+      const before = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+      const entry = before.context.openQuestions[0]!;
+      const result = await t.mutation(internal.mcpTools.proposeContextChange, {
+        principal: token,
+        field: "open_question",
+        operation: "resolve",
+        entryId: entry.id,
+        expectedVersion: before.context.revision,
+        ...(proposedValue === undefined ? {} : { proposedValue }),
+        rationale: "Answered",
+        sourceFileIds: [],
+      });
+      expect(result.proposal).toMatchObject({
+        status: "applied",
+        proposedValue: text,
+      });
+      const after = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+      expect(after.context.openQuestions[0]).toMatchObject({
+        id: entry.id,
+        text,
+        status: "resolved",
+        resolvedBy: { type: "agent" },
+        resolvedAt: expect.any(Number),
+      });
+      await alex.mutation(api.context.proposeContextChange, {
+        workspaceId,
+        field: "open_question",
+        operation: "remove",
+        entryId: entry.id,
+        expectedVersion: after.context.revision,
+        rationale: "Cleanup",
+        sourceFileIds: [],
+      });
+      expect(
+        (await alex.query(api.context.getDetails, { workspaceId }))
+          .openQuestions,
+      ).toEqual([]);
+    },
+  );
+});
+
+describe("context tiers over the hosted MCP contract", () => {
+  it("maps stable IDs, lifecycle attribution and pending supersession through real tool handlers", async () => {
+    const { t, alex, sam, samId, workspaceId } = await setup();
+    const { apiKey, connectionId } = await connect(sam, { workspaceId, client: "claude" });
+    const added = await callTool(t, apiKey, "propose_context_change", {
+      field: "open_questions", proposed_value: "Who reviews?", rationale: "Planning",
+    });
+    expect(added.isError).toBeUndefined();
+    expect(added.structuredContent.proposal).toMatchObject({ status: "applied", field: "open_questions", supersedes: null });
+    const sync = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
+    const question = sync.context.open_questions[0];
+    expect(question).toMatchObject({ id: expect.any(String), status: "active", resolved_at: null, resolved_by: null,
+      updated_by: { actor_type: "agent", user_id: samId, agent_connection_id: connectionId }, source_ids: [] });
+    expect(sync.pending_proposals).toEqual([]);
+    const resolved = await callTool(t, apiKey, "propose_context_change", {
+      field: "open_questions", operation: "resolve", entry_id: question.id, expected_version: sync.context_version,
+      rationale: "Answered", proposed_value: "Ignored".repeat(500),
+    });
+    expect(resolved.structuredContent.proposal).toMatchObject({ status: "applied", proposed_value: "Who reviews?" });
+    const after = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
+    expect(after.context.open_questions[0]).toMatchObject({ id: question.id, status: "resolved", resolved_at: expect.any(Number),
+      resolved_by: { actor_type: "agent", agent_connection_id: connectionId } });
+    await alex.mutation(api.context.updateContextField, { workspaceId, field: "decision", proposedValue: "D1", sourceFileIds: [], expectedVersion: after.context_version });
+    const initial = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
+    const d1 = initial.context.decisions[0];
+    const replacement = (await callTool(t, apiKey, "propose_context_change", {
+      field: "decisions", proposed_value: "D2", rationale: "New evidence", supersedes: d1.id,
+    })).structuredContent.proposal;
+    expect(replacement).toMatchObject({ status: "pending", supersedes: d1.id });
+    const pending = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
+    expect(pending.context.decisions).toMatchObject([{ id: d1.id, status: "active" }]);
+    expect(pending.pending_proposals).toMatchObject([{ id: replacement.id, status: "pending", proposed_value: "D2", supersedes: d1.id }]);
+    await alex.mutation(api.context.decideContextProposal, { proposalId: replacement.id, decision: "approved" });
+    const approved = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
+    expect(approved.context.decisions[0]).toMatchObject({ id: d1.id, status: "superseded", superseded_by: approved.context.decisions[1].id });
+    expect(approved.context.decisions[1]).toMatchObject({ text: "D2", status: "active" });
+    const recorded = await callTool(t, apiKey, "get_approvals", { status: "applied" });
+    expect(recorded.structuredContent.proposals.map((p: { status: string }) => p.status)).toEqual(["applied", "applied"]);
+    const missing = await callTool(t, apiKey, "propose_context_change", { field: "goal", rationale: "Missing addition value" });
+    expect(missing.structuredContent.error.code).toBe("INVALID_INPUT");
   });
 });

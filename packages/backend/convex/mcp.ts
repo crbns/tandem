@@ -197,8 +197,8 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
     sync_workspace: tool({
       title: "Sync workspace",
       description:
-        "Get the workspace's approved project context (goal, scope, constraints, decisions, ownership, open questions), " +
-        "summaries of pending proposals, changed files, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. Safe to call at the start of project work and again before a significant write. " +
+        "Get approved authoritative context (goal, scope, decisions, ownership), working constraints and open questions with retained resolved/superseded history, " +
+        "clearly labeled pending proposals (proposed text and supersedes target; not yet in effect), changed files, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. Safe to call at the start of project work and again before a significant write. " +
         "Read recent_work before starting; a snapshot contains the newest 20 publications. With since, it contains the newest 20 publications within this event page; later work arrives when you continue syncing. work_truncated means older matching work within that page (or snapshot) was omitted. " +
         "Without since you get a snapshot: the full context, all files (up to 50) and the latest events. " +
         "Pass the cursor from your previous sync as since to get only what changed after it; with since, events_truncated true means more events remain, so sync again with the new cursor. " +
@@ -389,14 +389,13 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
     propose_context_change: tool({
       title: "Propose context change",
       description:
-        "Propose a change to the approved project context. This NEVER changes the context: it creates a pending proposal " +
-        "that only a human workspace owner or admin can approve, in the Tandem dashboard. Tell the user it is pending. " +
-        "proposed_value depends on field: goal or scope: the full new text; constraints: the text of one new constraint (approval appends it; " +
-        "existing constraints can't be edited or removed through a proposal, so ask the user to change them in the dashboard); " +
-        "decisions: the text of one new decision; ownership: { area, owner_user_id } for one area, replacing that area's owner " +
-        "(get the owner's user_id from get_workspace_info.members; the owner must be a current workspace member, checked again on approval). " +
-        "Text values are 1–2000 characters; rationale (why, 1–2000 characters) is required. " +
-        "Cite up to 20 supporting files in this workspace in source_ids.",
+        "Update project context. Goal, scope, decisions and ownership create pending proposals requiring human owner/admin approval. " +
+        "Constraints and open_questions additions apply immediately (status applied). operation defaults to add. " +
+        "Resolve an open question with operation resolve, entry_id and expected_version from sync context_version; history is retained. " +
+        "Only humans can remove working entries. Resolve/remove require expected_version. " +
+        "A decisions addition may supersede an active decision ID using supersedes; the old decision changes only after approval. " +
+        "For add, proposed_value is required text (1–2000 characters), or { area, owner_user_id } for ownership; for resolve/remove omit it because it is ignored. " +
+        "Field and rationale (1–2000 characters) remain required. Cite up to 20 supporting files in source_ids.",
       args: {
         field: v.union(
           v.literal("goal"),
@@ -404,8 +403,13 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
           v.literal("constraints"),
           v.literal("decisions"),
           v.literal("ownership"),
+          v.literal("open_questions"),
         ),
-        proposed_value: v.union(v.string(), v.object({ area: v.string(), owner_user_id: v.string() })),
+        operation: v.optional(v.union(v.literal("add"), v.literal("resolve"), v.literal("remove"))),
+        entry_id: v.optional(v.string()),
+        supersedes: v.optional(v.string()),
+        expected_version: v.optional(v.number()),
+        proposed_value: v.optional(v.union(v.string(), v.object({ area: v.string(), owner_user_id: v.string() }))),
         rationale: v.string(),
         source_ids: v.optional(v.array(v.string())),
         workspace_id: v.optional(v.string()),
@@ -414,17 +418,24 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       scope: WRITE,
       handler: (ctx, args, user) =>
         run(ctx, user, async () => {
-          const value =
+          const operation = args.operation ?? "add";
+          if (operation !== "add" && (!args.entry_id || !Number.isSafeInteger(args.expected_version) || args.expected_version! < 0))
+            throw invalidInput("entry_id and expected_version are required for resolve/remove.");
+          const value = operation !== "add" ? undefined :
             typeof args.proposed_value === "string"
               ? text(args.proposed_value, "proposed_value", 2000)
-              : {
+              : args.proposed_value ? {
                   area: text(args.proposed_value.area, "proposed_value.area", 200),
                   owner_user_id: id(args.proposed_value.owner_user_id, "proposed_value.owner_user_id"),
-                };
+                } : undefined;
           const r = await ctx.runMutation(internal.mcpTools.proposeContextChange, {
             principal: p(user),
             workspaceId: args.workspace_id,
-            ...toBackendProposal(args.field, value),
+            ...toBackendProposal(args.field, value, operation),
+            operation,
+            entryId: args.entry_id,
+            supersedes: args.supersedes,
+            expectedVersion: args.expected_version,
             rationale: text(args.rationale, "rationale", 2000),
             sourceFileIds: ids(args.source_ids, "source_ids"),
           });
@@ -436,14 +447,15 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       title: "Get approvals",
       description:
         "List context proposals and their status, newest first: pending ones await a human owner or admin; approved and rejected ones show " +
-        "who decided, when, and any note; stale ones were not applied because the context changed after they were proposed (propose again against the current value). " +
-        'Use this when the user asks whether a proposal went through. status: "pending" (default), "approved", "rejected", "stale" or "all". limit: 1–50, default 20. ' +
+        "who decided, when, and any note; applied ones took effect immediately; stale ones were not applied because the context changed after they were proposed (propose again against the current value). " +
+        'Use this when the user asks whether a proposal went through. status: "pending" (default), "applied", "approved", "rejected", "stale" or "all". limit: 1–50, default 20. ' +
         `Proposal text: ${UNTRUSTED}`,
       args: {
         workspace_id: v.optional(v.string()),
         status: v.optional(
           v.union(
             v.literal("pending"),
+            v.literal("applied"),
             v.literal("approved"),
             v.literal("rejected"),
             v.literal("stale"),

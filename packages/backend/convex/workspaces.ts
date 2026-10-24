@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import { loadContext } from "./lib/ops";
+import { contextValidator } from "./lib/validators";
 import {
   ensureUser,
   humanActor,
@@ -16,13 +17,6 @@ const actorValidator = v.object({
   label: v.string(),
   client: v.optional(v.string()),
   userName: v.optional(v.string()),
-});
-
-const contextEntryValidator = v.object({
-  text: v.string(),
-  sourceFileIds: v.array(v.id("files")),
-  updatedAt: v.number(),
-  updatedBy: actorValidator,
 });
 
 export const initializeUser = mutation({
@@ -348,68 +342,11 @@ export const getWorkspaceInfo = query({
 
 export const getWorkspaceContext = query({
   args: { workspaceId: v.id("workspaces") },
-  returns: v.union(
-    v.object({
-      goal: v.union(
-        contextEntryValidator,
-        v.null(),
-      ),
-      scope: v.union(
-        contextEntryValidator,
-        v.null(),
-      ),
-      constraints: v.array(
-        contextEntryValidator,
-      ),
-      decisions: v.array(
-        contextEntryValidator,
-      ),
-      ownership: v.array(
-        contextEntryValidator,
-      ),
-      openQuestions: v.array(
-        contextEntryValidator,
-      ),
-      revision: v.number(),
-      updatedAt: v.number(),
-    }),
-    v.null(),
-  ),
+  returns: v.union(contextValidator, v.null()),
   handler: async (ctx, { workspaceId }) => {
     await requireMembership(ctx, workspaceId);
-    const context = await ctx.db
-      .query("structured_context")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
-      .unique();
-    if (!context) return null;
-    type ContextEntry = NonNullable<Doc<"structured_context">["goal"]>;
-    const compact = (value: ContextEntry | undefined) =>
-      value
-        ? {
-            text: value.text,
-            sourceFileIds: value.sourceFileIds,
-            updatedAt: value.updatedAt,
-            updatedBy: value.updatedBy,
-          }
-        : null;
-    const compactList = (
-      values: ContextEntry[],
-    ) =>
-      values.map(({ text, sourceFileIds, updatedAt, updatedBy }) => ({
-        text,
-        sourceFileIds,
-        updatedAt,
-        updatedBy,
-      }));
-    return {
-      goal: compact(context.goal),
-      scope: compact(context.scope),
-      constraints: compactList(context.constraints),
-      decisions: compactList(context.decisions),
-      ownership: compactList(context.ownership),
-      openQuestions: compactList(context.openQuestions),
-      revision: context.revision,
-      updatedAt: context.updatedAt,
-    };
+    const row = await ctx.db.query("structured_context")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId)).unique();
+    return row ? loadContext(ctx, workspaceId) : null;
   },
 });

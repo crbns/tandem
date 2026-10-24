@@ -139,7 +139,7 @@ export default function ApprovalsPage() {
           {decided.length > 0 && (
             <section aria-labelledby="decided-heading" className="flex flex-col gap-2">
               <h2 id="decided-heading" className="text-base font-bold leading-6">
-                Decided
+                Recorded and decided
               </h2>
               <ul className="rounded-md border bg-card">
                 {decided.map((proposal) => (
