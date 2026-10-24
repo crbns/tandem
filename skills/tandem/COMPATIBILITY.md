@@ -202,7 +202,8 @@ inside the project (`Read(./**)`). Two distractor MCP servers, `notes` and
 `tracker`, sat next to `tandem`. Tandem's `brief.md` was saved as v2 by
 `user_sam` first. Isolation was clean: `tandem`, `notes` and `tracker` were
 connected in 48/48 runs, all four distractor tools were listed in `init` in
-48/48, there were no other servers, plugins or skills, and no errors or
+48/48, there were no other MCP servers and no user plugins or skills (only
+the CLI's built-ins, plus `tandem` under WITH_SKILL), and no errors or
 timeouts. Full table:
 [`eval/results/2026-10-23-claude-code-realistic.md`](./eval/results/2026-10-23-claude-code-realistic.md).
 
@@ -272,8 +273,8 @@ read back at the end.
 | realistic | NO_SKILL | 3 | 0/3 (never read Tandem) | - | - | - | - | - | - | - | $0.09 |
 
 - Bare: [`eval/results/2026-10-23-claude-code-conflict-bare.md`](./eval/results/2026-10-23-claude-code-conflict-bare.md)
-  (`--prompts p6-conflict-edit --reps 3 --max-turns 8 --timeout 240 --tag
-  conflict-bare`, 6 runs, $0.35, isolation clean).
+  (`--prompts p6-conflict-edit --reps 3 --max-turns 8 --timeout 240
+  --concurrency 1 --tag conflict-bare`, 6 runs, $0.35, isolation clean).
 - Every run that hit the conflict recovered the same way: one re-read, one
   retry with the new version, the teammate's line kept, and the agent's
   tightened intro on top (v4). None looped or clobbered. All 9 final answers

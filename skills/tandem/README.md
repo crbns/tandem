@@ -191,7 +191,7 @@ runs) cost $1.88. The committed results were run as:
 ```sh
 node skills/tandem/eval/run.mjs --model sonnet --reps 2      # 2026-10-23-claude-code (before p6 existed)
 node skills/tandem/eval/run.mjs --env realistic --reps 3 --max-turns 8 --timeout 240 --concurrency 3 --tag realistic
-node skills/tandem/eval/run.mjs --prompts p6-conflict-edit --reps 3 --max-turns 8 --timeout 240 --tag conflict-bare
+node skills/tandem/eval/run.mjs --prompts p6-conflict-edit --reps 3 --max-turns 8 --timeout 240 --concurrency 1 --tag conflict-bare
 ```
 
 Summary counts are trials, not individual calls. `sync` and `write` measure
@@ -236,9 +236,9 @@ for 48 realistic runs and $0.35 for 6 bare conflict runs):
   the skill used Tandem in 8/15 project chats. It went to local files first
   (12/15), and 8/15 answers presented the stale local goal as current (a 9th,
   p3 NO_SKILL rep 2, used the stale goal as the draft's goal and flagged the
-  conflict). With
-  the skill: Tandem in 15/15, `sync_workspace` first in 15/15, and 0/15
-  answers used the stale goal. Controls: 0/12 tool calls either way.
+  conflict). With the skill: Tandem in 15/15, `sync_workspace` first in
+  15/15, and 0/15 answers used the stale goal. Controls: 0/12 tool calls
+  either way.
 - **Conflict recovery works, with or without the skill, once the agent is in
   Tandem.** Each time the injected teammate edit caused a `VERSION_CONFLICT`
   (9/9: bare 3/3 with and 3/3 without the skill, realistic 3/3 with it), the
