@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { useMockControls, useTandemApi, type Actor, type FileDetail } from "@/lib/api";
 import { ERROR_COPY } from "@/lib/api/errorCopy";
 import { useSession } from "@/lib/auth/useSession";
-import { actorLabel, humanActorId } from "@/lib/actors";
+import { humanActorId } from "@/lib/actors";
 import {
   canSave,
   draftToStash,
@@ -215,14 +215,17 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
 
       {replacing && phase.kind !== "conflict" && (
         <details className="rounded-md border border-amber-300 bg-amber-50 text-sm" open>
-          <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-2 text-amber-900">
-            Saving will overwrite version {replacing.version}
+          {/* One span per phrase: bare JSX text beside {expressions} loses its
+              spaces inside a flex row ("version 2by"). The gap spaces them. */}
+          <summary className="flex cursor-pointer flex-wrap items-center gap-x-1.5 gap-y-1 px-3 py-2 text-amber-900">
+            <span className="font-medium">Saving will replace version {replacing.version}</span>
             {replacing.updatedBy && (
               <>
-                by <ActorBadge actor={replacing.updatedBy} />
+                <span>by</span>
+                <ActorBadge actor={replacing.updatedBy} />
               </>
             )}
-            <span className="text-amber-900/80">(shown here for reference)</span>
+            <span className="text-amber-900/80">· Copy anything you want to keep from it below.</span>
           </summary>
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap border-t border-amber-200 bg-background px-3 py-2 font-mono text-xs">
             {replacing.content}
@@ -238,16 +241,14 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
             dispatch({ type: "KEEP_MINE_REBASE" });
             setReplacing(phase.theirs);
             setReturnFocus(true);
-            toast.info(
-              `Your next save will overwrite ${phase.theirs.updatedBy ? actorLabel(phase.theirs.updatedBy) : "the latest"}'s version ${phase.theirs.version}.`,
-            );
+            toast.info(`Continuing with your changes. Your next save replaces version ${phase.theirs.version}.`);
           }}
           onDiscardMine={() => {
             dispatch({ type: "RELOAD_THEIRS" });
             setReplacing(null);
             setReturnFocus(true);
             refreshLastEdited();
-            toast.info(`Loaded version ${phase.theirs.version}.`);
+            toast.info(`Version ${phase.theirs.version} loaded. Your changes were discarded.`);
           }}
         />
       ) : (
@@ -275,12 +276,12 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
           <DialogHeader>
             <DialogTitle>Discard your changes?</DialogTitle>
             <DialogDescription>
-              The editor goes back to version {state.baseVersion}. Your unsaved edits can&apos;t be recovered.
+              The editor goes back to version {state.baseVersion}. This can&apos;t be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmDiscard(false)}>
-              Keep editing
+              Keep my changes
             </Button>
             <Button
               variant="destructive"

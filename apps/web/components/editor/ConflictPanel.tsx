@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CircleAlertIcon, CopyIcon, PencilLineIcon, RotateCcwIcon } from "lucide-react";
+import { CircleAlertIcon, CopyIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { Theirs } from "@/lib/editor/saveMachine";
 import { actorLabel } from "@/lib/actors";
@@ -29,6 +29,7 @@ export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: Confl
   const [confirmOpen, setConfirmOpen] = useState(false);
   const headingRef = useRef<HTMLDivElement>(null);
   const who = theirs.updatedBy ? actorLabel(theirs.updatedBy) : "Someone";
+  const v = theirs.version;
 
   // The textarea that had focus just unmounted; move focus somewhere meaningful.
   useEffect(() => {
@@ -38,31 +39,43 @@ export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: Confl
   async function copyMine() {
     try {
       await navigator.clipboard.writeText(mine);
-      toast.success("Your text is on the clipboard");
+      toast.success("Your changes are on the clipboard");
     } catch {
-      toast.error("Couldn't copy. Select the text on the left and copy it manually.");
+      toast.error("Couldn't copy. Select your text on the left and copy it manually.");
     }
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <Alert variant="warning" role="alert">
         <CircleAlertIcon />
         <AlertTitle ref={headingRef} tabIndex={-1} className="outline-none">
-          {who} saved version {theirs.version} while you were editing. Your changes were not saved.
+          {who} saved version {v} while you were editing
         </AlertTitle>
         <AlertDescription>
-          Nothing has been overwritten. Your text is kept on the left; version {theirs.version} is on the right.
+          Your changes aren&apos;t saved yet, and nothing has been overwritten. Compare the two versions, then
+          choose how to continue.
         </AlertDescription>
       </Alert>
 
       <DiffView
-        left={{ title: "Your unsaved changes", content: mine }}
+        left={{
+          content: mine,
+          title: (
+            <>
+              Your unsaved changes
+              <Button variant="ghost" size="sm" className="ml-auto h-7 px-2" onClick={() => void copyMine()}>
+                <CopyIcon />
+                Copy
+              </Button>
+            </>
+          ),
+        }}
         right={{
           content: theirs.content,
           title: (
             <>
-              Version {theirs.version}
+              Version {v}
               {theirs.updatedBy && (
                 <>
                   <span className="font-normal text-muted-foreground">by</span>
@@ -74,38 +87,44 @@ export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: Confl
         }}
       />
 
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={onKeepMine}>
-          <PencilLineIcon />
-          Keep my text
-        </Button>
-        <Button variant="outline" onClick={() => void copyMine()}>
-          <CopyIcon />
-          Copy my text
-        </Button>
-        <Button variant="outline" className="text-destructive" onClick={() => setConfirmOpen(true)}>
-          <RotateCcwIcon />
-          Discard mine &amp; load latest
-        </Button>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        &ldquo;Keep my text&rdquo; does not merge. Your next save will <strong>overwrite</strong> {who}&apos;s
-        version {theirs.version}. Copy anything you need from the right-hand column into your text first; it
-        stays visible above the editor until you save.
-      </p>
+      <section aria-labelledby="conflict-choices" className="flex flex-col gap-3">
+        <h2 id="conflict-choices" className="text-sm font-semibold">
+          How do you want to continue?
+        </h2>
+        {/* Both choices lose something, so neither is styled as the default. */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="flex flex-col items-start gap-1.5">
+            <Button variant="outline" onClick={onKeepMine}>
+              Continue with my changes
+            </Button>
+            <p className="text-sm text-muted-foreground">
+              Your next save replaces version {v}. Lines that are only on the right are lost unless you copy them
+              into your text first.
+            </p>
+          </div>
+          <div className="flex flex-col items-start gap-1.5">
+            <Button variant="outline" onClick={() => setConfirmOpen(true)}>
+              Load version {v} instead
+            </Button>
+            <p className="text-sm text-muted-foreground">
+              Your unsaved changes are discarded and version {v} opens in the editor.
+            </p>
+          </div>
+        </div>
+      </section>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Discard your changes?</DialogTitle>
+            <DialogTitle>Discard your changes and load version {v}?</DialogTitle>
             <DialogDescription>
-              Your unsaved text will be replaced with version {theirs.version}. This can&apos;t be undone. Copy
-              your text first if you might need it.
+              Your unsaved changes will be replaced by version {v}. This can&apos;t be undone, so copy your text
+              first if you might need it.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>
-              Cancel
+              Keep my changes
             </Button>
             <Button
               variant="destructive"
@@ -114,7 +133,7 @@ export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: Confl
                 onDiscardMine();
               }}
             >
-              Discard and load latest
+              Discard my changes
             </Button>
           </DialogFooter>
         </DialogContent>

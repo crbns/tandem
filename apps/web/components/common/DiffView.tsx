@@ -24,7 +24,10 @@ function Column({
 }) {
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-md border">
-      <div className="flex items-center gap-2 border-b bg-muted/50 px-3 py-2 text-sm font-medium">{title}</div>
+      {/* Fixed min height keeps both columns' first lines aligned when one header holds a button. */}
+      <div className="flex min-h-11 items-center gap-2 border-b bg-muted/50 px-3 py-1.5 text-sm font-medium">
+        {title}
+      </div>
       <pre className="max-h-[55vh] overflow-auto py-2 font-mono text-xs leading-relaxed">
         {lines.length === 0 && <span className="px-3 text-muted-foreground italic">(empty)</span>}
         {lines.map((line, i) => (
