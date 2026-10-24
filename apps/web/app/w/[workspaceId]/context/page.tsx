@@ -51,14 +51,18 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
         </Button>
       </div>
       <p className="-mt-2 text-sm text-muted-foreground">
-        The team&apos;s current shared understanding. Owners and admins save
-        decisions directly; constraints and open questions are recorded immediately.
-        Members propose major changes for{" "}
+        The team&apos;s current shared understanding. Owners and admins can
+        edit entries directly. Every other change, including every
+        assistant&apos;s,{" "}
+        {resource.status === "ready" && resource.data.contextApproval === "automatic"
+          ? "apply as soon as they're proposed"
+          : "wait for approval"}
+        ; switch this in{" "}
         <Link
           href={`/w/${workspaceId}/approvals`}
           className="underline underline-offset-2"
         >
-          approval
+          Approvals
         </Link>
         .
       </p>
@@ -86,6 +90,7 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
                 version={resource.data.context.version}
                 canEdit={canEdit}
                 canPropose={role === "member"}
+                autoApply={resource.data.contextApproval === "automatic"}
                 files={resource.data.files}
                 members={resource.data.members}
                 onSaved={reload}

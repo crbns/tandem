@@ -9,6 +9,7 @@ import { DECIDE_ERROR_COPY, ERROR_COPY } from "@/lib/api/errorCopy";
 import { useResource } from "@/lib/api/useResource";
 import { useWorkspaceRefresh, useWorkspaceRole } from "@/lib/api/useWorkspace";
 import { canDecideProposals, FIELD_LABELS } from "@/lib/proposals";
+import { ContextApprovalSetting } from "@/components/approvals/ContextApprovalSetting";
 import { DecidedProposal, ProposalCard, type Decision } from "@/components/approvals/ProposalCard";
 import { ErrorState } from "@/components/common/ErrorState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -48,7 +49,7 @@ export default function ApprovalsPage() {
       await api.decideProposal(proposal, decision);
       toast.success(
         decision === "approved"
-          ? `Approved. The ${FIELD_LABELS[proposal.field].toLowerCase()} is updated.`
+          ? `Approved. The ${FIELD_LABELS[proposal.field].toLowerCase()} ${proposal.operation === "remove" ? "is removed" : proposal.operation === "resolve" ? "is resolved" : "is updated"}.`
           : "Rejected. Nothing in the context changed.",
       );
     } catch (err) {
@@ -88,9 +89,11 @@ export default function ApprovalsPage() {
         </Button>
       </div>
       <p className="-mt-2 max-w-2xl text-sm text-muted-foreground">
-        Changes to the project&apos;s goal, scope, decisions and ownership wait here until a person approves them.
-        Assistants can propose; they can&apos;t approve.
+        Proposed changes to the project context wait here until a person approves them. Assistants can propose;
+        they can&apos;t approve.
       </p>
+
+      <ContextApprovalSetting workspaceId={workspaceId} canEdit={canDecide} />
 
       {role !== undefined && !canDecide && (
         <Alert>

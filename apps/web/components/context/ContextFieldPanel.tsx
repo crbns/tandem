@@ -57,6 +57,8 @@ interface Props {
   version: number;
   canEdit: boolean;
   canPropose: boolean;
+  /** The workspace applies proposals at once instead of holding them for approval. */
+  autoApply?: boolean;
   files: FileSummary[];
   members: WorkspaceMember[];
   onSaved: () => void;
@@ -80,6 +82,7 @@ export function ContextFieldPanel({
   version,
   canEdit,
   canPropose,
+  autoApply = false,
   files,
   members,
   onSaved,
@@ -148,12 +151,14 @@ export function ContextFieldPanel({
     setBusy(true);
     setError(null);
     try {
-      await api.proposeContextChange(workspaceId, {
+      const result = await api.proposeContextChange(workspaceId, {
         field, operation, entryId: entry.id, expectedVersion: version,
         sourceFileIds: entry.sourceFileIds,
         rationale: operation === "resolve" ? "Resolved from project context." : "Removed from project context.",
       });
-      toast.success(operation === "resolve" ? "Question resolved." : `${FIELD_LABELS[field]} removed.`);
+      toast.success(result.status === "pending"
+        ? "Proposal sent to Approvals."
+        : operation === "resolve" ? "Question resolved." : `${FIELD_LABELS[field]} removed.`);
       setDraft(null);
     } catch (err) {
       const failure = normalizeError(err);
@@ -256,7 +261,7 @@ export function ContextFieldPanel({
           onSubmit={(event) => void save(event)}
           className="mt-4 flex flex-col gap-3 border-t pt-4"
         >
-          {draft.supersedes && <p className="text-xs text-muted-foreground">Propose a replacement decision. The existing decision stays active until approval.</p>}
+          {draft.supersedes && <p className="text-xs text-muted-foreground">{autoApply ? "Record a replacement decision. The existing decision is marked superseded." : "Propose a replacement decision. The existing decision stays active until approval."}</p>}
           <Label htmlFor={`value-${field}`}>
             {field === "ownership"
               ? "Area of responsibility"
@@ -359,7 +364,7 @@ export function ContextFieldPanel({
           )}
           <div className="flex gap-2">
             <Button size="sm" disabled={busy}>
-              {busy ? "Saving…" : draft.supersedes ? "Send proposal" : canEdit ? "Save" : field === "constraint" || field === "open_question" ? "Record" : "Send proposal"}
+              {busy ? "Saving…" : canEdit && !draft.supersedes ? "Save" : autoApply ? "Record" : "Send proposal"}
             </Button>
             <Button
               type="button"

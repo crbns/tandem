@@ -1,11 +1,12 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { loadContext } from "./lib/ops";
-import { contextValidator } from "./lib/validators";
+import { contextApprovalValidator, contextValidator } from "./lib/validators";
 import {
   ensureUser,
   humanActor,
   recordWorkspaceEvent,
+  requireHumanSession,
   requireMembership,
   requireUser,
 } from "./lib/auth";
@@ -272,6 +273,7 @@ export const getWorkspaceInfo = query({
     id: v.id("workspaces"),
     name: v.string(),
     role: v.union(v.literal("owner"), v.literal("admin"), v.literal("member")),
+    contextApproval: contextApprovalValidator,
     createdAt: v.number(),
     members: v.array(
       v.object({
@@ -327,6 +329,7 @@ export const getWorkspaceInfo = query({
       id: workspace._id,
       name: workspace.name,
       role: membership.role,
+      contextApproval: workspace.contextApproval ?? "manual",
       createdAt: workspace.createdAt,
       members,
       recentEvents: events.map((event) => ({
@@ -337,6 +340,40 @@ export const getWorkspaceInfo = query({
         createdAt: event.createdAt,
       })),
     };
+  },
+});
+
+/**
+ * Owners and admins choose whether context proposals wait for approval.
+ * Proposals already pending stay pending either way.
+ */
+export const setContextApproval = mutation({
+  args: { workspaceId: v.id("workspaces"), mode: contextApprovalValidator },
+  returns: v.null(),
+  handler: async (ctx, { workspaceId, mode }) => {
+    await requireHumanSession(ctx);
+    const { user, membership } = await requireMembership(ctx, workspaceId);
+    if (membership.role !== "owner" && membership.role !== "admin")
+      throw new ConvexError({ code: "FORBIDDEN" });
+    const workspace = await ctx.db.get(workspaceId);
+    if (!workspace) throw new ConvexError({ code: "WORKSPACE_NOT_FOUND" });
+    if ((workspace.contextApproval ?? "manual") === mode) return null;
+    const actor = humanActor(user);
+    await ctx.db.patch(workspaceId, {
+      contextApproval: mode,
+      updatedBy: actor,
+      revision: workspace.revision + 1,
+      updatedAt: Date.now(),
+    });
+    await recordWorkspaceEvent(ctx, {
+      workspaceId, kind: "workspace.context_approval_changed", entityType: "workspace",
+      entityId: workspaceId,
+      summary: mode === "automatic"
+        ? "Set context changes to apply automatically"
+        : "Set context changes to need manual approval",
+      actor,
+    });
+    return null;
   },
 });
 

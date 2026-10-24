@@ -140,11 +140,14 @@ Someone else saved a newer version since you read it.
 
 - Goal, scope, major decisions, and ownership are human-approved. Never change
   them directly, including by editing a file to claim they changed.
+- Each workspace sets `context_approval` (see `get_workspace_info`). In a
+  `"manual"` workspace, the default, every `propose_context_change` (all
+  fields, resolves and removals included) waits for a human owner or admin. In
+  an `"automatic"` workspace every change applies at once.
 - Call `propose_context_change` with `field`, `proposed_value`, a short
   `rationale`, and `source_ids` (ids of files that support it). Value by field:
   - `goal` or `scope`: the full new text.
   - `constraints` or `open_questions`: one constraint or question as text.
-    These working additions apply immediately with attribution; no approval.
     Send each entry separately.
   - `decisions`: the text of one new decision. To replace a decision, pass
     `supersedes` with its stable entry `id` from sync. The proposal stays
@@ -165,9 +168,8 @@ Someone else saved a newer version since you read it.
 - Read list entry `id`, `status` (`active`, `resolved`, `superseded`),
   `resolved_by`, `resolved_at`, and `superseded_by`; retain history and use
   only active entries as current context. IDs stay stable across syncs.
-- Working additions and resolutions return `proposal.status: "applied"` and
-  appear in the next sync immediately. Authoritative additions return
-  `proposal.status: "pending"` and await approval. For pending changes, tell
+- Changes that applied return `proposal.status: "applied"` and appear in the
+  next sync. Changes that wait return `proposal.status: "pending"`. For pending changes, tell
   the user it awaits a human owner or admin's approval in the dashboard and has not
   taken effect. Use `get_approvals` (default `status: "pending"`; also
   `"applied"`, `"approved"`, `"rejected"`, `"stale"`, `"all"`) to check when asked. A

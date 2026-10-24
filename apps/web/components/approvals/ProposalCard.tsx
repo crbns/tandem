@@ -14,6 +14,11 @@ import { cn } from "@/lib/utils";
 
 export type Decision = "approved" | "rejected";
 
+const OPERATION_LABELS: Partial<Record<ContextProposal["operation"], string>> = {
+  resolve: "resolve proposed by",
+  remove: "removal proposed by",
+};
+
 interface ProposalCardProps {
   proposal: ContextProposal;
   /** The approved value it would replace (goal and scope only); "" when unset. */
@@ -37,7 +42,7 @@ export function ProposalCard({ proposal, current, canDecide, deciding, busy, onD
     <article aria-labelledby={headingId} className="rounded-md border bg-card px-5 py-4">
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
         <span className="label-caps rounded-sm bg-archive-tint px-1.5 py-0.5 text-archive">{label}</span>
-        <span>{replacesValue(proposal.field) ? "change proposed by" : "addition proposed by"}</span>
+        <span>{OPERATION_LABELS[proposal.operation] ?? (replacesValue(proposal.field) ? "change proposed by" : "addition proposed by")}</span>
         <ActorBadge actor={proposal.createdBy} />
         <span title={formatAbsolute(proposal.createdAt)}>{formatRelative(proposal.createdAt, now)}</span>
       </p>

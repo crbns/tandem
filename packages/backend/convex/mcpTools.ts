@@ -35,6 +35,7 @@ import {
 } from "./lib/ops";
 import {
   actorValidator,
+  contextApprovalValidator,
   contextFieldValidator,
   contextValidator,
   eventValidator,
@@ -100,6 +101,7 @@ export const getWorkspaceInfo = internalMutation({
         id: v.id("workspaces"),
         name: v.string(),
         role: roleValidator,
+        contextApproval: contextApprovalValidator,
         memberCount: v.number(),
         isDefault: v.boolean(),
       }),
@@ -149,6 +151,7 @@ export const getWorkspaceInfo = internalMutation({
               id: workspace._id,
               name: workspace.name,
               role: session.membership.role,
+              contextApproval: workspace.contextApproval ?? "manual",
               memberCount: rows.length,
               isDefault: true,
             },

@@ -58,6 +58,7 @@ function toProposal(proposal: BackendProposal): ContextProposal {
     id: proposal.id,
     workspaceId: proposal.workspaceId,
     field: proposal.field,
+    operation: proposal.operation,
     proposedValue: proposal.proposedValue,
     rationale: proposal.rationale,
     sourceFileIds: proposal.sourceFileIds,
@@ -357,6 +358,13 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         workspaceId: workspaceId as Id<"workspaces">, paginationOpts: { cursor, numItems: pageSize },
       });
       return { ...result, page: result.page.map((work) => ({ ...work, createdBy: toActor(work.createdBy) })) };
+    }),
+    getContextApproval: (workspaceId) => call(async () => {
+      const info = await convex.query(api.workspaces.getWorkspaceInfo, { workspaceId: workspaceId as Id<"workspaces"> });
+      return info.contextApproval;
+    }),
+    setContextApproval: (workspaceId, mode) => call(async () => {
+      await convex.mutation(api.workspaces.setContextApproval, { workspaceId: workspaceId as Id<"workspaces">, mode });
     }),
     listProposals: (workspaceId, status) =>
       call(async () => {

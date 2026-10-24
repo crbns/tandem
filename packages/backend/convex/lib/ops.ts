@@ -366,6 +366,77 @@ export function normalizeContext(context: Doc<"structured_context">) {
   };
 }
 
+/**
+ * Whether context proposals apply as soon as they're made ("automatic") or
+ * wait in Approvals ("manual", the default). An owner's or admin's direct
+ * dashboard edit is already a decision and doesn't go through here.
+ */
+export async function appliesImmediately(
+  ctx: ReadCtx,
+  workspaceId: Id<"workspaces">,
+): Promise<boolean> {
+  const workspace = await ctx.db.get(workspaceId);
+  if (!workspace) throw new ConvexError({ code: "WORKSPACE_NOT_FOUND" });
+  return workspace.contextApproval === "automatic";
+}
+
+/** Resolves or removes one constraint or open question entry. */
+async function applyEntryOperation(
+  ctx: MutationCtx,
+  stored: Doc<"structured_context">,
+  change: {
+    field: ContextField;
+    operation: "resolve" | "remove";
+    entryId: string;
+  },
+  actor: Actor,
+  now: number,
+) {
+  const normalized = normalizeContext(stored);
+  const key = change.field === "constraint" ? "constraints" : "openQuestions";
+  const entries =
+    change.operation === "remove"
+      ? normalized[key].filter((e) => e.id !== change.entryId)
+      : normalized[key].map((e) =>
+          e.id === change.entryId
+            ? {
+                ...e,
+                status: "resolved" as const,
+                resolvedBy: actor,
+                resolvedAt: now,
+              }
+            : e,
+        );
+  await ctx.db.patch(stored._id, {
+    constraints: normalized.constraints,
+    decisions: normalized.decisions,
+    ownership: normalized.ownership,
+    openQuestions: normalized.openQuestions,
+    [key]: entries,
+    revision: stored.revision + 1,
+    updatedBy: actor,
+    updatedAt: now,
+  });
+}
+
+/**
+ * Whether a pending resolve/remove proposal's entry is gone or, for a
+ * resolve, already resolved. Additions always have a target.
+ */
+export function entryTargetMissing(
+  context: Doc<"structured_context">,
+  proposal: Pick<Doc<"context_proposals">, "field" | "operation" | "entryId">,
+): boolean {
+  if (!proposal.operation) return false;
+  const key = proposal.field === "constraint" ? "constraints" : "openQuestions";
+  const target = normalizeContext(context)[key].find(
+    (e) => e.id === proposal.entryId,
+  );
+  return (
+    !target || (proposal.operation === "resolve" && target.status === "resolved")
+  );
+}
+
 export async function proposeContextChangeCore(
   ctx: MutationCtx,
   args: {
@@ -443,40 +514,25 @@ export async function proposeContextChangeCore(
   const sourceFileIds = await checkSourceFiles(
     ctx, workspaceId, args.sourceFileIds, existing?.sourceFileIds,
   );
-  if (operation !== "add") {
-    const key = field === "constraint" ? "constraints" : "openQuestions";
-    const target = normalized[key].find((e) => e.id === args.entryId);
+  const apply = await appliesImmediately(ctx, workspaceId);
+  const entryOperation =
+    operation !== "add" ? { operation, entryId: args.entryId! } : undefined;
+  if (entryOperation) {
+    const target = normalized[targetKey].find((e) => e.id === args.entryId);
     if (!target || (operation === "resolve" && target.status === "resolved"))
       throw new ConvexError({ code: "INVALID_INPUT", field: "entryId" });
-    const now = Date.now();
-    const entries =
-      operation === "remove"
-        ? normalized[key].filter((e) => e.id !== args.entryId)
-        : normalized[key].map((e) =>
-            e.id === args.entryId
-              ? {
-                  ...e,
-                  status: "resolved" as const,
-                  resolvedBy: actor,
-                  resolvedAt: now,
-                }
-              : e,
-          );
-    await ctx.db.patch(context._id, {
-      constraints: normalized.constraints,
-      decisions: normalized.decisions,
-      ownership: normalized.ownership,
-      openQuestions: normalized.openQuestions,
-      [key]: entries,
-      revision: context.revision + 1,
-      updatedBy: actor,
-      updatedAt: now,
-    });
+    if (apply)
+      await applyEntryOperation(
+        ctx, context, { field, ...entryOperation }, actor, Date.now(),
+      );
     proposedValue = target.text;
-  } else if (working) {
+  } else if (apply) {
     await applyApprovedProposal(
       ctx,
-      { workspaceId, field, proposedValue, sourceFileIds },
+      {
+        workspaceId, field, proposedValue, sourceFileIds, ...owner,
+        supersedes: args.supersedes,
+      },
       actor,
       Date.now(),
     );
@@ -494,11 +550,12 @@ export async function proposeContextChangeCore(
     proposedValue,
     rationale: args.rationale,
     sourceFileIds,
-    contextRevision: context.revision + (working ? 1 : 0),
+    contextRevision: context.revision + (apply ? 1 : 0),
     ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
     ...(currentField !== undefined ? { baseValue: currentField } : {}),
     ...owner,
-    status: working ? "applied" : "pending",
+    ...entryOperation,
+    status: apply ? "applied" : "pending",
     createdBy: actor,
     createdAt: now,
     updatedBy: actor,
@@ -507,12 +564,12 @@ export async function proposeContextChangeCore(
   });
   await recordWorkspaceEvent(ctx, {
     workspaceId,
-    kind: working
+    kind: apply
       ? `context.${operation === "add" ? "recorded" : operation === "resolve" ? "resolved" : "removed"}`
       : "context.proposed",
     entityType: "context_proposal",
     entityId: proposalId,
-    summary: `${working ? "Applied" : "Proposed"} ${operation} to ${field.replaceAll("_", " ")}`,
+    summary: `${apply ? "Applied" : "Proposed"} ${operation} to ${field.replaceAll("_", " ")}`,
     actor,
   });
   const proposal = await ctx.db.get(proposalId);
@@ -525,6 +582,7 @@ export function toProposal(proposal: Doc<"context_proposals">) {
     id: proposal._id,
     workspaceId: proposal.workspaceId,
     field: proposal.field,
+    operation: proposal.operation ?? ("add" as const),
     proposedValue: proposal.proposedValue,
     supersedes: proposal.supersedes ?? null,
     rationale: proposal.rationale,
@@ -880,6 +938,8 @@ export async function applyApprovedProposal(
     | "ownerUserId"
     | "ownerArea"
     | "supersedes"
+    | "operation"
+    | "entryId"
   >,
   actor: Actor,
   now: number,
@@ -890,6 +950,22 @@ export async function applyApprovedProposal(
     .withIndex("by_workspace", (q) => q.eq("workspaceId", proposal.workspaceId))
     .unique();
   if (!stored) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
+  if (proposal.operation) {
+    if (!proposal.entryId || entryTargetMissing(stored, proposal))
+      throw new ConvexError({ code: "INVALID_INPUT", field: "entryId" });
+    await applyEntryOperation(
+      ctx,
+      stored,
+      {
+        field: proposal.field,
+        operation: proposal.operation,
+        entryId: proposal.entryId,
+      },
+      actor,
+      now,
+    );
+    return;
+  }
   const context = normalizeContext(stored);
   const value = {
     id: crypto.randomUUID(),
