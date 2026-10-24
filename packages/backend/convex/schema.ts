@@ -85,9 +85,15 @@ export default defineSchema({
     userId: v.id("users"),
     client: v.string(),
     displayName: v.optional(v.string()),
-    // SHA-256 hex of the bearer token; the plaintext is returned once at
-    // creation and never stored. Optional only for rows created before tokens.
+    // Legacy `tdm_` token hash from the retired Node MCP server. No longer
+    // verified anywhere; kept so existing rows still validate.
     tokenHash: v.optional(v.string()),
+    // How the assistant authenticates to the Convex MCP endpoint. The
+    // @convex-dev/mcp component holds the credentials (hashed), as grants
+    // whose userId is this row's id. Absent on legacy token rows.
+    authKind: v.optional(v.union(v.literal("api_key"), v.literal("oauth"))),
+    // OAuth only: the name the client registered itself with. Unverified.
+    oauthClientName: v.optional(v.string()),
     revokedAt: v.optional(v.number()),
     updatedBy: actor,
     revision: v.number(),

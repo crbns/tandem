@@ -1,6 +1,7 @@
 // The handoff doc's P0 vertical slice, end to end, against the live local
-// Convex deployment, the real MCP server process (TANDEM_BACKEND=convex) and
-// the dashboard's own data layer. Steps share state and run in order.
+// Convex deployment, the MCP server it serves at <site>/mcp (@convex-dev/mcp,
+// with OAuth) and the dashboard's own data layer. Steps share state and run
+// in order.
 import { writeFileSync } from "node:fs";
 import { api } from "@repo/backend/convex/_generated/api.js";
 import type { Id } from "@repo/backend/convex/_generated/dataModel.js";
@@ -152,10 +153,11 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     });
     token = connection.token;
     connectionId = connection.connectionId;
-    expect(token).toMatch(/^tdm_[A-Za-z0-9_-]{43}$/);
+    expect(token).toMatch(/^mcp_sk_[A-Za-z0-9_-]{43}$/);
+    expect(connection.mcpUrl).toBe(mcpUrl);
     // The token is shown once: listing never returns it or its hash.
     const listed = await a.dashboard.listAgentConnections(workspaceId);
-    expect(JSON.stringify(listed)).not.toContain(token.slice(4));
+    expect(JSON.stringify(listed)).not.toContain(token.slice(7));
     expect(JSON.stringify(listed)).not.toMatch(/tokenHash/i);
 
     agent = await Agent.connect(mcpUrl, token);
@@ -283,9 +285,10 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     // decide mutation without a human session (the agent token isn't one).
     const toolNames = (await agent.client.listTools()).tools.map((t) => t.name);
     expect(toolNames.filter((n) => /approve|decide/.test(n))).toEqual([]);
+    // Calling one anyway is a JSON-RPC "unknown tool" error, not a tool result.
     await expect(
       agent.client.callTool({ name: "decide_context_proposal", arguments: { proposal_id: proposalId } }),
-    ).resolves.toMatchObject({ isError: true });
+    ).rejects.toMatchObject({ code: -32602 });
     const withAgentToken = new ConvexHttpClient(convexUrl, { logger: false });
     withAgentToken.setAuth(token);
     await expect(
@@ -399,10 +402,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     const doomedAgent = await Agent.connect(mcpUrl, doomed.token);
     await doomedAgent.ok("list_files");
     await a.dashboard.revokeAgentConnection(doomed.connectionId);
-    await expect(doomedAgent.call("list_files")).rejects.toMatchObject({
-      code: 401,
-      message: expect.stringContaining("UNAUTHENTICATED"),
-    });
+    await expect(doomedAgent.call("list_files")).rejects.toMatchObject({ code: 401 });
     await doomedAgent.close().catch(() => {});
     const revoked = await rawMcpStatus(mcpUrl, { Authorization: `Bearer ${doomed.token}` });
     expect(revoked.status).toBe(401);
@@ -415,21 +415,22 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     const statuses = {
       none: (await rawMcpStatus(mcpUrl, {})).status,
       emptyBearer: (await rawMcpStatus(mcpUrl, { Authorization: "Bearer " })).status,
-      notATdmToken: (await rawMcpStatus(mcpUrl, { Authorization: "Bearer not-a-token" })).status,
-      forgedTdm: (await rawMcpStatus(mcpUrl, { Authorization: `Bearer tdm_${"A".repeat(43)}` })).status,
+      notAKey: (await rawMcpStatus(mcpUrl, { Authorization: "Bearer not-a-token" })).status,
+      forgedKey: (await rawMcpStatus(mcpUrl, { Authorization: `Bearer mcp_sk_${"A".repeat(43)}` })).status,
       humanJwt: (await rawMcpStatus(mcpUrl, { Authorization: `Bearer ${a.jwt}` })).status,
       basicScheme: (await rawMcpStatus(mcpUrl, { Authorization: `Basic ${token}` })).status,
     };
     expect(statuses).toEqual({
       none: 401,
       emptyBearer: 401,
-      notATdmToken: 401,
-      forgedTdm: 401,
+      notAKey: 401,
+      forgedKey: 401,
       humanJwt: 401,
       basicScheme: 401,
     });
-    // The api-key header works too, for clients that can't send Authorization.
-    expect((await rawMcpStatus(mcpUrl, { "api-key": token })).status).toBe(200);
+    // Only Authorization: Bearer carries a credential; the old api-key header doesn't.
+    expect((await rawMcpStatus(mcpUrl, { "api-key": token })).status).toBe(401);
+    expect((await rawMcpStatus(mcpUrl, { Authorization: `Bearer ${token}` })).status).toBe(200);
     evidence.step8 = { revokedStatus: revoked.status, statuses };
   });
 
@@ -461,5 +462,100 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     expect(JSON.stringify(connections)).not.toMatch(/online/i);
     evidence.step9 = { connection: mine, workspaceInfo: info };
     evidence.browser = { b: { email: b.email, password }, workspaceId, fileId };
+  });
+
+  it("10. OAuth: a claude.ai-style client connects through consent, writes as A via Claude, and revoke gets 401", async () => {
+    const site = new URL(mcpUrl).origin;
+    const callback = "https://claude.ai/api/mcp/auth_callback";
+    // Discovery, the way claude.ai finds the authorization server.
+    const prm = (await (await fetch(`${site}/.well-known/oauth-protected-resource/mcp`)).json()) as {
+      resource: string;
+      authorization_servers: string[];
+    };
+    expect(prm).toMatchObject({ resource: mcpUrl, authorization_servers: [site] });
+    const asm = (await (await fetch(`${site}/.well-known/oauth-authorization-server`)).json()) as Record<string, string>;
+    const registered = await fetch(asm.registration_endpoint!, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Claude",
+        redirect_uris: [callback],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      }),
+    });
+    expect(registered.status).toBe(201);
+    const { client_id: clientId } = (await registered.json()) as { client_id: string };
+
+    const verifier = `${run}-${crypto.randomUUID()}-${crypto.randomUUID()}`;
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+    const challenge = Buffer.from(digest).toString("base64url");
+    const authorizeUrl = new URL(asm.authorization_endpoint!);
+    for (const [k, v] of Object.entries({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: callback,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state: run,
+      resource: mcpUrl,
+    }))
+      authorizeUrl.searchParams.set(k, v);
+    const authorize = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(authorize.status).toBe(302);
+    const consentUrl = new URL(authorize.headers.get("location")!);
+    expect(consentUrl.pathname).toBe("/oauth/consent");
+    const requestId = consentUrl.searchParams.get("request")!;
+
+    // A on the consent page: picks the workspace and the assistant, approves.
+    const request = await a.dashboard.getConsentRequest(requestId);
+    expect(request).toMatchObject({ status: "pending", clientName: "Claude", redirectHost: "claude.ai", suggestedClient: "claude" });
+    expect(request?.workspaces.map((w) => w.id)).toContain(workspaceId);
+    // C can't connect it to A's workspace.
+    expect(
+      await dashboardCode(c.dashboard.decideConsent(requestId, { approve: true, workspaceId, client: "claude" })),
+    ).toBe("FORBIDDEN");
+    const { redirectUrl } = await a.dashboard.decideConsent(requestId, { approve: true, workspaceId, client: "claude" });
+    const back = new URL(redirectUrl);
+    expect(`${back.origin}${back.pathname}`).toBe(callback);
+    expect(back.searchParams.get("state")).toBe(run);
+    expect(back.searchParams.get("iss")).toBe(site);
+
+    const tokenRes = await fetch(asm.token_endpoint!, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: back.searchParams.get("code")!,
+        redirect_uri: callback,
+        client_id: clientId,
+        code_verifier: verifier,
+        resource: mcpUrl,
+      }),
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokens = (await tokenRes.json()) as { access_token: string; refresh_token: string; scope?: string };
+
+    const claude = await Agent.connect(mcpUrl, tokens.access_token);
+    const created = await claude.ok<McpFile>("create_document", { name: `oauth-${run}.md`, content: "from claude.ai" });
+    expect(created.updated_by).toMatchObject({ actor_type: "agent", client: "claude" });
+    const [revision] = await a.dashboard.listRevisions(created.id);
+    expect(revision).toMatchObject({ actorType: "agent", agentClient: "claude", userName: a.name });
+    const oauthConnection = (await a.dashboard.listAgentConnections(workspaceId)).find(
+      (x) => x.authKind === "oauth" && x.revokedAt === undefined,
+    );
+    expect(oauthConnection).toMatchObject({ client: "claude", oauthClientName: "Claude", lastMcpActionAt: expect.any(Number) });
+
+    await a.dashboard.revokeAgentConnection(oauthConnection!.id);
+    expect((await rawMcpStatus(mcpUrl, { Authorization: `Bearer ${tokens.access_token}` })).status).toBe(401);
+    const refresh = await fetch(asm.token_endpoint!, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: clientId }),
+    });
+    expect(refresh.status).toBe(400);
+    await claude.close().catch(() => {});
+    evidence.step10 = { clientId, connectionId: oauthConnection!.id, file: created };
   });
 });

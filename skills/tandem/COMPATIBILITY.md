@@ -17,7 +17,8 @@ limits.
 
 | Check | Result | Date | Tester | Notes |
 |---|---|---|---|---|
-| Connector added | pass | 2026-10-23 | user (manual) | Dev server via no-auth tunnel (`TANDEM_DEV_ANON_USER`), not OAuth |
+| Connector added | pass | 2026-10-23 | user (manual) | Old Node dev server via no-auth tunnel (`TANDEM_DEV_ANON_USER`), not OAuth. That server is retired; recheck against Convex `/mcp` |
+| OAuth sign-in to Convex `/mcp` (consent page, pick workspace) | untested | | | Test on the Convex dev deployment (`https://<dev>.convex.site/mcp`) with the dashboard on Vercel. The flow passes automated tests with a claude.ai-shaped client (`convex/agent.test.ts`, e2e step 10), not claude.ai itself |
 | Tool discovery (all exposed tools listed) | pass | 2026-10-23 | user (manual) | All 4 tools that existed then worked, including a `VERSION_CONFLICT` response. Later tools (11 total now) not rechecked on web |
 | `read_file` | untested | | | |
 | `create_document` | untested | | | |
@@ -53,7 +54,7 @@ and [`-conflict-bare.md`](./eval/results/2026-10-23-claude-code-conflict-bare.md
 
 | Check | Result | Date | Tester | Notes |
 |---|---|---|---|---|
-| Connector added | pass | 2026-10-23 | eval harness | `--mcp-config` HTTP server + `api-key` header; connected in 82/82 runs (28 bare + 48 realistic + 6 conflict-bare). OAuth untested |
+| Connector added | pass | 2026-10-23 | eval harness | `--mcp-config` HTTP server + `api-key` header against the mock server; connected in 82/82 runs (28 bare + 48 realistic + 6 conflict-bare). The Convex `/mcp` endpoint with an API key (`Authorization: Bearer`) and OAuth are untested in Claude Code |
 | Tool discovery (all exposed tools listed) | pass | 2026-10-23 | eval harness | All 11 `mcp__tandem__*` tools in every session's tool list (loaded on demand via ToolSearch) |
 | `read_file` | pass | 2026-10-23 | eval harness | Called in 35/82 runs (14 bare, 15 realistic, 6 conflict-bare). 1 input-validation error: realistic p3 NO_SKILL rep 2 called it without `file_id` |
 | `create_document` | pass | 2026-10-23 | eval harness | 2 successful calls (p1, p3 WITH_SKILL rep 1) |

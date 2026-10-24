@@ -1,6 +1,7 @@
 import type {
   AgentClient,
   AgentConnection,
+  ConsentRequest,
   ContextProposal,
   NewAgentConnection,
   ProposalStatus,
@@ -56,14 +57,28 @@ export interface TandemApi {
     proposal: Pick<ContextProposal, "id" | "workspaceId">,
     decision: "approved" | "rejected",
   ): Promise<void>;
-  /** Only the signed-in person's own connection; the token is returned once. */
+  /** The MCP server URL people paste into their assistant. */
+  getMcpServerUrl(): Promise<string>;
+  /** Only the signed-in person's own API-key connection; the key is returned once. */
   createAgentConnection(
     workspaceId: string,
     input: { client: AgentClient; displayName?: string },
   ): Promise<NewAgentConnection>;
   /** The caller's own connections; owners/admins see everyone's. Never includes tokens. */
   listAgentConnections(workspaceId: string): Promise<AgentConnection[]>;
+  /** Also deletes its OAuth tokens or API key, so the next MCP call gets 401. */
   revokeAgentConnection(connectionId: string): Promise<void>;
+  /** An assistant's pending OAuth request, or null when it expired or doesn't exist. */
+  getConsentRequest(requestId: string): Promise<ConsentRequest | null>;
+  /**
+   * Approve (binding a new connection to `workspaceId`) or deny. Resolves to
+   * the URL to send the browser back to; rejects with REQUEST_EXPIRED when the
+   * request was already decided or timed out.
+   */
+  decideConsent(
+    requestId: string,
+    decision: { approve: true; workspaceId: string; client: AgentClient } | { approve: false },
+  ): Promise<{ redirectUrl: string }>;
   /**
    * Calls `onChange` whenever a new workspace event lands (a file saved through
    * MCP, a proposal, an approval), so lists can refetch without a reload.

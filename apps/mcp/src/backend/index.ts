@@ -1,22 +1,18 @@
-import { ConvexBackend } from "./convex.js";
 import { MockBackend } from "./mock.js";
 import type { TandemBackend } from "./types.js";
 
-export function createBackend(
-  kind: string,
-  env: NodeJS.ProcessEnv = {},
-): TandemBackend {
+/**
+ * Only the in-memory mock: the real MCP server is @convex-dev/mcp in the
+ * Convex deployment (packages/backend/convex/mcp.ts). This package is a local
+ * harness for the skill eval and never deploys.
+ */
+export function createBackend(kind: string): TandemBackend {
   switch (kind) {
     case "mock":
       return new MockBackend();
-    case "convex": {
-      const url = env.CONVEX_URL?.trim();
-      if (!url) throw new Error("TANDEM_BACKEND=convex requires CONVEX_URL.");
-      return new ConvexBackend(url);
-    }
     default:
       throw new Error(
-        `Unknown TANDEM_BACKEND "${kind}". Supported: mock, convex`,
+        `Unknown TANDEM_BACKEND "${kind}". Only "mock" is supported; the real MCP server runs in Convex at <CONVEX_SITE_URL>/mcp.`,
       );
   }
 }

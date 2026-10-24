@@ -1,3 +1,4 @@
+import { components } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { ConvexError } from "convex/values";
@@ -8,9 +9,21 @@ type ReadCtx = QueryCtx | MutationCtx;
 export const AGENT_CLIENTS = ["claude", "chatgpt", "gemini", "other"] as const;
 export type AgentClient = (typeof AGENT_CLIENTS)[number];
 
-const TOKEN_PREFIX = "tdm_";
-// "tdm_" + 32 random bytes as unpadded base64url.
-export const TOKEN_PATTERN = /^tdm_[A-Za-z0-9_-]{43}$/;
+export function isAgentClient(value: string): value is AgentClient {
+  return (AGENT_CLIENTS as readonly string[]).includes(value);
+}
+
+/**
+ * The credential the MCP component verified for a tool call (its McpUser).
+ * Every grant and API key is created with `userId` set to one
+ * agent_connections id, so `userId` names the connection, not the person.
+ */
+export interface McpPrincipal {
+  userId: string;
+  scopes: string[];
+  clientId?: string;
+  connectionId: string;
+}
 
 /** A verified agent connection, its person, and their current membership. */
 export interface AgentSession {
@@ -19,25 +32,7 @@ export interface AgentSession {
   membership: Doc<"workspace_members">;
   workspaceId: Id<"workspaces">;
   actor: Actor;
-}
-
-export function generateAgentToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  const base64 = btoa(String.fromCharCode(...bytes));
-  return (
-    TOKEN_PREFIX +
-    base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
-  );
-}
-
-export async function hashAgentToken(token: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(token),
-  );
-  return Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
+  scopes: string[];
 }
 
 export function agentActor(
@@ -56,21 +51,18 @@ export function agentActor(
 }
 
 /**
- * Verifies an MCP bearer token. Unknown, malformed and revoked tokens are all
- * UNAUTHENTICATED; a connection whose person has left the workspace is
- * FORBIDDEN. Identity comes only from the connection row, never from args.
+ * Resolves an MCP call to its agent connection. A revoked or unknown
+ * connection is UNAUTHENTICATED (revoking also deletes its component grants,
+ * so the next request gets a 401 before it reaches a tool); a connection whose
+ * person has left the workspace is FORBIDDEN. Identity comes only from the
+ * verified credential, never from tool arguments.
  */
 export async function requireAgent(
   ctx: ReadCtx,
-  token: string,
+  principal: McpPrincipal,
 ): Promise<AgentSession> {
-  if (!TOKEN_PATTERN.test(token))
-    throw new ConvexError({ code: "UNAUTHENTICATED" });
-  const tokenHash = await hashAgentToken(token);
-  const connection = await ctx.db
-    .query("agent_connections")
-    .withIndex("by_token_hash", (q) => q.eq("tokenHash", tokenHash))
-    .unique();
+  const connectionId = ctx.db.normalizeId("agent_connections", principal.userId);
+  const connection = connectionId ? await ctx.db.get(connectionId) : null;
   if (!connection || connection.revokedAt !== undefined)
     throw new ConvexError({ code: "UNAUTHENTICATED" });
   const user = await ctx.db.get(connection.userId);
@@ -92,7 +84,17 @@ export async function requireAgent(
     membership,
     workspaceId: connection.workspaceId,
     actor: agentActor(connection, user),
+    scopes: principal.scopes,
   };
+}
+
+/**
+ * The component already hides and refuses tools outside a connection's
+ * scopes; this re-checks inside the transaction that writes.
+ */
+export function requireWriteScope(session: AgentSession): void {
+  if (!session.scopes.includes("tandem:write"))
+    throw new ConvexError({ code: "FORBIDDEN", scope: "tandem:write" });
 }
 
 /**
@@ -119,4 +121,24 @@ export async function touchConnection(
     lastMcpActionAt: now,
     ...(options.sync ? { lastSyncAt: now } : {}),
   });
+}
+
+/**
+ * Deletes every MCP credential acting for a connection: its OAuth grant(s)
+ * with their access and refresh tokens, or its API key. The next MCP request
+ * with any of them gets 401.
+ */
+export async function revokeConnectionCredentials(
+  ctx: MutationCtx,
+  connectionId: Id<"agent_connections">,
+): Promise<void> {
+  const grants = await ctx.runQuery(components.mcp.grants.list, {
+    userId: connectionId,
+  });
+  for (const grant of grants) {
+    await ctx.runMutation(components.mcp.grants.revoke, {
+      userId: connectionId,
+      grantId: grant._id,
+    });
+  }
 }

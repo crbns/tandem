@@ -53,17 +53,18 @@ The output looks like this:
 Demo reset: workspace "Onboarding refresh" (ms75hk…)
 Dashboard: http://localhost:3000/w/ms75hk…
 Password (all three): demo-035h565j683z08012r
+MCP server: http://127.0.0.1:3211/mcp (claude.ai: add it as a custom connector and sign in)
 
 Alex (owner): alex@demo.tandem.test
-  claude token: tdm_…
-  claude mcp add --transport http tandem http://127.0.0.1:8787/mcp --header "Authorization: Bearer tdm_…"
+  claude API key: mcp_sk_…
+  claude mcp add --transport http tandem http://127.0.0.1:3211/mcp --header "Authorization: Bearer mcp_sk_…"
 Blake (member): blake@demo.tandem.test
   …
 Casey (member): casey@demo.tandem.test
-  gemini token: tdm_…
+  gemini API key: mcp_sk_…
 
 To keep these across resets:
-  DEMO_PASSWORD='…' DEMO_TOKEN_ALEX=tdm_… DEMO_TOKEN_BLAKE=tdm_… DEMO_TOKEN_CASEY=tdm_…
+  DEMO_PASSWORD='…' DEMO_TOKEN_ALEX=mcp_sk_… DEMO_TOKEN_BLAKE=mcp_sk_… DEMO_TOKEN_CASEY=mcp_sk_…
 ```
 
 ### Cloud (demo deployment)
@@ -74,7 +75,7 @@ CONVEX_DEPLOY_KEY=… pnpm demo:reset
 pnpm demo:reset --prod
 ```
 
-Any extra arguments go straight to `npx convex run`. Set `TANDEM_WEB_URL` and `TANDEM_MCP_URL` so the printed dashboard link and `claude mcp add` command point at the deployed services. These two only change what's printed.
+Any extra arguments go straight to `npx convex run`. Set `TANDEM_WEB_URL` so the printed dashboard link points at the deployed dashboard. The MCP URL is the deployment's own `<CONVEX_SITE_URL>/mcp`; `TANDEM_MCP_URL` overrides what's printed.
 
 ### Keeping the password and tokens stable
 
@@ -82,26 +83,27 @@ Without pinning, every reset generates a new password and new tokens, which brea
 
 ```sh
 export DEMO_PASSWORD='…'
-export DEMO_TOKEN_ALEX=tdm_… DEMO_TOKEN_BLAKE=tdm_… DEMO_TOKEN_CASEY=tdm_…
+export DEMO_TOKEN_ALEX=mcp_sk_… DEMO_TOKEN_BLAKE=mcp_sk_… DEMO_TOKEN_CASEY=mcp_sk_…
 pnpm demo:reset
 ```
 
 The rules:
 
 - The password needs at least 8 characters.
-- A token must have the `tdm_` form the reset printed. Make your own with a reset that has no pins, and copy its tokens.
+- A token must be an `mcp_sk_` API key in the form the reset printed. Make your own with a reset that has no pins, and copy its keys. Old `tdm_` tokens from before #21 no longer work.
 - A token pinned for two people, or already used by a connection outside the demo, is rejected with `INVALID_INPUT`.
 
 Treat the password and tokens as secrets on a public deployment. Anyone who has them can act as that demo user.
 
 ### Raw output
 
-`pnpm demo:reset --json` prints the result as JSON (workspace id, `briefFileId`, password, and per member: user id, connection id, token). `npx convex run seed:resetDemo '{"password":"…","tokens":{"alex":"tdm_…"}}'` from `packages/backend` does the same without the wrapper.
+`pnpm demo:reset --json` prints the result as JSON (workspace id, `mcpUrl`, `briefFileId`, password, and per member: user id, connection id, token). `npx convex run seed:resetDemo '{"password":"…","tokens":{"alex":"mcp_sk_…"}}'` from `packages/backend` does the same without the wrapper.
 
 ## Connecting the assistants
 
 - **Claude Code:** run the `claude mcp add …` line printed for Alex (and for Blake, if you need a second Claude). If an older `tandem` server is configured, remove it first with `claude mcp remove tandem`.
-- **claude.ai, ChatGPT, Gemini:** these can't send a bearer header. They need the OAuth path from issue #21. Until that ships, Casey's Gemini token exists only so the connection shows up on the Assistants page.
+- **claude.ai:** Settings → Connectors → Add custom connector with the printed MCP server URL. Claude opens Tandem's consent page: sign in as Alex (or Blake), pick "Onboarding refresh", choose Claude, Allow. This adds a new OAuth connection next to the seeded one; for the consent page to be the deployed dashboard, set `MCP_CONSENT_URL` (or `SITE_URL`) on the Convex deployment to the dashboard origin.
+- **ChatGPT, Gemini:** not tested. Casey's Gemini key exists so the connection shows up on the Assistants page.
 - **Dashboard:** sign in as any of the three emails with the printed password.
 
 ## Checking it works
@@ -116,11 +118,10 @@ This command does the following:
 2. Runs the P0 slice on it: Alex's Claude creates `proposal.md` v1, Blake signs in with the seeded password and saves v2, the agent reads v2, a stale v1 update gets `VERSION_CONFLICT`, and history names both editors.
 3. Resets again and prints the new credentials.
 
-It follows `DEMO_PASSWORD` and `DEMO_TOKEN_*`, so pin them first if you don't want them to change. It talks to `CONVEX_URL` (default `http://127.0.0.1:3210`) and spawns a local MCP server unless `MCP_URL` points at a deployed one. Against the cloud demo deployment, run it like this:
+It follows `DEMO_PASSWORD` and `DEMO_TOKEN_*`, so pin them first if you don't want them to change. It talks to `CONVEX_URL` (default `http://127.0.0.1:3210`) and that deployment's own `/mcp` (`MCP_URL` overrides it). Against the cloud demo deployment, run it like this:
 
 ```sh
-CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=… \
-  MCP_URL=https://<mcp host>/mcp pnpm test:demo
+CONVEX_URL=https://<deployment>.convex.cloud CONVEX_DEPLOY_KEY=… pnpm test:demo
 ```
 
 It doesn't run as part of `pnpm test:e2e`, where the suite shows as skipped.

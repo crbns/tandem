@@ -54,6 +54,10 @@ export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: stri
     title: "Already decided",
     description: "Someone decided this proposal before you did, or it was withdrawn. The list shows where it stands now.",
   },
+  REQUEST_EXPIRED: {
+    title: "This request expired",
+    description: "Connection requests last ten minutes and can be answered once. Start connecting again from your assistant.",
+  },
   INVALID_INPUT: {
     title: "That didn't work",
     description: "Something about the request isn't valid. Check the name and type, then try again.",
