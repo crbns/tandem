@@ -1,5 +1,7 @@
 # Build from the repo root:
-#   docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud -t web .
+#   docker build -f apps/web/Dockerfile \
+#     --build-arg NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud \
+#     --build-arg NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=<optional> -t web .
 FROM node:24-alpine AS base
 RUN apk add --no-cache libc6-compat
 RUN corepack enable
@@ -38,7 +40,12 @@ RUN pnpm install --frozen-lockfile
 COPY --from=prepare /app/out/full/ .
 # NEXT_PUBLIC_* values are inlined into the client bundle at build time.
 ARG NEXT_PUBLIC_CONVEX_URL
+ARG NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=
+RUN test -n "$NEXT_PUBLIC_CONVEX_URL" || (echo "NEXT_PUBLIC_CONVEX_URL build arg is required" >&2; exit 1)
 ENV NEXT_PUBLIC_CONVEX_URL=$NEXT_PUBLIC_CONVEX_URL
+ENV NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=$NEXT_PUBLIC_DEFAULT_WORKSPACE_ID
+# Production images never ship the mock backend or its dev controls.
+ENV NEXT_PUBLIC_USE_MOCKS=false
 RUN pnpm turbo run build --filter=web
 
 # ---

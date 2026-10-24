@@ -1,0 +1,37 @@
+# Web dashboard service for the Vultr Docker Compose stack.
+# There is no root compose file yet: merge this `web` service into it when one
+# exists. Paths below are relative to THIS file (apps/web/deploy/), so the build
+# context `../../..` is the repo root, which the Dockerfile needs for `turbo prune`.
+#
+# Run from the repo root, pointing compose at the root .env:
+#   docker compose -f apps/web/deploy/compose.web.yml --env-file .env build web
+#   docker compose -f apps/web/deploy/compose.web.yml --env-file .env up -d web
+#
+# Root `.env` (never committed):
+#   NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud
+#   NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=<optional>
+
+services:
+  web:
+    build:
+      context: ../../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_CONVEX_URL: ${NEXT_PUBLIC_CONVEX_URL:?set NEXT_PUBLIC_CONVEX_URL}
+        NEXT_PUBLIC_DEFAULT_WORKSPACE_ID: ${NEXT_PUBLIC_DEFAULT_WORKSPACE_ID:-}
+    image: tandem-web
+    restart: unless-stopped
+    # NEXT_PUBLIC_* values are inlined at build time, including in the proxy and
+    # auth code, so there's no runtime env here. Rebuild the image to change them.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # Not published on the host: Caddy reaches it as web:3000 on the compose network.
+    expose:
+      - "3000"
+    healthcheck:
+      # /api/health doesn't touch Convex, so a backend outage won't restart this container.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

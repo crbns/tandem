@@ -1,21 +1,27 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
+import { ConvexAuthNextjsServerProvider } from "@convex-dev/auth/nextjs/server";
+// Self-hosted from npm (OFL): no build-time fetch from Google, which breaks
+// Turbopack production builds and offline Docker builds.
+import "@fontsource/public-sans/400.css";
+import "@fontsource/public-sans/500.css";
+import "@fontsource/public-sans/600.css";
+import "@fontsource/public-sans/700.css";
+import "@fontsource/archivo-narrow/500.css";
+import "@fontsource/archivo-narrow/600.css";
 import "./globals.css";
-import { ConvexClientProvider } from "./ConvexClientProvider";
+import { Providers } from "./providers";
+import { Toaster } from "@/components/ui/sonner";
+import { USE_MOCKS } from "@/lib/config";
 
-const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
-});
 const geistMono = localFont({
   src: "./fonts/GeistMonoVF.woff",
   variable: "--font-geist-mono",
 });
 
 export const metadata: Metadata = {
-  title: "Tandem | Shared team workspace",
-  description:
-    "Shared files and project context for teams and their AI assistants.",
+  title: "Tandem",
+  description: "Shared files for people. Shared understanding for their AI assistants.",
 };
 
 export default function RootLayout({
@@ -23,11 +29,15 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  return (
+  const document = (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>
-        <ConvexClientProvider>{children}</ConvexClientProvider>
+      <body className={`${geistMono.variable} font-sans`}>
+        <Providers>{children}</Providers>
+        <Toaster position="bottom-right" />
       </body>
     </html>
   );
+
+  if (USE_MOCKS) return document;
+  return <ConvexAuthNextjsServerProvider>{document}</ConvexAuthNextjsServerProvider>;
 }
