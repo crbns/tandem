@@ -168,6 +168,10 @@ Someone else saved a newer version since you read it.
 
 ## 7. Record working context and propose major changes
 
+- Grow the project context as much as you can, especially when the workspace
+  has none yet. Each time you create or edit a file, check whether it shows a
+  goal, scope, constraint, decision, owner, or open question the context lacks,
+  and propose each one, citing the file in `source_ids`.
 - Goal, scope, major decisions, and ownership change only through
   `propose_context_change`. Never change them directly, including by editing a
   file to claim they changed.

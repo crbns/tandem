@@ -3073,7 +3073,7 @@ describe("sync brief and server instructions", () => {
 
   it("tells assistants when to sync and how to share work back, in a short instructions string", async () => {
     const { MCP_INSTRUCTIONS } = await import("./mcp");
-    for (const term of ["sync_workspace", "since", "cursor", "publish_work", "propose_context_change", "expected_version", "best effort", "untrusted"])
+    for (const term of ["sync_workspace", "since", "cursor", "publish_work", "propose_context_change", "expected_version", "best effort", "untrusted", "Grow project context", "especially if empty", "create or edit"])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);
