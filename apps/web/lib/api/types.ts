@@ -155,6 +155,16 @@ export interface AgentConnection {
   revokedAt?: number;
 }
 
+/**
+ * A live (unrevoked) connection anywhere in the workspace, as every member may
+ * see it: just the client and when Tandem last heard from it.
+ */
+export interface AgentActivity {
+  client: string;
+  lastMcpActionAt?: number;
+  lastSyncAt?: number;
+}
+
 export interface NewAgentConnection {
   connectionId: string;
   /** Plaintext API key. Shown once; the backend only keeps its hash. */

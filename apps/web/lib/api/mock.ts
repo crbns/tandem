@@ -997,6 +997,18 @@ export function createMockApi({
         .map(cloneConnection);
     },
 
+    async listAgentActivity(workspaceId) {
+      await delay();
+      requireMember(workspaceId);
+      return connections
+        .filter((c) => c.workspaceId === workspaceId && c.revokedAt === undefined)
+        .map(({ client, lastMcpActionAt, lastSyncAt }) => ({
+          client,
+          ...(lastMcpActionAt !== undefined ? { lastMcpActionAt } : {}),
+          ...(lastSyncAt !== undefined ? { lastSyncAt } : {}),
+        }));
+    },
+
     async revokeAgentConnection(connectionId) {
       await delay();
       const userId = signedInUser();

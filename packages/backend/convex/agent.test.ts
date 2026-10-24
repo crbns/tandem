@@ -239,6 +239,16 @@ describe("agent connections", () => {
         workspaceId,
       }),
     ).toHaveLength(2);
+    // Every member sees the workspace-wide activity, without people or auth.
+    const activity = await sam.query(api.agentConnections.listAgentActivity, {
+      workspaceId,
+    });
+    expect(activity.map((a) => a.client).sort()).toEqual(["chatgpt", "claude"]);
+    expect(Object.keys(activity[0]!).sort()).toEqual([
+      "client",
+      "lastMcpActionAt",
+      "lastSyncAt",
+    ]);
     // A member can't revoke someone else's connection.
     expect(
       await errorData(

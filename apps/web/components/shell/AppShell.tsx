@@ -3,7 +3,16 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
-import { BotIcon, BookOpenIcon, ChevronDownIcon, FileTextIcon, LogOutIcon, StampIcon, type LucideIcon } from "lucide-react";
+import {
+  BotIcon,
+  BookOpenIcon,
+  ChevronDownIcon,
+  FileTextIcon,
+  LayoutDashboardIcon,
+  LogOutIcon,
+  StampIcon,
+  type LucideIcon,
+} from "lucide-react";
 import { useSession } from "@/lib/auth/useSession";
 import { signOutAndLeave } from "@/lib/auth/signOutAndLeave";
 import { countDraftStashes } from "@/lib/editor/draftStash";
@@ -44,6 +53,7 @@ function crumbFor(pathname: string, filesHref: string): string {
   if (pathname.startsWith(`${filesHref}/context`)) return "Project context";
   if (pathname.startsWith(`${filesHref}/approvals`)) return "Approvals";
   if (pathname.startsWith(`${filesHref}/assistants`)) return "Assistants";
+  if (pathname.startsWith(`${filesHref}/overview`)) return "Overview";
   return "Files";
 }
 
@@ -99,6 +109,13 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
           </div>
         </div>
         <nav aria-label="Workspace" className="flex flex-col gap-0.5 px-3">
+          <NavItem
+            href={`${filesHref}/overview`}
+            icon={LayoutDashboardIcon}
+            label="Overview"
+            active={pathname.startsWith(`${filesHref}/overview`)}
+            current={pathname === `${filesHref}/overview`}
+          />
           <NavItem href={filesHref} icon={FileTextIcon} label="Files" active={onFiles} current={pathname === filesHref}>
             {fileCount !== null && (
               <span className="label-caps ml-auto font-normal text-muted-foreground">{fileCount}</span>
@@ -176,6 +193,10 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {/* The rail is hidden on small screens; these keep its sections reachable. */}
+                <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/overview`)}>
+                  <LayoutDashboardIcon />
+                  Overview
+                </DropdownMenuItem>
                 <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/context`)}>
                   <BookOpenIcon />
                   Project context
