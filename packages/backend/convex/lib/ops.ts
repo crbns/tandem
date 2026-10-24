@@ -801,6 +801,17 @@ function newestTaskFirst(a: Doc<"tasks">, b: Doc<"tasks">): number {
   return b.updatedAt - a.updatedAt || b._creationTime - a._creationTime;
 }
 
+/** Up to `limit` open and in-progress tasks, merged newest first. */
+export async function listActiveTasks(
+  ctx: ReadCtx,
+  workspaceId: Id<"workspaces">,
+  limit: number,
+): Promise<Doc<"tasks">[]> {
+  const open = await listTasks(ctx, workspaceId, "open", limit);
+  const active = await listTasks(ctx, workspaceId, "in_progress", limit);
+  return [...open, ...active].sort(newestTaskFirst).slice(0, limit);
+}
+
 function taskTitle(value: string): string {
   const title = value.trim();
   if (!title || title.length > MAX_TASK_TITLE)
@@ -923,7 +934,8 @@ export async function createTaskCore(
  * Claims an open, unowned task for `userId`. The read-check-write runs in one
  * mutation, and Convex mutations are serializable (OCC): of two concurrent
  * claims, the second retries against the first's write and fails with
- * TASK_ALREADY_CLAIMED, so both can never succeed.
+ * TASK_ALREADY_CLAIMED, so both can never succeed. Re-claiming a task the
+ * person already owns is a no-op that returns it unchanged.
  */
 export async function claimTaskCore(
   ctx: MutationCtx,
@@ -935,6 +947,13 @@ export async function claimTaskCore(
   },
 ): Promise<Doc<"tasks">> {
   const { task } = args;
+  if (task.status === "done")
+    throw new ConvexError({
+      code: "TASK_DONE",
+      taskId: task._id,
+      currentVersion: task.version,
+    });
+  if (task.status === "in_progress" && task.ownerId === args.userId) return task;
   if (task.ownerId !== undefined || task.status !== "open")
     throw new ConvexError({
       code: "TASK_ALREADY_CLAIMED",
@@ -974,6 +993,8 @@ export async function updateTaskCore(
   const title = args.title === undefined ? undefined : taskTitle(args.title);
   const description =
     args.description === undefined ? undefined : taskDescription(args.description);
+  await checkTaskWritable(ctx, task, args.userId);
+  checkTaskVersion(task, args.expectedVersion);
   if (
     (title === undefined || title === task.title) &&
     (description === undefined || description === task.description) &&
@@ -983,8 +1004,8 @@ export async function updateTaskCore(
       code: "INVALID_INPUT",
       message: "The update changes nothing.",
     });
-  await checkTaskWritable(ctx, task, args.userId);
-  checkTaskVersion(task, args.expectedVersion);
+  // Moving an unowned task to in progress assigns its owner: that is a claim.
+  const claims = args.status === "in_progress" && task.ownerId === undefined;
   return await commitTask(
     ctx,
     task,
@@ -998,8 +1019,8 @@ export async function updateTaskCore(
         ? { status: "in_progress" as const, ownerId: task.ownerId ?? args.userId }
         : {}),
     },
-    "task.updated",
-    "Updated",
+    claims ? "task.claimed" : "task.updated",
+    claims ? "Claimed" : "Updated",
     args.actor,
   );
 }
@@ -1150,9 +1171,7 @@ export async function syncCore(
   let tasksTruncated: boolean;
   if (sinceSeq === undefined) {
     // Active tasks only: open and in progress, merged newest first.
-    const open = await listTasks(ctx, workspaceId, "open", SYNC_LIMIT + 1);
-    const active = await listTasks(ctx, workspaceId, "in_progress", SYNC_LIMIT + 1);
-    const merged = [...open, ...active].sort(newestTaskFirst);
+    const merged = await listActiveTasks(ctx, workspaceId, SYNC_LIMIT + 1);
     tasksTruncated = merged.length > SYNC_LIMIT;
     tasks = merged.slice(0, SYNC_LIMIT);
   } else {

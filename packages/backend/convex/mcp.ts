@@ -490,7 +490,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         '"create" (title 1–200 characters, optional description up to 4000), ' +
         '"claim" (task_id, expected_version), "update" (task_id, expected_version, and any of title, description, ' +
         'status "open" to release your claim or "in_progress"), and "complete" (task_id, expected_version). ' +
-        "Claim a task before working on it, and pass the version you last read as expected_version. " +
+        "Claim a task before working on it, and pass the version you last read as expected_version; re-claiming your own task is a no-op. " +
         "If a claim fails with TASK_ALREADY_CLAIMED or VERSION_CONFLICT, someone else got there first: list again and pick another open task. " +
         "Only the person who claimed a task (through any of their assistants) can update or complete it (else TASK_NOT_OWNER); done tasks are final (TASK_DONE). " +
         "Complete the task when the work is done. Claiming a task is not context ownership: for goal, scope, decisions or ownership use propose_context_change. " +

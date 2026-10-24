@@ -35,6 +35,39 @@ function newTest() {
   return convexTest(schema, modules);
 }
 type Test = ReturnType<typeof newTest>;
+
+/** Inserts `count` tasks directly, row i updated at `updatedAt(i)`; returns their ids. */
+function insertTasks(
+  t: Test,
+  workspaceId: Id<"workspaces">,
+  count: number,
+  row: (i: number) => { status: "open" | "in_progress" | "done"; updatedAt: number; ownerId?: Id<"users"> },
+) {
+  const actor = { type: "system" as const, label: "test" };
+  return t.run(async (ctx) => {
+    const ids: Id<"tasks">[] = [];
+    for (let i = 0; i < count; i++) {
+      const { status, updatedAt, ownerId } = row(i);
+      ids.push(
+        await ctx.db.insert("tasks", {
+          workspaceId,
+          title: `Task ${i}`,
+          description: "",
+          status,
+          ownerId,
+          version: 1,
+          createdBy: actor,
+          updatedBy: actor,
+          revision: 1,
+          createdAt: updatedAt,
+          updatedAt,
+          ...(status === "done" ? { completedAt: updatedAt } : {}),
+        }),
+      );
+    }
+    return ids;
+  });
+}
 type Caller = ReturnType<Test["withIdentity"]>;
 
 function principalFor(connectionId: string, scopes: string[] = ALL_MCP_SCOPES) {
@@ -274,7 +307,44 @@ describe("manage_task", () => {
     ).toMatchObject({ code: "TASK_DONE" });
     expect(
       await errorData(task(samAgent.principal, "claim", { taskId: created.id, expectedVersion: 4 })),
-    ).toMatchObject({ code: "TASK_ALREADY_CLAIMED", ownerUserId: alexId });
+    ).toMatchObject({ code: "TASK_DONE", taskId: created.id, currentVersion: 4 });
+  });
+
+  it("reports stale, non-owner and done before a no-op update", async () => {
+    const { samAgent, alexAgent, samId, write, task } = await setup();
+    const created = await write(alexAgent.principal, "create", { title: "A" });
+    await write(alexAgent.principal, "update", { taskId: created.id, expectedVersion: 1, title: "B" });
+    // The stale client's update matches the current title, but it read v1.
+    expect(
+      await errorData(task(samAgent.principal, "update", { taskId: created.id, expectedVersion: 1, title: "B" })),
+    ).toMatchObject({ code: "VERSION_CONFLICT", currentVersion: 2, expectedVersion: 1 });
+    await write(samAgent.principal, "claim", { taskId: created.id, expectedVersion: 2 });
+    expect(
+      await errorData(task(alexAgent.principal, "update", { taskId: created.id, expectedVersion: 3, title: "B" })),
+    ).toMatchObject({ code: "TASK_NOT_OWNER", ownerUserId: samId, currentVersion: 3 });
+    await write(samAgent.principal, "complete", { taskId: created.id, expectedVersion: 3 });
+    expect(
+      await errorData(task(samAgent.principal, "update", { taskId: created.id, expectedVersion: 4, title: "B" })),
+    ).toMatchObject({ code: "TASK_DONE", currentVersion: 4 });
+    expect(
+      await errorData(task(alexAgent.principal, "claim", { taskId: created.id, expectedVersion: 4 })),
+    ).toMatchObject({ code: "TASK_DONE", taskId: created.id });
+  });
+
+  it("makes re-claiming your own task a no-op, from any of your assistants", async () => {
+    const { t, sam, samAgent, alexAgent, samId, workspaceId, write, headSeq } = await setup();
+    const created = await write(alexAgent.principal, "create", { title: "Mine already" });
+    const samOther = await connect(sam, { workspaceId, client: "chatgpt" });
+    const claimed = await write(samAgent.principal, "claim", { taskId: created.id, expectedVersion: 1 });
+    const seq = await headSeq();
+    // Stale and current versions alike return the task unchanged.
+    for (const expectedVersion of [1, 2]) {
+      const again = await write(samOther.principal, "claim", { taskId: created.id, expectedVersion });
+      expect(again).toEqual(claimed);
+    }
+    expect(await write(samAgent.principal, "claim", { taskId: created.id, expectedVersion: 2 })).toEqual(claimed);
+    expect(await headSeq()).toBe(seq);
+    expect(await t.run((ctx) => ctx.db.get(created.id))).toMatchObject({ version: 2, ownerId: samId });
   });
 
   it("raises headSeq by exactly 1 per write with a task.* event, and not on list or failed writes", async () => {
@@ -308,6 +378,15 @@ describe("manage_task", () => {
     );
     await step("task.completed", () => write(samAgent.principal, "complete", { taskId: created.id, expectedVersion: 3 }));
     expect((await lastEvent())?.summary).toBe("Completed task: A fairly long task title");
+    // Moving an unowned task to in progress assigns its owner, so it is a claim.
+    const other = await step("task.created", () => write(alexAgent.principal, "create", { title: "Pick me" }));
+    await step("task.claimed", () =>
+      write(alexAgent.principal, "update", { taskId: other.id, expectedVersion: 1, status: "in_progress" }),
+    );
+    expect((await lastEvent())?.summary).toBe("Claimed task: Pick me");
+    await step("task.updated", () =>
+      write(alexAgent.principal, "update", { taskId: other.id, expectedVersion: 2, title: "Picked" }),
+    );
   });
 
   it("is TASK_NOT_FOUND for another workspace's task and for malformed ids", async () => {
@@ -371,6 +450,46 @@ describe("tasks in sync_workspace", () => {
       sinceSeq: since.cursorSeq,
     });
     expect(quiet.tasks).toEqual([]);
+  });
+
+  it("truncates the snapshot to the 50 newest active tasks across open and in progress", async () => {
+    const { t, samAgent, samId, workspaceId } = await setup();
+    // 52 active tasks, alternating open and in progress, plus done ones that never show.
+    const ids = await insertTasks(t, workspaceId, 52, (i) =>
+      i % 2 === 0
+        ? { status: "open", updatedAt: 1000 + i }
+        : { status: "in_progress", updatedAt: 1000 + i, ownerId: samId },
+    );
+    await insertTasks(t, workspaceId, 5, (i) => ({ status: "done", updatedAt: 5000 + i, ownerId: samId }));
+    const snapshot = await t.mutation(internal.mcpTools.syncWorkspace, { principal: samAgent.principal });
+    expect(snapshot.tasksTruncated).toBe(true);
+    expect(snapshot.tasks.map((task) => task.id)).toEqual(ids.slice(2).reverse());
+  });
+
+  it("returns only the tasks each event page touched when since-mode is truncated", async () => {
+    const { t, samAgent, alexAgent, write } = await setup();
+    const snapshot = await t.mutation(internal.mcpTools.syncWorkspace, { principal: samAgent.principal });
+    const created: Id<"tasks">[] = [];
+    for (let i = 0; i < 51; i++)
+      created.push((await write(alexAgent.principal, "create", { title: `Task ${i}` })).id);
+    await write(alexAgent.principal, "update", { taskId: created[0]!, expectedVersion: 1, title: "Task 0, renamed" });
+
+    const first = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: samAgent.principal,
+      sinceSeq: snapshot.cursorSeq,
+    });
+    expect(first.eventsTruncated).toBe(true);
+    expect(first.events).toHaveLength(50);
+    expect(first.tasks.map((task) => task.id).sort()).toEqual(created.slice(0, 50).sort());
+    expect(first.tasksTruncated).toBe(false);
+
+    const second = await t.mutation(internal.mcpTools.syncWorkspace, {
+      principal: samAgent.principal,
+      sinceSeq: first.cursorSeq,
+    });
+    expect(second.eventsTruncated).toBe(false);
+    expect(second.events.map((e) => e.kind)).toEqual(["task.created", "task.updated"]);
+    expect(second.tasks.map((task) => task.id).sort()).toEqual([created[0]!, created[50]!].sort());
   });
 });
 
@@ -476,5 +595,25 @@ describe("tasks:listTasks (dashboard)", () => {
     expect(await errorData(jordan.query(api.tasks.listTasks, { workspaceId }))).toMatchObject({
       code: "FORBIDDEN",
     });
+  });
+
+  it("keeps an old open task ahead of 100+ newer done tasks", async () => {
+    const { t, alex, samId, workspaceId } = await setup();
+    const [old] = await insertTasks(t, workspaceId, 1, () => ({ status: "open", updatedAt: 1 }));
+    const [working] = await insertTasks(t, workspaceId, 1, () => ({
+      status: "in_progress",
+      updatedAt: 2,
+      ownerId: samId,
+    }));
+    const done = await insertTasks(t, workspaceId, 105, (i) => ({
+      status: "done",
+      updatedAt: 1000 + i,
+      ownerId: samId,
+    }));
+    const rows = await alex.query(api.tasks.listTasks, { workspaceId });
+    expect(rows).toHaveLength(100);
+    expect(rows.slice(0, 2).map((row) => row.id)).toEqual([working, old]);
+    // Done tasks fill the rest, newest first.
+    expect(rows.slice(2).map((row) => row.id)).toEqual(done.slice(-98).reverse());
   });
 });
