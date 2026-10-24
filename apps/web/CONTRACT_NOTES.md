@@ -47,7 +47,7 @@ The dashboard expects business errors as `ConvexError` with a `data.code`:
 
 ## Auth
 
-Client side uses `@convex-dev/auth` Password provider: `signIn("password", { email, password, flow: "signIn" })`. Needs from Person 2: `convex/auth.ts` + `auth.config.ts` with the Password provider, the `http.ts` auth routes, `JWT_PRIVATE_KEY` / `JWKS` / `SITE_URL` in the Convex deployment env, and seeded users.
+Client side uses `@convex-dev/auth` Password provider: `signIn("password", { email, password, flow: "signIn" })`. Needs from Person 2: `convex/auth.ts` + `auth.config.ts` with the Password provider. **`convex/auth.ts` must export `isAuthenticated`** from `convexAuth({...})` (`export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth(...)`). The Next.js proxy calls `auth:isAuthenticated` on every `/w/*` and `/sign-in` request and fails without it. Also needed: the `http.ts` auth routes, `JWT_PRIVATE_KEY` / `JWKS` / `SITE_URL` in the Convex deployment env, and seeded users.
 
 **Requested:** a `users:viewer` query returning `{ name, email }`, so the header can show the user's name. Until then it shows the sign-in email.
 

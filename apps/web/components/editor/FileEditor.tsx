@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { useMockControls, useTandemApi, type Actor, type FileDetail } from "@/lib/api";
 import { ERROR_COPY } from "@/lib/api/errorCopy";
 import { useSession } from "@/lib/auth/useSession";
-import { canSave, initSaveState, saveReducer, type SaveState } from "@/lib/editor/saveMachine";
+import { canSave, draftToStash, initSaveState, saveReducer, type SaveState } from "@/lib/editor/saveMachine";
 import { performSave } from "@/lib/editor/performSave";
 import { clearDraftStash, readDraftStash, stashDraft } from "@/lib/editor/draftStash";
 import { isMarkdown } from "@/lib/files";
@@ -49,10 +49,16 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
   const { phase } = state;
 
   useEffect(() => {
-    if (!stash) return;
-    clearDraftStash(file.id);
-    toast.info("Restored your unsaved changes.");
-  }, [stash, file.id]);
+    if (stash) toast.info("Restored your unsaved changes.");
+  }, [stash]);
+
+  // Persist unsaved work on every change, so losing the session mid-edit (the
+  // layout unmounts us and redirects to sign-in) or navigating away can't drop it.
+  const pending = draftToStash(state);
+  useEffect(() => {
+    if (pending) stashDraft(file.id, pending);
+    else clearDraftStash(file.id);
+  }, [file.id, pending?.draft, pending?.baseVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refreshLastEdited = () => {
     api.readFile(file.id).then(
@@ -75,7 +81,7 @@ export function FileEditor({ file, historyHref }: FileEditorProps) {
         at: Date.now(),
       });
     } else if (event.type === "SAVE_ERROR" && event.code === "UNAUTHENTICATED") {
-      stashDraft(file.id, { draft, baseVersion });
+      // The draft is already stashed by the effect above.
       router.replace(`/sign-in?next=${encodeURIComponent(pathname)}`);
     }
   }

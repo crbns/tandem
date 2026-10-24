@@ -46,6 +46,16 @@ export function initSaveState(content: string, version: number): SaveState {
 const settled = (base: string, draft: string): SavePhase =>
   draft === base ? { kind: "clean" } : { kind: "dirty" };
 
+/**
+ * What to persist so a forced sign-in or unmount can't lose work: the live
+ * draft plus the version it's based on (kept old during a conflict, so a
+ * restore conflicts again instead of overwriting). `null` = nothing unsaved.
+ */
+export function draftToStash(state: SaveState): { draft: string; baseVersion: number } | null {
+  if (state.phase.kind !== "conflict" && state.draft === state.base) return null;
+  return { draft: state.draft, baseVersion: state.baseVersion };
+}
+
 export function canSave(state: SaveState): boolean {
   return (
     state.phase.kind === "dirty" || (state.phase.kind === "error" && state.draft !== state.base)

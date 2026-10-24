@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canSave,
+  draftToStash,
   initSaveState,
   saveReducer,
   type SaveEvent,
@@ -116,6 +117,24 @@ describe("saveReducer", () => {
     expect(canSave(initial)).toBe(false);
     expect(canSave(run(initial, { type: "EDIT", draft: "x" }))).toBe(true);
     expect(canSave(run(initial, { type: "EDIT", draft: "x" }, { type: "SAVE" }))).toBe(false);
+  });
+});
+
+describe("draftToStash", () => {
+  const initial = initSaveState("hello", 1);
+
+  it("stashes nothing when the draft matches the base", () => {
+    expect(draftToStash(initial)).toBeNull();
+  });
+
+  it("stashes the live draft and base version while dirty or saving", () => {
+    const typing = run(initial, { type: "EDIT", draft: "hi" }, { type: "SAVE" }, { type: "EDIT", draft: "hi there" });
+    expect(draftToStash(typing)).toEqual({ draft: "hi there", baseVersion: 1 });
+  });
+
+  it("stashes mine during a conflict, keeping the old base so a restore conflicts again", () => {
+    const conflicted = run(initial, { type: "EDIT", draft: "mine" }, { type: "SAVE" }, { type: "SAVE_CONFLICT", theirs });
+    expect(draftToStash(conflicted)).toEqual({ draft: "mine", baseVersion: 1 });
   });
 });
 
