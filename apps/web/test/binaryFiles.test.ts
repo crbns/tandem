@@ -25,7 +25,7 @@ describe("binary file adapter", () => {
     const file = new File(["pdf"], "new.pdf", { type: "application/pdf" });
     const api = createConvexApi({ mutation } as unknown as ConvexReactClient);
     expect(await api.uploadFile("ws", file, { fileId: "file", expectedVersion: 2 })).toEqual({ id: "file", version: 3 });
-    expect(request).toHaveBeenCalledWith("https://upload.example", { method: "POST", headers: { "Content-Type": "application/pdf" }, body: file });
+    expect(request).toHaveBeenCalledWith("https://upload.example", { method: "POST", headers: { "Content-Type": "application/pdf" }, body: file, signal: expect.any(AbortSignal) });
     expect(mutation).toHaveBeenCalledTimes(2);
   });
 
@@ -106,6 +106,7 @@ describe("mock binary history", () => {
   it("rejects text saves on binaries with the Convex error and preserves the head bytes and history", async () => {
     const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
     const created = await api.uploadFile(MOCK_WORKSPACE_ID, new File(["pdf"], "design.pdf", { type: "application/pdf" }));
+    if (created.pending) throw new Error("Mock upload must finish");
     const mutation = vi.fn().mockRejectedValue(new ConvexError({ code: "BINARY_FILE" }));
     const convexApi = createConvexApi({ mutation } as unknown as ConvexReactClient);
     for (const expectedVersion of [1, 99]) {
@@ -121,6 +122,7 @@ describe("mock binary history", () => {
   it("retains original bytes and name after replacement and rejects stale versions", async () => {
     const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
     const created = await api.uploadFile(MOCK_WORKSPACE_ID, new File(["original"], "design.pdf", { type: "application/pdf" }));
+    if (created.pending) throw new Error("Mock upload must finish");
     await api.uploadFile(MOCK_WORKSPACE_ID, new File(["replacement"], "other.pdf", { type: "application/pdf" }), { fileId: created.id, expectedVersion: 1 });
     expect(await (await api.getFileBlob(created.id, 1)).text()).toBe("original");
     expect(await (await api.getFileBlob(created.id)).text()).toBe("replacement");

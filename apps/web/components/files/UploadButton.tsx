@@ -15,12 +15,14 @@ export function UploadButton({ workspaceId, fileId, expectedVersion, onUploaded 
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   return (
     <div className="flex flex-col gap-2">
       <input ref={input} type="file" className="sr-only" tabIndex={-1} aria-label={fileId ? "Select a new version" : "Select a file to upload"} disabled={busy} onChange={async (event) => {
         const file = event.currentTarget.files?.[0];
         event.currentTarget.value = "";
         if (!file) return;
+        setMessage(null);
         if (file.size < 1 || file.size > 25 * 1024 * 1024) {
           setError("Choose a non-empty file up to 25 MB.");
           return;
@@ -29,6 +31,10 @@ export function UploadButton({ workspaceId, fileId, expectedVersion, onUploaded 
         setError(null);
         try {
           const result = await api.uploadFile(workspaceId, file, fileId && expectedVersion !== undefined ? { fileId, expectedVersion } : undefined);
+          if (result.pending) {
+            setMessage("Upload is taking longer than expected; it will appear in the file list when it finishes.");
+            return;
+          }
           if (fileId) onUploaded?.();
           else router.push(`/w/${workspaceId}/files/${result.id}`);
         } catch (err) {
@@ -40,6 +46,7 @@ export function UploadButton({ workspaceId, fileId, expectedVersion, onUploaded 
         <UploadIcon />{busy ? "Uploading…" : fileId ? "Upload new version" : "Upload file"}
       </Button>
       {error && <p role="alert" className="max-w-sm text-sm text-destructive">{error}</p>}
+      {message && <p role="status" className="max-w-sm text-sm text-muted-foreground">{message}</p>}
     </div>
   );
 }

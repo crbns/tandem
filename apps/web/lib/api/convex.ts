@@ -123,6 +123,7 @@ export function toContextDetails(context: FunctionReturnType<typeof api.context.
 // page loads would hang on flaky Wi-Fi. A timed-out mutation may still land
 // later; the next save then conflicts instead of overwriting (see errorCopy).
 export const CALL_TIMEOUT_MS = 15_000;
+const UPLOAD_MUTATION_TIMEOUT_MS = 30_000;
 export const MAX_LIST_FILES = 10_000;
 const FILES_PAGE_SIZE = 100;
 
@@ -202,17 +203,39 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
       return { id: file.id, version: file.version };
     },
     uploadFile: async (workspaceId, file, options) => {
-      // Wait for the final outcome: a deadline cannot cancel a queued finalize.
       try {
-        const uploadUrl = await convex.mutation(api.files.generateUploadUrl, { workspaceId: workspaceId as Id<"workspaces"> });
-        const response = await fetch(uploadUrl, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
-        if (!response.ok) throw new TandemApiError("NETWORK");
-        const { storageId } = await response.json() as { storageId: Id<"_storage"> };
-        const uploaded = await convex.mutation(api.files.finalizeUpload, {
-          workspaceId: workspaceId as Id<"workspaces">, storageId, name: file.name,
-          ...(options ? { fileId: options.fileId as Id<"files">, expectedVersion: options.expectedVersion } : {}),
+        // A late URL creates no file and cannot continue this timed-out chain.
+        const uploadUrl = await call(() => convex.mutation(api.files.generateUploadUrl, { workspaceId: workspaceId as Id<"workspaces"> }), UPLOAD_MUTATION_TIMEOUT_MS);
+        const controller = new AbortController();
+        // Allow two minutes plus transfer time at 32 KiB/s, rather than sharing
+        // the short mutation deadline with potentially large blob transfers.
+        const transferTimeoutMs = 120_000 + Math.ceil(file.size / (32 * 1024)) * 1_000;
+        let storageId: Id<"_storage">;
+        try {
+          ({ storageId } = await call(async () => {
+            const response = await fetch(uploadUrl, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file, signal: controller.signal });
+            if (!response.ok) throw new TandemApiError("NETWORK");
+            return await response.json() as { storageId: Id<"_storage"> };
+          }, transferTimeoutMs));
+        } finally {
+          // Also abort the transport when the deadline wins. A failed transfer
+          // never reaches finalize, even if its response arrives later.
+          controller.abort();
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const pending = new Promise<{ pending: true }>((resolve) => {
+          timer = setTimeout(() => resolve({ pending: true }), UPLOAD_MUTATION_TIMEOUT_MS);
         });
-        return { id: uploaded.id, version: uploaded.version };
+        // This mutation cannot be cancelled. Keep its rejection handled after
+        // the UI stops waiting, and let reactive queries surface a late commit.
+        try {
+          return await Promise.race([convex.mutation(api.files.finalizeUpload, {
+            workspaceId: workspaceId as Id<"workspaces">, storageId, name: file.name,
+            ...(options ? { fileId: options.fileId as Id<"files">, expectedVersion: options.expectedVersion } : {}),
+          }).then((uploaded) => ({ id: uploaded.id, version: uploaded.version })), pending]);
+        } finally {
+          clearTimeout(timer);
+        }
       } catch (err) {
         throw normalizeError(err);
       }
