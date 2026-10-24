@@ -52,8 +52,9 @@ to ask you to sync, read, save, or publish.
    or save; otherwise, after each file you create or edit, propose any goal,
    scope, constraint, decision, owner or open question it shows. Either way,
    cite the file in `source_ids` and propose only what neither the approved
-   context nor a pending proposal (the brief's `blockers.pending_approvals`)
-   already covers.
+   context nor a pending proposal already covers. A full sync's
+   `pending_proposals` lists every pending proposal; the brief's
+   `blockers.pending_approvals` shows at most 10.
 6. **Report** in one line what you read, saved, published and proposed, with
    paths and versions, and anything you skipped and why.
 

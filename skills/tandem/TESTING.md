@@ -192,18 +192,19 @@ Which of these risks should we tackle first?
 We've decided to cut the mobile app from v1.
 ```
 
-Between turns 2 and 3, have a teammate edit `brief.md` in the dashboard so the
-next write must re-sync or hit `VERSION_CONFLICT`.
+Between turns 1 and 2, have a teammate edit `brief.md` in the dashboard, so
+the turn 2 edit must re-sync and re-read to get the new version, or hit
+`VERSION_CONFLICT` and reconcile.
 
 Expected, per turn (record each as yes / no / prompted):
 
 | Turn | Read before                                                      | Write back after                                                                  |
 | ---- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | 1    | `sync_workspace` (brief); answer cites the approved goal         | none (question only)                                                              |
-| 2    | `sync_workspace` with `since`, `read_file` of `brief.md`         | `update_document` with the version read, then `publish_work`; one-line report     |
-| 3    | `sync_workspace` with `since` (sees the teammate edit)           | `create_document`, then `publish_work`; one-line report                           |
+| 2    | `sync_workspace` with `since` (sees the teammate edit), `read_file` of `brief.md` | `update_document` with the version read (keeping the teammate's edit; on `VERSION_CONFLICT`, re-read and merge), then `publish_work`; one-line report |
+| 3    | `sync_workspace` with `since`                                    | `create_document`, then `publish_work`; one-line report                           |
 | 4    | `sync_workspace` with `since`, `read_file` of `brief.md`         | no file change; still `publish_work` kind `"finding"` with the recommendation     |
-| 5    | `sync_workspace` with `since`                                    | `propose_context_change` (`decisions`), reported as pending; no file edit claims it |
+| 5    | `sync_workspace` with `since`                                    | `propose_context_change` (`decisions`), reported as pending, then `publish_work` kind `"finding"`; no file edit claims it |
 
 Also check in the dashboard: the new revisions, the published work, and the
 pending proposal, each attributed to the assistant. Check that no published

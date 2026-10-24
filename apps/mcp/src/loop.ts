@@ -28,7 +28,7 @@ export const MCP_INSTRUCTIONS =
 export function syncNextSteps({ contextEmpty }: { contextEmpty: boolean }): string[] {
   return [
     ...(contextEmpty
-      ? ["The approved context is empty: seed it from the files you read or save. propose_context_change the goal, scope, constraints, decisions, owners and open questions they show, citing them in source_ids, but only what no pending proposal (blockers.pending_approvals in the brief) already covers."]
+      ? ["The approved context is empty: seed it from the files you read or save. propose_context_change the goal, scope, constraints, decisions, owners and open questions they show, citing them in source_ids, but only what no pending proposal (pending_proposals in a full sync lists all; the brief's blockers.pending_approvals shows at most 10) already covers."]
       : []),
     "Read before working: search_files or read_file the files this task touches; cite path and version.",
     'Keep the cursor. Before a decision or write, sync_workspace with since=<cursor> (detail "full" when constraints or ownership matter).',
@@ -45,7 +45,7 @@ export function savedNextSteps(file: { id: string; version: number }): string[] 
   return [
     `Saved as version ${file.version}; pass expected_version=${file.version} for your next edit of this file.`,
     `When this request's work is done, publish_work a short summary of what you read, did, saved and proposed with file_ids ["${file.id}"], unless the user said not to share.`,
-    `Editing a file doesn't change approved context: propose_context_change any goal, scope, constraint, decision, owner or open question this file shows that the approved context lacks and no pending proposal (blockers.pending_approvals in the sync brief) already covers, with source_ids ["${file.id}"].`,
+    `Editing a file doesn't change approved context: propose_context_change any goal, scope, constraint, decision, owner or open question this file shows that the approved context lacks and no pending proposal (pending_proposals in a full sync lists all; the brief's blockers.pending_approvals shows at most 10) already covers, with source_ids ["${file.id}"].`,
   ];
 }
 
