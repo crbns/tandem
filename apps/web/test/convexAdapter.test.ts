@@ -11,6 +11,7 @@ import { performSave } from "@/lib/editor/performSave";
 // Fixtures are typed from the backend's generated function types, so a backend
 // shape change fails `check-types` here instead of silently passing.
 type BackendFile = FunctionReturnType<typeof api.files.readFile>["file"];
+type BackendFilesPage = FunctionReturnType<typeof api.files.listFiles>;
 type BackendActor = BackendFile["updatedBy"];
 type BackendContext = NonNullable<FunctionReturnType<typeof api.workspaces.getWorkspaceContext>>;
 type BackendWorkspaces = FunctionReturnType<typeof api.workspaces.listWorkspaces>;
@@ -37,6 +38,12 @@ const FILE: BackendFile = {
   version: 3,
   updatedAt: 1_700_000_000_000,
   updatedBy: CLAUDE,
+};
+
+const FILES_PAGE: BackendFilesPage = {
+  page: [FILE],
+  isDone: true,
+  continueCursor: "",
 };
 
 const WORKSPACES: BackendWorkspaces = [
@@ -91,7 +98,7 @@ describe("createConvexApi", () => {
     const { client, calls } = fakeConvex({
       "workspaces:listWorkspaces": WORKSPACES,
       "workspaces:createWorkspace": "workspaces_2",
-      "files:listFiles": [FILE],
+      "files:listFiles": FILES_PAGE,
       "files:readFile": { file: FILE, content: "x" },
       "files:createDocument": { ...FILE, id: "files_2", version: 1 },
       "files:updateDocument": { ...FILE, version: 4 },
@@ -101,7 +108,7 @@ describe("createConvexApi", () => {
     });
     const tandem = createConvexApi(client);
 
-    expect(await tandem.listWorkspaces()).toEqual([{ id: "workspaces_1", name: "Cal Hacks" }]);
+    expect(await tandem.listWorkspaces()).toEqual([{ id: "workspaces_1", name: "Cal Hacks", role: "owner" }]);
     expect(await tandem.createWorkspace("New")).toBe("workspaces_2");
     expect((await tandem.listFiles("workspaces_1"))[0]?.updatedBy.agentName).toBe("Claude");
     expect((await tandem.readFile("files_1")).content).toBe("x");
@@ -117,7 +124,10 @@ describe("createConvexApi", () => {
     expect(calls).toEqual([
       { name: "workspaces:listWorkspaces", args: {} },
       { name: "workspaces:createWorkspace", args: { name: "New" } },
-      { name: "files:listFiles", args: { workspaceId: "workspaces_1" } },
+      {
+        name: "files:listFiles",
+        args: { workspaceId: "workspaces_1", paginationOpts: { numItems: 100, cursor: null } },
+      },
       { name: "files:readFile", args: { fileId: "files_1" } },
       {
         name: "files:createDocument",
@@ -134,7 +144,7 @@ describe("createConvexApi", () => {
   it("maps a file in full, naming both the person and the assistant on agent writes", async () => {
     const { client } = fakeConvex({
       "files:readFile": { file: { ...FILE, parentId: "folders_1" }, content: "x" },
-      "files:listFiles": [FILE],
+      "files:listFiles": FILES_PAGE,
     });
     const tandem = createConvexApi(client);
     const summary = {

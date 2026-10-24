@@ -57,6 +57,23 @@ export default defineSchema({
     .index("by_workspace_and_user", ["workspaceId", "userId"])
     .index("by_user_and_workspace", ["userId", "workspaceId"]),
 
+  workspace_invites: defineTable({
+    workspaceId: v.id("workspaces"),
+    tokenHash: v.string(),
+    role: v.union(v.literal("admin"), v.literal("member")),
+    createdBy: v.id("users"),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    acceptedBy: v.optional(v.id("users")),
+    acceptedAt: v.optional(v.number()),
+    revokedAt: v.optional(v.number()),
+    updatedBy: actor,
+    revision: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_token_hash", ["tokenHash"])
+    .index("by_workspace", ["workspaceId"]),
+
   agent_connections: defineTable({
     workspaceId: v.id("workspaces"),
     userId: v.id("users"),
@@ -99,7 +116,11 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_workspace_and_parent", ["workspaceId", "parentId"])
-    .index("by_workspace", ["workspaceId"]),
+    .index("by_workspace", ["workspaceId"])
+    .searchIndex("search_name", {
+      searchField: "name",
+      filterFields: ["workspaceId", "parentId"],
+    }),
 
   file_revisions: defineTable({
     workspaceId: v.id("workspaces"),

@@ -54,6 +54,8 @@ function toFileSummary(file: BackendFileMetadata): FileSummary {
 // page loads would hang on flaky Wi-Fi. A timed-out mutation may still land
 // later; the next save then conflicts instead of overwriting (see errorCopy).
 export const CALL_TIMEOUT_MS = 15_000;
+export const MAX_LIST_FILES = 10_000;
+const FILES_PAGE_SIZE = 100;
 
 export async function call<T>(
   run: () => Promise<T>,
@@ -84,16 +86,39 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
           api.workspaces.listWorkspaces,
           {},
         );
-        return workspaces.map(({ id, name }) => ({ id, name }));
+        return workspaces.map(({ id, name, role }) => ({ id, name, role }));
       }),
     createWorkspace: (name) =>
       call(() => convex.mutation(api.workspaces.createWorkspace, { name })),
+    createInvite: (workspaceId, role) => call(() => convex.mutation(api.workspaces.createWorkspaceInvite, {
+      workspaceId: workspaceId as Id<"workspaces">, role,
+    })),
+    acceptInvite: (token) => call(() => convex.mutation(api.workspaces.acceptWorkspaceInvite, { token })),
+    listInvites: (workspaceId) => call(() => convex.query(api.workspaces.listWorkspaceInvites, {
+      workspaceId: workspaceId as Id<"workspaces">,
+    })),
+    revokeInvite: (inviteId) => call(async () => {
+      await convex.mutation(api.workspaces.revokeWorkspaceInvite, { inviteId: inviteId as Id<"workspace_invites"> });
+    }),
     listFiles: (workspaceId) =>
       call(async () => {
-        const files = await convex.query(api.files.listFiles, {
-          workspaceId: workspaceId as Id<"workspaces">,
-        });
-        return files.map(toFileSummary);
+        const files: FileSummary[] = [];
+        let cursor: string | null = null;
+        const seenCursors = new Set<string>();
+        for (let page = 0; page < MAX_LIST_FILES / FILES_PAGE_SIZE; page++) {
+          const result: { page: BackendFileMetadata[]; isDone: boolean; continueCursor: string } = await convex.query(api.files.listFiles, {
+            workspaceId: workspaceId as Id<"workspaces">,
+            paginationOpts: { numItems: FILES_PAGE_SIZE, cursor },
+          });
+          files.push(...result.page.map(toFileSummary));
+          if (files.length > MAX_LIST_FILES) throw new TandemApiError("LIST_LIMIT_EXCEEDED");
+          if (result.isDone) return files;
+          if (!result.continueCursor || seenCursors.has(result.continueCursor))
+            throw new TandemApiError("LIST_LIMIT_EXCEEDED");
+          seenCursors.add(result.continueCursor);
+          cursor = result.continueCursor;
+        }
+        throw new TandemApiError("LIST_LIMIT_EXCEEDED");
       }),
     createFile: async (workspaceId, input) => {
       const file = await call(() =>
