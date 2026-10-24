@@ -99,3 +99,63 @@ export function nameExists(
     { file_id: fileId, name, current_version: currentVersion },
   );
 }
+
+export function folderNameExists(folderId: string, name: string): TandemError {
+  return new TandemError(
+    "NAME_EXISTS",
+    `A folder named ${JSON.stringify(name)} already exists here (folder_id ${folderId}). ` +
+      `Use that folder, or choose a different name.`,
+    { folder_id: folderId, name },
+  );
+}
+
+/** A move that would clash with a file already in the destination folder. */
+export function moveNameExists(
+  fileId: string,
+  name: string,
+  currentVersion: number,
+): TandemError {
+  return new TandemError(
+    "NAME_EXISTS",
+    `The destination already has a file named ${JSON.stringify(name)} (file_id ${fileId}, version ${currentVersion}). ` +
+      `Nothing was moved. Choose another folder or ask the user how to resolve the clash.`,
+    { file_id: fileId, name, current_version: currentVersion },
+  );
+}
+
+/** A move based on a stale read. Same code and details as versionConflict. */
+export function moveConflict(
+  fileId: string,
+  currentVersion: number,
+  expectedVersion: number,
+): TandemError {
+  return new TandemError(
+    "VERSION_CONFLICT",
+    `File ${fileId} is at version ${currentVersion}, not ${expectedVersion}; someone else changed it. ` +
+      `Nothing was moved. Re-read the file with read_file, check the move still makes sense, ` +
+      `then retry move_file with expected_version=${currentVersion}.`,
+    {
+      file_id: fileId,
+      current_version: currentVersion,
+      expected_version: expectedVersion,
+    },
+  );
+}
+
+/** parent_id isn't a folder in the workspace (malformed, missing, or another tenant's). */
+export function invalidParentFolder(forMove = false): TandemError {
+  return new TandemError(
+    "INVALID_INPUT",
+    forMove
+      ? "parent_id must be a folder in this file's workspace (from list_folders), or null for the top level."
+      : "parent_id must be a folder in this workspace (from list_folders); omit it to create at the top level.",
+  );
+}
+
+/** list_files folder_id isn't a folder in the workspace. */
+export function invalidFolderFilter(): TandemError {
+  return new TandemError(
+    "INVALID_INPUT",
+    "folder_id must be a folder in this workspace (from list_folders); omit it to list every file.",
+  );
+}

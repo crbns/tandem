@@ -5,9 +5,12 @@ import type { Id } from "./_generated/dataModel";
 import { humanActor, requireMembership, requireUser } from "./lib/auth";
 import {
   createDocumentCore,
+  listFoldersCore,
+  moveFileCore,
   toFileMetadata,
   updateDocumentCore,
 } from "./lib/ops";
+import { folderMetadataValidator } from "./lib/validators";
 
 const actorValidator = v.object({
   type: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
@@ -135,6 +138,39 @@ export const updateDocument = mutation({
       actor: humanActor(user),
     });
     return toMetadata(updated);
+  },
+});
+
+export const moveFile = mutation({
+  args: {
+    fileId: v.id("files"),
+    /** null moves the file to the top level. */
+    parentId: v.union(v.id("folders"), v.null()),
+    expectedVersion: v.number(),
+  },
+  returns: fileValidator,
+  handler: async (ctx, args) => {
+    const file = await getAuthorizedFile(ctx, args.fileId);
+    const user = await requireUser(ctx);
+    const moved = await moveFileCore(ctx, {
+      file,
+      parentId: args.parentId,
+      expectedVersion: args.expectedVersion,
+      actor: humanActor(user),
+    });
+    return toMetadata(moved);
+  },
+});
+
+export const listFolders = query({
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.object({
+    folders: v.array(folderMetadataValidator),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, { workspaceId }) => {
+    await requireMembership(ctx, workspaceId);
+    return await listFoldersCore(ctx, workspaceId);
   },
 });
 

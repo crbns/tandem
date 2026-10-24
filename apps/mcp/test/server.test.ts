@@ -164,15 +164,18 @@ describe("Tandem MCP server", () => {
     await client.close();
   });
 
-  it("lists exactly the eleven tools", async () => {
+  it("lists exactly the fourteen tools", async () => {
     const client = await connect("alex-token");
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "create_document",
+      "create_folder",
       "get_approvals",
       "get_file_versions",
       "get_workspace_info",
       "list_files",
+      "list_folders",
+      "move_file",
       "propose_context_change",
       "publish_work",
       "read_file",
@@ -200,6 +203,7 @@ describe("Tandem MCP server", () => {
     expect(annotations).toEqual({
       get_workspace_info: readOnly,
       list_files: readOnly,
+      list_folders: readOnly,
       search_files: readOnly,
       read_file: readOnly,
       get_file_versions: readOnly,
@@ -207,6 +211,8 @@ describe("Tandem MCP server", () => {
       sync_workspace: idempotentWrite,
       create_document: write,
       update_document: idempotentWrite,
+      create_folder: write,
+      move_file: idempotentWrite,
       propose_context_change: write,
       publish_work: write,
     });
@@ -348,30 +354,27 @@ describe("Tandem MCP server", () => {
     await Promise.all([jordan.close(), alex.close()]);
   });
 
-  it("rejects parent_id until folders exist", async () => {
-    const client = await connect("alex-token");
-    const result = await call(client, "create_document", {
-      name: "nested.md",
-      content: "x",
-      parent_id: "file_brief",
-    });
-    expect(result.isError).toBe(true);
-    expect(errorCode(result)).toBe("INVALID_INPUT");
-    expect((result.content[0] as { text: string }).text).toContain(
-      "omit parent_id",
-    );
-    await client.close();
-  });
-
-  it("rejects folder_id on list_files until folders exist", async () => {
-    const client = await connect("alex-token");
-    const result = await call(client, "list_files", { folder_id: "folder_x" });
-    expect(result.isError).toBe(true);
-    expect(errorCode(result)).toBe("INVALID_INPUT");
-    expect((result.content[0] as { text: string }).text).toContain(
-      "omit folder_id",
-    );
-    await client.close();
+  it("rejects parent_id and folder_id that aren't folders in the workspace", async () => {
+    const alex = await connect("alex-token");
+    const jordan = await connect("jordan-token");
+    const theirs = await call(jordan, "create_folder", { name: "Venue" });
+    const theirId = (theirs.structuredContent as { id: string }).id;
+    for (const parent_id of ["file_brief", "folder_missing", theirId]) {
+      const result = await call(alex, "create_document", {
+        name: "nested.md",
+        content: "x",
+        parent_id,
+      });
+      expect(result.isError).toBe(true);
+      expect(errorCode(result)).toBe("INVALID_INPUT");
+      expect(text(result)).toContain("list_folders");
+      const folder = await call(alex, "create_folder", { name: "Sub", parent_id });
+      expect(errorCode(folder)).toBe("INVALID_INPUT");
+      const list = await call(alex, "list_files", { folder_id: parent_id });
+      expect(errorCode(list)).toBe("INVALID_INPUT");
+      expect(text(list)).toContain("omit it to list every file");
+    }
+    await Promise.all([alex.close(), jordan.close()]);
   });
 
   it("rejects duplicate names in the same workspace", async () => {
@@ -1527,6 +1530,351 @@ describe("context tools", () => {
   });
 });
 
+describe("folder tools", () => {
+  type Folder = {
+    id: string;
+    workspace_id: string;
+    parent_id: string | null;
+    name: string;
+    revision: number;
+  };
+  type File = {
+    id: string;
+    name: string;
+    parent_id: string | null;
+    version: number;
+    folder_path: string;
+  };
+
+  async function createFolder(
+    client: Client,
+    args: Record<string, unknown>,
+  ): Promise<Folder> {
+    const result = await call(client, "create_folder", args);
+    expect(result.isError).toBeFalsy();
+    return result.structuredContent as Folder;
+  }
+
+  it("creates nested folders and lists them flat", async () => {
+    const alex = await connect("alex-token");
+    const research = await createFolder(alex, { name: "  Research " });
+    expect(research).toMatchObject({
+      workspace_id: "ws_demo",
+      parent_id: null,
+      name: "Research",
+      revision: 1,
+      updated_by: { actor_type: "agent", user_id: "user_alex" },
+    });
+    const notes = await createFolder(alex, {
+      name: "Notes",
+      parent_id: research.id,
+    });
+    expect(notes.parent_id).toBe(research.id);
+
+    const listed = await call(alex, "list_folders", {});
+    expect(listed.structuredContent).toEqual({
+      folders: [
+        { ...research, path: "Research/" },
+        { ...notes, path: "Research/Notes/" },
+      ],
+      truncated: false,
+    });
+
+    // Other tenants see none of them.
+    const jordan = await connect("jordan-token");
+    const theirs = await call(jordan, "list_folders", {});
+    expect(theirs.structuredContent).toEqual({ folders: [], truncated: false });
+    const peek = await call(jordan, "list_folders", { workspace_id: "ws_demo" });
+    expect(errorCode(peek)).toBe("FORBIDDEN");
+    await Promise.all([alex.close(), jordan.close()]);
+  });
+
+  it("rejects duplicate folder names per parent, case-insensitively", async () => {
+    const alex = await connect("alex-token");
+    const research = await createFolder(alex, { name: "Research" });
+    const dup = await call(alex, "create_folder", { name: " RESEARCH " });
+    expect(dup.isError).toBe(true);
+    expect(dup.structuredContent).toEqual({
+      error: {
+        code: "NAME_EXISTS",
+        message: expect.stringContaining('"Research"'),
+        folder_id: research.id,
+        name: "Research",
+      },
+    });
+
+    // Same name under another parent, and a file of the same name, are fine.
+    const nested = await call(alex, "create_folder", {
+      name: "research",
+      parent_id: research.id,
+    });
+    expect(nested.isError).toBeFalsy();
+    const nestedDup = await call(alex, "create_folder", {
+      name: "Research",
+      parent_id: research.id,
+    });
+    expect(nestedDup.structuredContent).toMatchObject({
+      error: {
+        code: "NAME_EXISTS",
+        folder_id: (nested.structuredContent as Folder).id,
+      },
+    });
+    const file = await call(alex, "create_document", {
+      name: "research",
+      content: "",
+    });
+    expect(file.isError).toBeFalsy();
+    const blank = await call(alex, "create_folder", { name: "   " });
+    expect(blank.isError).toBe(true);
+    expect(text(blank)).toMatch(/name must contain a visible character/);
+    await alex.close();
+  });
+
+  it("creates documents in folders and lists files by folder_id", async () => {
+    const alex = await connect("alex-token");
+    const research = await createFolder(alex, { name: "Research" });
+    const inFolder = await call(alex, "create_document", {
+      name: "brief.md",
+      content: "nested",
+      parent_id: research.id,
+    });
+    // Unique per folder: the top-level brief.md doesn't clash.
+    expect(inFolder.isError).toBeFalsy();
+    expect(inFolder.structuredContent).toMatchObject({
+      parent_id: research.id,
+      version: 1,
+    });
+    await call(alex, "create_document", {
+      name: "survey.md",
+      content: "",
+      parent_id: research.id,
+    });
+
+    const names = async (args: Record<string, unknown>) =>
+      (
+        (await call(alex, "list_files", args)).structuredContent as {
+          files: File[];
+        }
+      ).files
+        .map((f) => `${f.folder_path}${f.name}`)
+        .sort();
+    expect(await names({ folder_id: research.id })).toEqual([
+      "Research/brief.md",
+      "Research/survey.md",
+    ]);
+    expect(await names({ folder_id: research.id, query: "survey" })).toEqual([
+      "Research/survey.md",
+    ]);
+    expect(await names({})).toEqual([
+      "Research/brief.md",
+      "Research/survey.md",
+      "brief.md",
+    ]);
+    await alex.close();
+  });
+
+  it("reports folder_path after a move into a folder (#28 acceptance)", async () => {
+    const alex = await connect("alex-token");
+    const specs = await createFolder(alex, { name: "specs" });
+    const api = await createFolder(alex, { name: "api", parent_id: specs.id });
+    const proposal = (
+      await call(alex, "create_document", {
+        name: "proposal.md",
+        content: "# Proposal\n\nShip folders.",
+      })
+    ).structuredContent as File;
+    const byName = async (args: Record<string, unknown> = {}) =>
+      Object.fromEntries(
+        (
+          (await call(alex, "list_files", args)).structuredContent as {
+            files: File[];
+          }
+        ).files.map((f) => [f.name, f.folder_path]),
+      );
+    expect(await byName()).toMatchObject({ "proposal.md": "" });
+
+    const moved = await call(alex, "move_file", {
+      file_id: proposal.id,
+      parent_id: specs.id,
+      expected_version: 1,
+    });
+    expect(moved.isError).toBeFalsy();
+    expect(await byName()).toMatchObject({
+      "proposal.md": "specs/",
+      "brief.md": "",
+    });
+    expect(await byName({ folder_id: specs.id })).toEqual({
+      "proposal.md": "specs/",
+    });
+
+    // Nested folders: names from the top level down, each with a trailing slash.
+    await call(alex, "create_document", {
+      name: "endpoints.md",
+      content: "GET /files",
+      parent_id: api.id,
+    });
+    expect(await byName({ query: "endpoints" })).toEqual({
+      "endpoints.md": "specs/api/",
+    });
+    const found = await call(alex, "search_files", { query: "GET /files" });
+    expect(found.structuredContent).toMatchObject({
+      results: [
+        {
+          file: { name: "endpoints.md", parent_id: api.id, folder_path: "specs/api/" },
+          match: "content",
+        },
+      ],
+    });
+    const read = await call(alex, "read_file", { file_id: proposal.id });
+    expect(read.structuredContent).toMatchObject({
+      file: { parent_id: specs.id, folder_path: "specs/" },
+    });
+    const top = await call(alex, "read_file", { file_id: "file_brief" });
+    expect(top.structuredContent).toMatchObject({ file: { folder_path: "" } });
+    await alex.close();
+  });
+
+  it("moves a file without changing its content or version", async () => {
+    const alex = await connect("alex-token");
+    const sam = await connect("sam-token");
+    const research = await createFolder(alex, { name: "Research" });
+    const synced = await call(sam, "sync_workspace", {});
+    const { cursor } = synced.structuredContent as { cursor: string };
+
+    const moved = await call(sam, "move_file", {
+      file_id: "file_brief",
+      parent_id: research.id,
+      expected_version: 1,
+    });
+    expect(moved.isError).toBeFalsy();
+    expect(moved.structuredContent).toMatchObject({
+      id: "file_brief",
+      parent_id: research.id,
+      version: 1,
+      updated_by: { actor_type: "agent", user_id: "user_sam" },
+    });
+    const read = await call(alex, "read_file", { file_id: "file_brief" });
+    expect(read.structuredContent).toMatchObject({
+      file: { parent_id: research.id, version: 1 },
+      content: expect.stringContaining("# Project brief"),
+    });
+    const versions = await call(alex, "get_file_versions", {
+      file_id: "file_brief",
+    });
+    expect(
+      (versions.structuredContent as { versions: unknown[] }).versions,
+    ).toHaveLength(1);
+
+    // Repeating the move is a no-op; moving to null returns it to the top level.
+    const again = await call(sam, "move_file", {
+      file_id: "file_brief",
+      parent_id: research.id,
+      expected_version: 1,
+    });
+    expect(again.structuredContent).toEqual(moved.structuredContent);
+    const top = await call(sam, "move_file", {
+      file_id: "file_brief",
+      parent_id: null,
+      expected_version: 1,
+    });
+    expect(top.structuredContent).toMatchObject({ parent_id: null, version: 1 });
+
+    const delta = await call(alex, "sync_workspace", { since: cursor });
+    const { events, changed_files } = delta.structuredContent as {
+      events: { type: string; subject_id: string; summary: string }[];
+      changed_files: File[];
+    };
+    expect(events.map((e) => [e.type, e.summary])).toEqual([
+      ["file.moved", "brief.md moved to Research"],
+      ["file.moved", "brief.md moved to the top level"],
+    ]);
+    expect(changed_files).toEqual([
+      expect.objectContaining({ id: "file_brief", parent_id: null }),
+    ]);
+    await Promise.all([alex.close(), sam.close()]);
+  });
+
+  it("rejects stale moves with VERSION_CONFLICT and moves nothing", async () => {
+    const alex = await connect("alex-token");
+    const research = await createFolder(alex, { name: "Research" });
+    await call(alex, "update_document", {
+      file_id: "file_brief",
+      content: "v2",
+      expected_version: 1,
+    });
+    for (const expected_version of [1, 3]) {
+      const stale = await call(alex, "move_file", {
+        file_id: "file_brief",
+        parent_id: research.id,
+        expected_version,
+      });
+      expect(stale.isError).toBe(true);
+      expect(stale.structuredContent).toMatchObject({
+        error: {
+          code: "VERSION_CONFLICT",
+          file_id: "file_brief",
+          current_version: 2,
+          expected_version,
+        },
+      });
+      expect(text(stale)).toContain("retry move_file with expected_version=2");
+    }
+    const read = await call(alex, "read_file", { file_id: "file_brief" });
+    expect(read.structuredContent).toMatchObject({
+      file: { parent_id: null, version: 2 },
+    });
+    await alex.close();
+  });
+
+  it("rejects moves onto an existing name, into bad folders, or of other tenants' files", async () => {
+    const alex = await connect("alex-token");
+    const jordan = await connect("jordan-token");
+    const research = await createFolder(alex, { name: "Research" });
+    const clash = await call(alex, "create_document", {
+      name: "BRIEF.md",
+      content: "",
+      parent_id: research.id,
+    });
+    const clashId = (clash.structuredContent as File).id;
+
+    const dup = await call(alex, "move_file", {
+      file_id: "file_brief",
+      parent_id: research.id,
+      expected_version: 1,
+    });
+    expect(dup.structuredContent).toMatchObject({
+      error: {
+        code: "NAME_EXISTS",
+        file_id: clashId,
+        name: "BRIEF.md",
+        current_version: 1,
+      },
+    });
+    expect(text(dup)).toContain("Nothing was moved");
+
+    const theirs = await createFolder(jordan, { name: "Venue" });
+    for (const parent_id of ["folder_missing", theirs.id, "file_brief"]) {
+      const bad = await call(alex, "move_file", {
+        file_id: "file_brief",
+        parent_id,
+        expected_version: 1,
+      });
+      expect(errorCode(bad)).toBe("INVALID_INPUT");
+      expect(text(bad)).toContain("null for the top level");
+    }
+    const foreign = await call(jordan, "move_file", {
+      file_id: "file_brief",
+      parent_id: theirs.id,
+      expected_version: 1,
+    });
+    expect(errorCode(foreign)).toBe("FILE_NOT_FOUND");
+
+    const read = await call(alex, "read_file", { file_id: "file_brief" });
+    expect(read.structuredContent).toMatchObject({ file: { parent_id: null } });
+    await Promise.all([alex.close(), jordan.close()]);
+  });
+});
+
 describe("Origin allowlist", () => {
   let originServer: Server;
   let originUrl: URL;
@@ -1568,7 +1916,7 @@ describe("Origin allowlist", () => {
         }),
       );
       const { tools } = await client.listTools();
-      expect(tools.length).toBe(11);
+      expect(tools.length).toBe(14);
       await client.close();
     }
   });
@@ -1606,7 +1954,7 @@ describe("Origin allowlist", () => {
         }),
       );
       const { tools } = await client.listTools();
-      expect(tools.length).toBe(11);
+      expect(tools.length).toBe(14);
       await client.close();
     } finally {
       await stop(slashServer);
@@ -1643,6 +1991,23 @@ describe("MockBackend", () => {
     expect(file.version).toBe(1);
   });
 
+  it("rejects invalid expected_version on moves without moving", async () => {
+    const backend = new MockBackend();
+    const folder = await backend.createFolder(alex, { name: "Research" });
+    for (const expected_version of [NaN, 0, -1, 0.5, Infinity]) {
+      await expectCode(
+        backend.moveFile(alex, {
+          file_id: "file_brief",
+          parent_id: folder.id,
+          expected_version,
+        }),
+        "INVALID_INPUT",
+      );
+    }
+    const { file } = await backend.readFile(alex, "file_brief");
+    expect(file.parent_id).toBeNull();
+  });
+
   it("rejects names whose normalized key is empty", async () => {
     const backend = new MockBackend();
     for (const name of ["   ", "\u200B", "\uFEFF \u2060"]) {
@@ -1654,6 +2019,7 @@ describe("MockBackend", () => {
         }),
         "INVALID_INPUT",
       );
+      await expectCode(backend.createFolder(alex, { name }), "INVALID_INPUT");
     }
   });
 

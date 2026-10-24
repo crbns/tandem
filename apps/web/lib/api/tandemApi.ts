@@ -5,9 +5,14 @@ import type {
   NewAgentConnection,
   ProposalStatus,
   CreateFileInput,
+  CreateFolderInput,
   FileDetail,
+  FileMove,
   FileSummary,
   FileUpdate,
+  Folder,
+  FolderMove,
+  FolderRename,
   ProjectContext,
   Revision,
   Workspace,
@@ -34,6 +39,31 @@ export interface TandemApi {
     input: CreateFileInput,
   ): Promise<{ id: string; version: number }>;
   readFile(fileId: string): Promise<FileDetail>;
+  /** Every folder in the workspace, flat; rebuild the tree from `parentId`. */
+  listFolders(workspaceId: string): Promise<Folder[]>;
+  /**
+   * Rejects with NAME_EXISTS when the parent already holds a folder with this
+   * name (trimmed, case-insensitive) and FOLDER_NOT_FOUND for a bad parent.
+   */
+  createFolder(workspaceId: string, input: CreateFolderInput): Promise<{ id: string }>;
+  /**
+   * Rejects with VERSION_CONFLICT when `expectedRevision` isn't current,
+   * NAME_EXISTS when a sibling folder already has the name (a case-only rename
+   * of the folder itself is fine), and FOLDER_NOT_FOUND for a missing folder.
+   */
+  renameFolder(folderId: string, rename: FolderRename): Promise<Folder>;
+  /**
+   * Moves a folder and everything in it. Rejects with FOLDER_CYCLE when the
+   * destination is the folder or one of its subfolders, VERSION_CONFLICT,
+   * NAME_EXISTS in the destination, and FOLDER_NOT_FOUND for either folder.
+   */
+  moveFolder(folderId: string, move: FolderMove): Promise<Folder>;
+  /**
+   * Moves a file without creating a new version. Rejects with VERSION_CONFLICT
+   * when `expectedVersion` isn't the head, NAME_EXISTS when the destination
+   * already holds a file with this name, and FOLDER_NOT_FOUND for a bad folder.
+   */
+  moveFile(fileId: string, move: FileMove): Promise<FileSummary>;
   /** Rejects with VERSION_CONFLICT when `expectedVersion` isn't the head. */
   updateFileContent(
     fileId: string,

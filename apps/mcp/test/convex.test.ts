@@ -28,6 +28,16 @@ const FILE = {
   },
 };
 
+const FOLDER = {
+  id: "folder1",
+  workspaceId: "ws1",
+  parentId: null,
+  name: "Research",
+  revision: 1,
+  updatedAt: Date.UTC(2026, 9, 24),
+  updatedBy: FILE.updatedBy,
+};
+
 type Handler = (args: Record<string, unknown>) => unknown;
 
 /** Stands in for ConvexHttpClient: records calls and answers per function name. */
@@ -84,7 +94,7 @@ describe("Convex-backed server", () => {
   beforeEach(async () => {
     fake = fakeConvex({
       "mcp:verifyToken": verifyToken,
-      "mcp:readFile": () => ({ file: FILE, content: "hello" }),
+      "mcp:readFile": () => ({ file: { ...FILE, folderPath: "" }, content: "hello" }),
       "mcp:updateDocument": () => {
         throw new ConvexError({
           code: "VERSION_CONFLICT",
@@ -158,8 +168,57 @@ describe("Convex-backed server", () => {
           contextRevision: 3,
         },
       ],
-      "mcp:listFiles": () => {
-        throw new ConvexError({ code: "FORBIDDEN", workspaceId: "ws2" });
+      "mcp:listFiles": (args) => {
+        if (args.folderId === "nope")
+          throw new ConvexError({ code: "INVALID_INPUT", field: "folderId" });
+        if (args.workspaceId === "ws2")
+          throw new ConvexError({ code: "FORBIDDEN", workspaceId: "ws2" });
+        return {
+          files: [{ ...FILE, id: "file2", parentId: "folder2", folderPath: "Research/Notes/" }],
+          truncated: false,
+        };
+      },
+      "mcp:searchFiles": () => [
+        {
+          file: { ...FILE, parentId: "folder1", folderPath: "Research/" },
+          snippet: "hello",
+          match: "content",
+        },
+      ],
+      "mcp:createFolder": (args) => {
+        if (args.name === "Research")
+          throw new ConvexError({ code: "NAME_EXISTS", folderId: "folder1", name: "Research" });
+        if (args.parentId === "bad")
+          throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
+        return { ...FOLDER, id: "folder2", parentId: args.parentId ?? null, name: args.name };
+      },
+      // Child listed before its parent: paths don't depend on order.
+      "mcp:listFolders": () => ({
+        folders: [
+          { ...FOLDER, id: "folder2", parentId: "folder1", name: "Notes", revision: 3 },
+          FOLDER,
+        ],
+        truncated: false,
+      }),
+      "mcp:moveFile": (args) => {
+        if (args.expectedVersion === 1)
+          throw new ConvexError({
+            code: "VERSION_CONFLICT",
+            fileId: "file1",
+            currentVersion: 2,
+            expectedVersion: 1,
+            currentContent: "secret head content",
+          });
+        if (args.parentId === "bad")
+          throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
+        if (args.parentId === "folder_clash")
+          throw new ConvexError({
+            code: "NAME_EXISTS",
+            fileId: "file9",
+            name: "Brief.md",
+            currentVersion: 4,
+          });
+        return { ...FILE, parentId: args.parentId };
       },
     });
     const backend = new ConvexBackend(fake.client);
@@ -186,6 +245,9 @@ describe("Convex-backed server", () => {
   }
   async function call(client: Client, name: string, args: Record<string, unknown>) {
     return (await client.callTool({ name, arguments: args })) as CallToolResult;
+  }
+  function text(result: CallToolResult): string {
+    return (result.content[0] as { text: string }).text;
   }
 
   it("challenges with Bearer and rejects tokens Convex rejects", async () => {
@@ -219,6 +281,7 @@ describe("Convex-backed server", () => {
           agent_connection_id: "conn1",
           label: "Sam's Claude",
         },
+        folder_path: "",
       },
       content: "hello",
     });
@@ -284,6 +347,129 @@ describe("Convex-backed server", () => {
       { token: TOKEN },
       { token: TOKEN },
     ]);
+  });
+
+  it("maps folderPath to folder_path in list_files and search_files", async () => {
+    const client = await connect({ "api-key": TOKEN });
+    const listed = await call(client, "list_files", { folder_id: "folder2" });
+    expect(listed.structuredContent).toEqual({
+      files: [
+        expect.objectContaining({
+          id: "file2",
+          parent_id: "folder2",
+          folder_path: "Research/Notes/",
+        }),
+      ],
+    });
+    expect(listed.structuredContent).not.toHaveProperty("files.0.folderPath");
+    const found = await call(client, "search_files", { query: "hello" });
+    expect(found.structuredContent).toEqual({
+      results: [
+        {
+          file: expect.objectContaining({ parent_id: "folder1", folder_path: "Research/" }),
+          snippet: "hello",
+          match: "content",
+        },
+      ],
+    });
+  });
+
+  it("wires the folder tools to Convex and maps their errors", async () => {
+    const client = await connect({ "api-key": TOKEN });
+    const created = await call(client, "create_folder", {
+      name: "Notes",
+      parent_id: "folder1",
+    });
+    expect(created.structuredContent).toEqual({
+      id: "folder2",
+      workspace_id: "ws1",
+      parent_id: "folder1",
+      name: "Notes",
+      revision: 1,
+      updated_at: "2026-10-24T00:00:00.000Z",
+      updated_by: {
+        actor_type: "agent",
+        user_id: "user1",
+        client: "claude",
+        agent_connection_id: "conn1",
+        label: "Sam's Claude",
+      },
+    });
+    const listed = await call(client, "list_folders", { workspace_id: "ws1" });
+    expect(listed.structuredContent).toMatchObject({
+      folders: [
+        { id: "folder2", parent_id: "folder1", name: "Notes", revision: 3, path: "Research/Notes/" },
+        { id: "folder1", parent_id: null, name: "Research", revision: 1, path: "Research/" },
+      ],
+      truncated: false,
+    });
+    const moved = await call(client, "move_file", {
+      file_id: "file1",
+      parent_id: "folder1",
+      expected_version: 2,
+    });
+    expect(moved.structuredContent).toMatchObject({
+      id: "file1",
+      parent_id: "folder1",
+      version: 2,
+    });
+    const top = await call(client, "move_file", {
+      file_id: "file1",
+      parent_id: null,
+      expected_version: 2,
+    });
+    expect(top.structuredContent).toMatchObject({ parent_id: null });
+
+    const args = (name: string) =>
+      fake.calls.filter((c) => c.name === name).map((c) => c.args);
+    expect(args("mcp:createFolder")).toEqual([
+      { token: TOKEN, parentId: "folder1", name: "Notes" },
+    ]);
+    expect(args("mcp:listFolders")).toEqual([{ token: TOKEN, workspaceId: "ws1" }]);
+    // null (the top level) is sent, not dropped like an omitted argument.
+    expect(args("mcp:moveFile")).toEqual([
+      { token: TOKEN, fileId: "file1", parentId: "folder1", expectedVersion: 2 },
+      { token: TOKEN, fileId: "file1", parentId: null, expectedVersion: 2 },
+    ]);
+
+    const dupFolder = await call(client, "create_folder", { name: "Research" });
+    expect(dupFolder.structuredContent).toMatchObject({
+      error: { code: "NAME_EXISTS", folder_id: "folder1", name: "Research" },
+    });
+    expect(dupFolder.structuredContent).not.toHaveProperty("error.file_id");
+    const badParent = await call(client, "create_folder", { name: "X", parent_id: "bad" });
+    expect(badParent.structuredContent).toMatchObject({ error: { code: "INVALID_INPUT" } });
+    expect(text(badParent)).toContain("omit it to create at the top level");
+
+    const conflict = await call(client, "move_file", {
+      file_id: "file1",
+      parent_id: "folder1",
+      expected_version: 1,
+    });
+    expect(conflict.structuredContent).toMatchObject({
+      error: { code: "VERSION_CONFLICT", file_id: "file1", current_version: 2, expected_version: 1 },
+    });
+    expect(text(conflict)).toContain("retry move_file with expected_version=2");
+    expect(JSON.stringify(conflict)).not.toContain("secret head content");
+    const badMove = await call(client, "move_file", {
+      file_id: "file1",
+      parent_id: "bad",
+      expected_version: 2,
+    });
+    expect(text(badMove)).toContain("null for the top level");
+    const clash = await call(client, "move_file", {
+      file_id: "file1",
+      parent_id: "folder_clash",
+      expected_version: 2,
+    });
+    expect(clash.structuredContent).toMatchObject({
+      error: { code: "NAME_EXISTS", file_id: "file9", name: "Brief.md", current_version: 4 },
+    });
+    expect(text(clash)).toContain("Nothing was moved");
+
+    const badFilter = await call(client, "list_files", { folder_id: "nope" });
+    expect(badFilter.structuredContent).toMatchObject({ error: { code: "INVALID_INPUT" } });
+    expect(text(badFilter)).toContain("list_folders");
   });
 
   it("lists stale proposals when asked for status stale", async () => {

@@ -15,7 +15,12 @@ All arguments use camelCase; timestamps are epoch milliseconds; IDs are Convex I
 | `listInvites(workspaceId)` | `workspaces:listWorkspaceInvites` | `{ workspaceId }` → newest 100, safe metadata; owner/admin only |
 | `revokeInvite(inviteId)` | `workspaces:revokeWorkspaceInvite` | `{ inviteId }` → null |
 | `listFiles(workspaceId)` | `files:listFiles` | `{ workspaceId, paginationOpts: { numItems: 100, cursor } }` → `{ page, isDone, continueCursor }`, every page followed |
-| `createFile(workspaceId, input)` | `files:createDocument` | `{ workspaceId, name, mimeType, content }` → file metadata |
+| `createFile(workspaceId, input)` | `files:createDocument` | `{ workspaceId, name, mimeType, content, parentId? }` → file metadata; `parentId` omitted (never null) at the top level |
+| `listFolders(workspaceId)` | `files:listFolders` | `{ workspaceId }` → `{ folders, truncated }`; flat list, each with its `revision`; rejects with `LIST_LIMIT_EXCEEDED` when truncated (500) |
+| `createFolder(workspaceId, input)` | `workspaces:createFolder` | `{ workspaceId, name, parentId? }` → folder ID; `NAME_EXISTS` (case-insensitive per parent), `INVALID_PARENT_FOLDER` → `FOLDER_NOT_FOUND` |
+| `renameFolder(folderId, rename)` | `workspaces:renameFolder` | `{ folderId, name, expectedRevision }` → folder metadata, revision + 1; `VERSION_CONFLICT` (`currentRevision`), `NAME_EXISTS` for a sibling folder (a case-only rename is fine), `INVALID_NAME` → `INVALID_INPUT`, `FOLDER_NOT_FOUND` |
+| `moveFolder(folderId, move)` | `workspaces:moveFolder` | `{ folderId, parentId \| null, expectedRevision }` → folder metadata, revision + 1; the subtree moves with it. `FOLDER_CYCLE` (into itself or a subfolder), `VERSION_CONFLICT`, `NAME_EXISTS` in the destination, `INVALID_PARENT_FOLDER` → `FOLDER_NOT_FOUND` |
+| `moveFile(fileId, move)` | `files:moveFile` | `{ fileId, parentId \| null, expectedVersion }` → file metadata, same version; `VERSION_CONFLICT`, `NAME_EXISTS` in the destination, `FOLDER_NOT_FOUND` |
 | `readFile(fileId)` | `files:readFile` | `{ fileId }` → `{ file, content }` |
 | `updateFileContent(fileId, update)` | `files:updateDocument` | `{ fileId, expectedVersion, content }` → file metadata, or `VERSION_CONFLICT` |
 | `listRevisions(fileId)` | `files:getFileVersions` | `{ fileId, limit: 100 }` → newest-first metadata, no bodies |
@@ -63,6 +68,12 @@ Every business error is a `ConvexError({ code, ... })`. `lib/api/errors.ts` norm
 ## Invites and authentication
 
 The Password provider sends no verification email. Owners/admins create single-use invite links (seven-day expiry, hash stored, atomic consumption); signed-in recipients accept them. `/invite/<token>` survives sign-in via `safeNext`. Invalid/expired/revoked/used invites map to distinct `INVITE_*` codes.
+
+## Folders
+
+The files page keeps the open folder in the URL (`/w/<id>?folder=<folderId>`; absent = top level). It loads `listFiles` and `listFolders` together and filters files by `parentId` client-side, so one `watchWorkspace` refetch picks up an assistant's new folder (`folder.created`) or move (`file.moved`). An unknown or other-workspace `?folder` falls back to the top level. Moves never change a file's version, but they require the current one, so a move from a stale list conflicts and the list refetches.
+
+Folder rows and the open folder's header carry Rename and Move. Folders carry a `revision` that every rename or move bumps, so a rename or move from a stale list returns `VERSION_CONFLICT` and the list refetches. The move picker disables the folder and all its subfolders (`folderSubtree`); the backend's `FOLDER_CYCLE` backs that up. The URL is id-based, so renaming or moving the open folder keeps it valid and the breadcrumb follows on refetch. `folder.renamed` and `folder.moved` events reach the page through the same `watchWorkspace` refetch. Folder delete isn't built.
 
 ## Paginated file lists
 

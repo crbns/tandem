@@ -881,3 +881,769 @@ describe("workspace members for agents (T5b)", () => {
     ).toMatchObject({ code: "UNAUTHENTICATED" });
   });
 });
+
+describe("folders and file moves", () => {
+  async function folderSetup() {
+    const base = await setup();
+    const { token, connectionId } = await base.sam.mutation(
+      api.agentConnections.createAgentConnection,
+      { workspaceId: base.workspaceId, client: "claude" },
+    );
+    const events = () =>
+      base.t.run((ctx) =>
+        ctx.db
+          .query("workspace_events")
+          .withIndex("by_workspace_and_seq", (q) =>
+            q.eq("workspaceId", base.workspaceId),
+          )
+          .collect(),
+      );
+    return { ...base, token, connectionId, events };
+  }
+
+  it("lets an agent create folders, unique per parent and case-insensitive", async () => {
+    const { t, token, samId, connectionId, workspaceId, otherWorkspaceId, jordan, events } =
+      await folderSetup();
+    const specs = await t.mutation(api.mcp.createFolder, {
+      token,
+      name: "  Specs ",
+    });
+    expect(specs).toMatchObject({
+      workspaceId,
+      parentId: null,
+      name: "Specs",
+      updatedBy: { type: "agent", userId: samId, agentConnectionId: connectionId },
+    });
+    expect(
+      await errorData(t.mutation(api.mcp.createFolder, { token, name: "SPECS" })),
+    ).toMatchObject({ code: "NAME_EXISTS", folderId: specs.id, name: "Specs" });
+
+    // Nested: the same name is fine under a different parent.
+    const nested = await t.mutation(api.mcp.createFolder, {
+      token,
+      parentId: specs.id,
+      name: "specs",
+    });
+    expect(nested.parentId).toBe(specs.id);
+    // Folders and files are separate namespaces.
+    await t.mutation(api.mcp.createDocument, {
+      token,
+      name: "Specs",
+      mimeType: "text/markdown",
+      content: "",
+    });
+
+    for (const name of ["", "   ", "x".repeat(256)]) {
+      expect(
+        await errorData(t.mutation(api.mcp.createFolder, { token, name })),
+      ).toMatchObject({ code: "INVALID_NAME" });
+    }
+    // Another tenant's folder, a malformed id, and another workspace id.
+    const foreignId = await jordan.mutation(api.workspaces.createFolder, {
+      workspaceId: otherWorkspaceId,
+      name: "Theirs",
+    });
+    for (const parentId of [foreignId, "not-a-folder"]) {
+      expect(
+        await errorData(
+          t.mutation(api.mcp.createFolder, { token, parentId, name: "x" }),
+        ),
+      ).toMatchObject({ code: "INVALID_PARENT_FOLDER" });
+    }
+    expect(
+      await errorData(
+        t.mutation(api.mcp.createFolder, {
+          token,
+          workspaceId: otherWorkspaceId,
+          name: "x",
+        }),
+      ),
+    ).toMatchObject({ code: "FORBIDDEN" });
+
+    const created = (await events()).filter((e) => e.kind === "folder.created");
+    expect(created.map((e) => [e.entityType, e.entityId, e.actor.type])).toEqual([
+      ["folder", specs.id, "agent"],
+      ["folder", nested.id, "agent"],
+    ]);
+  });
+
+  it("matches legacy folders created before nameKey existed", async () => {
+    const { t, token, samId, workspaceId } = await folderSetup();
+    const actor = { type: "human" as const, userId: samId, label: "Sam" };
+    const legacyId = await t.run((ctx) =>
+      ctx.db.insert("folders", {
+        workspaceId,
+        name: "Archive",
+        createdBy: actor,
+        updatedBy: actor,
+        revision: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    expect(
+      await errorData(t.mutation(api.mcp.createFolder, { token, name: "archive" })),
+    ).toMatchObject({ code: "NAME_EXISTS", folderId: legacyId });
+  });
+
+  it("lists only the caller's workspace folders", async () => {
+    const { t, token, alex, jordan, workspaceId, otherWorkspaceId } =
+      await folderSetup();
+    const a = await t.mutation(api.mcp.createFolder, { token, name: "A" });
+    await t.mutation(api.mcp.createFolder, { token, parentId: a.id, name: "B" });
+    await jordan.mutation(api.workspaces.createFolder, {
+      workspaceId: otherWorkspaceId,
+      name: "Secret",
+    });
+
+    const listed = await t.mutation(api.mcp.listFolders, { token });
+    expect(listed.truncated).toBe(false);
+    expect(listed.folders.map((f) => [f.name, f.parentId])).toEqual([
+      ["A", null],
+      ["B", a.id],
+    ]);
+    expect(
+      await errorData(
+        t.mutation(api.mcp.listFolders, { token, workspaceId: otherWorkspaceId }),
+      ),
+    ).toMatchObject({ code: "FORBIDDEN" });
+
+    // The dashboard sees the same folders and is tenant-checked too.
+    const dashboard = await alex.query(api.files.listFolders, { workspaceId });
+    expect(dashboard).toEqual(listed);
+    expect(
+      await errorData(
+        jordan.query(api.files.listFolders, { workspaceId }),
+      ),
+    ).toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("creates a document in an agent-created folder and lists it by folder", async () => {
+    const { t, token } = await folderSetup();
+    const folder = await t.mutation(api.mcp.createFolder, { token, name: "Docs" });
+    const doc = await t.mutation(api.mcp.createDocument, {
+      token,
+      parentId: folder.id,
+      name: "brief.md",
+      mimeType: "text/markdown",
+      content: "hi",
+    });
+    expect(doc.parentId).toBe(folder.id);
+    await t.mutation(api.mcp.createDocument, {
+      token,
+      name: "top.md",
+      mimeType: "text/markdown",
+      content: "",
+    });
+    const inFolder = await t.mutation(api.mcp.listFiles, {
+      token,
+      folderId: folder.id,
+    });
+    expect(inFolder.files.map((f) => f.name)).toEqual(["brief.md"]);
+  });
+
+  it("moves a file as metadata: revision+1, same version, a file.moved event", async () => {
+    const { t, token, samId, connectionId, events } = await folderSetup();
+    const folder = await t.mutation(api.mcp.createFolder, { token, name: "Specs" });
+    const file = await t.mutation(api.mcp.createDocument, {
+      token,
+      name: "plan.md",
+      mimeType: "text/markdown",
+      content: "v1",
+    });
+    const before = await t.run((ctx) => ctx.db.get(file.id));
+
+    const moved = await t.mutation(api.mcp.moveFile, {
+      token,
+      fileId: file.id,
+      parentId: folder.id,
+      expectedVersion: 1,
+    });
+    expect(moved).toMatchObject({
+      parentId: folder.id,
+      version: 1,
+      updatedBy: { type: "agent", userId: samId, agentConnectionId: connectionId },
+    });
+    const after = await t.run((ctx) => ctx.db.get(file.id));
+    expect(after?.revision).toBe(before!.revision + 1);
+    const revisions = await t.run((ctx) =>
+      ctx.db
+        .query("file_revisions")
+        .withIndex("by_file_and_version", (q) => q.eq("fileId", file.id))
+        .collect(),
+    );
+    expect(revisions).toHaveLength(1);
+    const moveEvents = (await events()).filter((e) => e.kind === "file.moved");
+    expect(moveEvents.map((e) => [e.entityType, e.entityId, e.summary])).toEqual([
+      ["file", file.id, "Moved plan.md to Specs"],
+    ]);
+
+    // Moving to where it already is writes nothing.
+    const same = await t.mutation(api.mcp.moveFile, {
+      token,
+      fileId: file.id,
+      parentId: folder.id,
+      expectedVersion: 1,
+    });
+    expect(same).toEqual(moved);
+    expect((await t.run((ctx) => ctx.db.get(file.id)))?.revision).toBe(
+      after!.revision,
+    );
+
+    // Back to the top level.
+    const top = await t.mutation(api.mcp.moveFile, {
+      token,
+      fileId: file.id,
+      parentId: null,
+      expectedVersion: 1,
+    });
+    expect(top.parentId).toBeNull();
+    const last = (await events()).at(-1);
+    expect(last).toMatchObject({
+      kind: "file.moved",
+      summary: "Moved plan.md to the top level",
+    });
+  });
+
+  it("rejects stale, colliding, cross-tenant and malformed moves", async () => {
+    const { t, token, alex, jordan, otherWorkspaceId } = await folderSetup();
+    const folder = await t.mutation(api.mcp.createFolder, { token, name: "Specs" });
+    const file = await t.mutation(api.mcp.createDocument, {
+      token,
+      name: "plan.md",
+      mimeType: "text/markdown",
+      content: "v1",
+    });
+    await alex.mutation(api.files.updateDocument, {
+      fileId: file.id,
+      content: "v2",
+      expectedVersion: 1,
+    });
+    expect(
+      await errorData(
+        t.mutation(api.mcp.moveFile, {
+          token,
+          fileId: file.id,
+          parentId: folder.id,
+          expectedVersion: 1,
+        }),
+      ),
+    ).toMatchObject({ code: "VERSION_CONFLICT", currentVersion: 2, expectedVersion: 1 });
+
+    const clash = await t.mutation(api.mcp.createDocument, {
+      token,
+      parentId: folder.id,
+      name: "PLAN.md",
+      mimeType: "text/markdown",
+      content: "",
+    });
+    expect(
+      await errorData(
+        t.mutation(api.mcp.moveFile, {
+          token,
+          fileId: file.id,
+          parentId: folder.id,
+          expectedVersion: 2,
+        }),
+      ),
+    ).toMatchObject({ code: "NAME_EXISTS", fileId: clash.id, currentVersion: 1 });
+
+    const foreignFolder = await jordan.mutation(api.workspaces.createFolder, {
+      workspaceId: otherWorkspaceId,
+      name: "Theirs",
+    });
+    for (const parentId of [foreignFolder, "not-a-folder"]) {
+      expect(
+        await errorData(
+          t.mutation(api.mcp.moveFile, {
+            token,
+            fileId: file.id,
+            parentId,
+            expectedVersion: 2,
+          }),
+        ),
+      ).toMatchObject({ code: "INVALID_PARENT_FOLDER" });
+      // A stale read is reported first, even for a malformed parentId.
+      expect(
+        await errorData(
+          t.mutation(api.mcp.moveFile, {
+            token,
+            fileId: file.id,
+            parentId,
+            expectedVersion: 1,
+          }),
+        ),
+      ).toMatchObject({ code: "VERSION_CONFLICT", currentVersion: 2 });
+    }
+
+    const foreignFile = await jordan.mutation(api.files.createDocument, {
+      workspaceId: otherWorkspaceId,
+      name: "secret.md",
+      mimeType: "text/markdown",
+      content: "",
+    });
+    expect(
+      await errorData(
+        t.mutation(api.mcp.moveFile, {
+          token,
+          fileId: foreignFile.id,
+          parentId: null,
+          expectedVersion: 1,
+        }),
+      ),
+    ).toMatchObject({ code: "FILE_NOT_FOUND" });
+
+    // Nothing above changed the file.
+    const unchanged = await alex.query(api.files.readFile, { fileId: file.id });
+    expect(unchanged.file).toMatchObject({ parentId: null, version: 2 });
+  });
+
+  it("gives the dashboard createFolder, listFolders and moveFile with human attribution", async () => {
+    const { alex, alexId, jordan, workspaceId, events } = await folderSetup();
+    const folderId = await alex.mutation(api.workspaces.createFolder, {
+      workspaceId,
+      name: "Design",
+    });
+    expect(
+      await errorData(
+        alex.mutation(api.workspaces.createFolder, { workspaceId, name: " design " }),
+      ),
+    ).toMatchObject({ code: "NAME_EXISTS", folderId });
+    expect(
+      await errorData(
+        jordan.mutation(api.workspaces.createFolder, { workspaceId, name: "x" }),
+      ),
+    ).toMatchObject({ code: "FORBIDDEN" });
+
+    const { folders } = await alex.query(api.files.listFolders, { workspaceId });
+    expect(folders).toEqual([
+      expect.objectContaining({
+        id: folderId,
+        name: "Design",
+        parentId: null,
+        updatedBy: expect.objectContaining({ type: "human", userId: alexId }),
+      }),
+    ]);
+
+    const file = await alex.mutation(api.files.createDocument, {
+      workspaceId,
+      name: "mock.md",
+      mimeType: "text/markdown",
+      content: "",
+    });
+    const moved = await alex.mutation(api.files.moveFile, {
+      fileId: file.id,
+      parentId: folderId,
+      expectedVersion: 1,
+    });
+    expect(moved).toMatchObject({
+      parentId: folderId,
+      version: 1,
+      updatedBy: { type: "human", userId: alexId },
+    });
+    expect((await events()).at(-1)).toMatchObject({
+      kind: "file.moved",
+      actor: { type: "human", userId: alexId },
+    });
+    expect(
+      await errorData(
+        alex.mutation(api.files.moveFile, {
+          fileId: file.id,
+          parentId: null,
+          expectedVersion: 2,
+        }),
+      ),
+    ).toMatchObject({ code: "VERSION_CONFLICT", currentVersion: 1 });
+    // Another tenant can't move it, and can't tell it exists.
+    expect(
+      await errorData(
+        jordan.mutation(api.files.moveFile, {
+          fileId: file.id,
+          parentId: null,
+          expectedVersion: 1,
+        }),
+      ),
+    ).toMatchObject({ code: "FILE_NOT_FOUND" });
+  });
+});
+
+describe("folder rename, move and paths (#28)", () => {
+  async function treeSetup() {
+    const base = await setup();
+    const { token } = await base.sam.mutation(
+      api.agentConnections.createAgentConnection,
+      { workspaceId: base.workspaceId, client: "claude" },
+    );
+    const folder = async (name: string, parentId?: Id<"folders">) => {
+      const id = await base.alex.mutation(api.workspaces.createFolder, {
+        workspaceId: base.workspaceId,
+        name,
+        parentId,
+      });
+      const { folders } = await base.alex.query(api.files.listFolders, {
+        workspaceId: base.workspaceId,
+      });
+      return folders.find((f) => f.id === id)!;
+    };
+    const lastEvent = async () =>
+      (
+        await base.t.run((ctx) =>
+          ctx.db
+            .query("workspace_events")
+            .withIndex("by_workspace_and_seq", (q) =>
+              q.eq("workspaceId", base.workspaceId),
+            )
+            .order("desc")
+            .first(),
+        )
+      )!;
+    return { ...base, token, folder, lastEvent };
+  }
+
+  it("renames a folder with a revision check and a folder.renamed event", async () => {
+    const { alex, alexId, folder, lastEvent } = await treeSetup();
+    const specs = await folder("specs");
+    expect(specs.revision).toBe(1);
+    const renamed = await alex.mutation(api.workspaces.renameFolder, {
+      folderId: specs.id,
+      name: " Design ",
+      expectedRevision: 1,
+    });
+    expect(renamed).toMatchObject({
+      id: specs.id,
+      name: "Design",
+      parentId: null,
+      revision: 2,
+      updatedBy: { type: "human", userId: alexId },
+    });
+    expect(await lastEvent()).toMatchObject({
+      kind: "folder.renamed",
+      entityType: "folder",
+      entityId: specs.id,
+      summary: "Renamed folder specs to Design",
+      actor: { type: "human", userId: alexId },
+    });
+
+    // Stale revision.
+    expect(
+      await errorData(
+        alex.mutation(api.workspaces.renameFolder, {
+          folderId: specs.id,
+          name: "Other",
+          expectedRevision: 1,
+        }),
+      ),
+    ).toMatchObject({
+      code: "VERSION_CONFLICT",
+      folderId: specs.id,
+      currentRevision: 2,
+      expectedRevision: 1,
+    });
+    expect(
+      await errorData(
+        alex.mutation(api.workspaces.renameFolder, {
+          folderId: specs.id,
+          name: "Other",
+          expectedRevision: 0,
+        }),
+      ),
+    ).toMatchObject({ code: "INVALID_INPUT", folderId: specs.id });
+    expect(
+      await errorData(
+        alex.mutation(api.workspaces.renameFolder, {
+          folderId: specs.id,
+          name: "   ",
+          expectedRevision: 2,
+        }),
+      ),
+    ).toMatchObject({ code: "INVALID_NAME" });
+
+    // Case-only rename keeps the collision key and is allowed.
+    const recased = await alex.mutation(api.workspaces.renameFolder, {
+      folderId: specs.id,
+      name: "DESIGN",
+      expectedRevision: 2,
+    });
+    expect(recased).toMatchObject({ name: "DESIGN", revision: 3 });
+    // Identical name writes nothing.
+    const same = await alex.mutation(api.workspaces.renameFolder, {
+      folderId: specs.id,
+      name: "DESIGN",
+      expectedRevision: 3,
+    });
+    expect(same).toEqual(recased);
+  });
+
+  it("rejects a rename onto a sibling's name, case-insensitively, but not a cousin's", async () => {
+    const { alex, folder } = await treeSetup();
+    const notes = await folder("Notes");
+    const drafts = await folder("drafts");
+    const inner = await folder("archive", notes.id);
+    expect(
+      await errorData(
+        alex.mutation(api.workspaces.renameFolder, {
+          folderId: drafts.id,
+          name: "NOTES",
+          expectedRevision: 1,
+        }),
+      ),
+    ).toMatchObject({ code: "NAME_EXISTS", folderId: notes.id, name: "Notes" });
+    // "archive" lives under Notes, so a top-level folder may take the name.
+    const archived = await alex.mutation(api.workspaces.renameFolder, {
+      folderId: drafts.id,
+      name: "Archive",
+      expectedRevision: 1,
+    });
+    expect(archived.name).toBe("Archive");
+    expect(inner.parentId).toBe(notes.id);
+  });
+
+  it("hides another tenant's folder as FOLDER_NOT_FOUND for rename and move", async () => {
+    const { t, alex, jordan, sam, folder } = await treeSetup();
+    const specs = await folder("specs");
+    expect(
+      await errorData(
+        jordan.mutation(api.workspaces.renameFolder, {
+          folderId: specs.id,
+          name: "mine",
+          expectedRevision: 1,
+        }),
+      ),
+    ).toMatchObject({ code: "FOLDER_NOT_FOUND" });
+    expect(
+      await errorData(
+        jordan.mutation(api.workspaces.moveFolder, {
+          folderId: specs.id,
+          parentId: null,
+          expectedRevision: 1,
+        }),
+      ),
+    ).toMatchObject({ code: "FOLDER_NOT_FOUND" });
+    // A missing folder looks the same as another tenant's.
+    const gone = await folder("gone");
+    await t.run((ctx) => ctx.db.delete(gone.id));
+    expect(
+      await errorData(
+        alex.mutation(api.workspaces.renameFolder, {
+          folderId: gone.id,
+          name: "back",
+          expectedRevision: 1,
+        }),
+      ),
+    ).toMatchObject({ code: "FOLDER_NOT_FOUND" });
+    // Any member of the workspace can rename it, and nothing above changed it.
+    const renamed = await sam.mutation(api.workspaces.renameFolder, {
+      folderId: specs.id,
+      name: "Specs",
+      expectedRevision: 1,
+    });
+    expect(renamed).toMatchObject({
+      revision: 2,
+      updatedBy: { type: "human" },
+    });
+  });
+
+  it("moves a folder with its subtree, to another folder and back to the top level", async () => {
+    const { alex, alexId, folder, lastEvent } = await treeSetup();
+    const specs = await folder("specs");
+    const api_ = await folder("api", specs.id);
+    const archive = await folder("archive");
+
+    const moved = await alex.mutation(api.workspaces.moveFolder, {
+      folderId: specs.id,
+      parentId: archive.id,
+      expectedRevision: 1,
+    });
+    expect(moved).toMatchObject({
+      id: specs.id,
+      parentId: archive.id,
+      revision: 2,
+      updatedBy: { type: "human", userId: alexId },
+    });
+    expect(await lastEvent()).toMatchObject({
+      kind: "folder.moved",
+      entityType: "folder",
+      entityId: specs.id,
+      summary: "Moved folder specs to archive",
+    });
+    // The child moves with it: its own row is untouched.
+    const { folders } = await alex.query(api.files.listFolders, {
+      workspaceId: specs.workspaceId,
+    });
+    expect(folders.find((f) => f.id === api_.id)).toMatchObject({
+      parentId: specs.id,
+      revision: 1,
+    });
+
+    // Same parent writes nothing and records no event.
+    const before = await lastEvent();
+    const same = await alex.mutation(api.workspaces.moveFolder, {
+      folderId: specs.id,
+      parentId: archive.id,
+      expectedRevision: 2,
+    });
+    expect(same).toEqual(moved);
+    expect((await lastEvent())._id).toBe(before._id);
+
+    const top = await alex.mutation(api.workspaces.moveFolder, {
+      folderId: specs.id,
+      parentId: null,
+      expectedRevision: 2,
+    });
+    expect(top).toMatchObject({ parentId: null, revision: 3 });
+    expect(await lastEvent()).toMatchObject({
+      kind: "folder.moved",
+      summary: "Moved folder specs to the top level",
+    });
+  });
+
+  it("rejects cycles, collisions, stale revisions and foreign destinations", async () => {
+    const { alex, jordan, otherWorkspaceId, folder } = await treeSetup();
+    const specs = await folder("specs");
+    const child = await folder("api", specs.id);
+    const grandchild = await folder("v2", child.id);
+    const move = (
+      folderId: Id<"folders">,
+      parentId: Id<"folders"> | null,
+      expectedRevision = 1,
+    ) =>
+      errorData(
+        alex.mutation(api.workspaces.moveFolder, {
+          folderId,
+          parentId,
+          expectedRevision,
+        }),
+      );
+
+    for (const target of [specs.id, child.id, grandchild.id]) {
+      expect(await move(specs.id, target)).toMatchObject({
+        code: "FOLDER_CYCLE",
+        folderId: specs.id,
+      });
+    }
+    expect(await move(child.id, grandchild.id)).toMatchObject({
+      code: "FOLDER_CYCLE",
+      folderId: child.id,
+    });
+
+    // A top-level "API" collides with the child moving up, case-insensitively.
+    const clash = await folder("API");
+    expect(await move(child.id, null)).toMatchObject({
+      code: "NAME_EXISTS",
+      folderId: clash.id,
+      name: "API",
+    });
+
+    expect(await move(child.id, null, 2)).toMatchObject({
+      code: "VERSION_CONFLICT",
+      folderId: child.id,
+      currentRevision: 1,
+      expectedRevision: 2,
+    });
+
+    const foreign = await jordan.mutation(api.workspaces.createFolder, {
+      workspaceId: otherWorkspaceId,
+      name: "Theirs",
+    });
+    expect(await move(grandchild.id, foreign)).toMatchObject({
+      code: "INVALID_PARENT_FOLDER",
+    });
+
+    // Nothing above changed the tree.
+    const { folders } = await alex.query(api.files.listFolders, {
+      workspaceId: specs.workspaceId,
+    });
+    expect(
+      folders.map((f) => [f.name, f.parentId, f.revision]),
+    ).toEqual([
+      ["specs", null, 1],
+      ["api", specs.id, 1],
+      ["v2", child.id, 1],
+      ["API", null, 1],
+    ]);
+  });
+
+  it("gives agents each file's folderPath in listFiles, searchFiles and readFile", async () => {
+    const { t, alex, token, workspaceId, folder } = await treeSetup();
+    const specs = await folder("specs");
+    const apiFolder = await folder("api", specs.id);
+    const create = (name: string, parentId?: Id<"folders">) =>
+      alex.mutation(api.files.createDocument, {
+        workspaceId,
+        parentId,
+        name,
+        mimeType: "text/markdown",
+        content: "needle",
+      });
+    const top = await create("top.md");
+    const mid = await create("mid.md", specs.id);
+    const deep = await create("deep.md", apiFolder.id);
+
+    const { files } = await t.mutation(api.mcp.listFiles, { token });
+    const paths = Object.fromEntries(files.map((f) => [f.name, f.folderPath]));
+    expect(paths).toEqual({
+      "top.md": "",
+      "mid.md": "specs/",
+      "deep.md": "specs/api/",
+    });
+    const inFolder = await t.mutation(api.mcp.listFiles, {
+      token,
+      folderId: apiFolder.id,
+    });
+    expect(inFolder.files.map((f) => [f.id, f.folderPath])).toEqual([
+      [deep.id, "specs/api/"],
+    ]);
+
+    const found = await t.mutation(api.mcp.searchFiles, {
+      token,
+      query: "needle",
+      limit: 10,
+    });
+    expect(
+      Object.fromEntries(found.map((r) => [r.file.id, r.file.folderPath])),
+    ).toEqual({ [top.id]: "", [mid.id]: "specs/", [deep.id]: "specs/api/" });
+
+    const read = await t.mutation(api.mcp.readFile, { token, fileId: deep.id });
+    expect(read.file.folderPath).toBe("specs/api/");
+  });
+
+  it("issue #28 acceptance: a human files proposal.md under specs/ and an agent sees it there", async () => {
+    const { t, alex, token, workspaceId } = await treeSetup();
+    const specsId = await alex.mutation(api.workspaces.createFolder, {
+      workspaceId,
+      name: "specs",
+    });
+    const proposal = await alex.mutation(api.files.createDocument, {
+      workspaceId,
+      name: "proposal.md",
+      mimeType: "text/markdown",
+      content: "# Proposal",
+    });
+    await alex.mutation(api.files.moveFile, {
+      fileId: proposal.id,
+      parentId: specsId,
+      expectedVersion: 1,
+    });
+
+    const listed = await t.mutation(api.mcp.listFiles, { token });
+    expect(listed.files).toEqual([
+      expect.objectContaining({
+        id: proposal.id,
+        name: "proposal.md",
+        parentId: specsId,
+        folderPath: "specs/",
+      }),
+    ]);
+
+    const { folders } = await alex.query(api.files.listFolders, { workspaceId });
+    await alex.mutation(api.workspaces.renameFolder, {
+      folderId: specsId,
+      name: "design",
+      expectedRevision: folders[0]!.revision,
+    });
+    const after = await t.mutation(api.mcp.listFiles, { token });
+    expect(after.files.map((f) => [f.name, f.folderPath])).toEqual([
+      ["proposal.md", "design/"],
+    ]);
+  });
+});

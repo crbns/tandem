@@ -54,6 +54,44 @@ export interface FileSummary {
   custody?: ActorType[];
 }
 
+/** A folder in the workspace tree. `parentId` is null at the top level. */
+export interface Folder {
+  id: string;
+  workspaceId: string;
+  parentId: string | null;
+  name: string;
+  /** Bumps on every rename or move; pass it back as `expectedRevision`. */
+  revision: number;
+  updatedAt: number;
+  updatedBy: Actor;
+}
+
+export interface CreateFolderInput {
+  name: string;
+  /** Omitted or null creates the folder at the top level. */
+  parentId?: string | null;
+}
+
+/** Moving is metadata: it needs the head version but doesn't create a new one. */
+export interface FileMove {
+  /** null moves the file to the top level. */
+  parentId: string | null;
+  expectedVersion: number;
+}
+
+/** Renaming a folder needs its current revision, like a file save needs its version. */
+export interface FolderRename {
+  name: string;
+  expectedRevision: number;
+}
+
+/** Moving a folder takes its whole subtree along. */
+export interface FolderMove {
+  /** null moves the folder to the top level. */
+  parentId: string | null;
+  expectedRevision: number;
+}
+
 export interface FileDetail extends FileSummary {
   /** `null` for binary files, which the dashboard doesn't edit in P0. */
   content: string | null;
@@ -72,6 +110,8 @@ export interface CreateFileInput {
   mimeType: string;
   /** Required by the shared contract (MCP's createDocument requires it too). */
   content: string;
+  /** Omitted or null creates the file at the top level. */
+  parentId?: string | null;
 }
 
 /**

@@ -1,3 +1,4 @@
+import { MAX_NAME_LENGTH, nameKey, storedName } from "../names";
 import { TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
 import {
@@ -7,6 +8,7 @@ import {
   type ContextProposal,
   type FileDetail,
   type FileSummary,
+  type Folder,
   type ProjectContext,
   type Revision,
   type Workspace,
@@ -208,6 +210,51 @@ export function createMockApi({
     return file;
   };
 
+  // Same rules as the backend (lib/ops.ts): a parent must be a folder in the
+  // same workspace; names are unique per parent by nameKey, and files and
+  // folders are separate namespaces.
+  const folders = new Map<string, Folder>();
+  const requireWorkspace = (workspaceId: string) => {
+    if (!workspaces.some((w) => w.id === workspaceId)) throw new TandemApiError("FORBIDDEN");
+  };
+  const requireParent = (workspaceId: string, parentId: string | null | undefined) => {
+    if (!parentId) return null;
+    const folder = folders.get(parentId);
+    if (!folder || folder.workspaceId !== workspaceId) throw new TandemApiError("FOLDER_NOT_FOUND");
+    return folder;
+  };
+  const validName = (input: string) => {
+    const name = storedName(input);
+    if (!nameKey(name) || name.length > MAX_NAME_LENGTH) throw new TandemApiError("INVALID_INPUT");
+    return name;
+  };
+  const fileNamed = (workspaceId: string, parentId: string | null, name: string) =>
+    [...files.values()].find(
+      (f) =>
+        f.summary.workspaceId === workspaceId &&
+        f.summary.parentId === parentId &&
+        nameKey(f.summary.name) === nameKey(name),
+    );
+  const cloneFolder = (f: Folder): Folder => ({ ...f, updatedBy: { ...f.updatedBy } });
+  const siblingFolder = (workspaceId: string, parentId: string | null, name: string, except?: string) =>
+    [...folders.values()].find(
+      (f) => f.workspaceId === workspaceId && f.parentId === parentId && f.id !== except && nameKey(f.name) === nameKey(name),
+    );
+  // Rename and move check the folder's revision first, like checkFolderRevision.
+  const getFolderAt = (folderId: string, expectedRevision: number) => {
+    const folder = folders.get(folderId);
+    if (!folder) throw new TandemApiError("FOLDER_NOT_FOUND");
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new TandemApiError("INVALID_INPUT");
+    if (expectedRevision !== folder.revision) throw new TandemApiError("VERSION_CONFLICT", { currentRevision: folder.revision });
+    return folder;
+  };
+  const touchFolder = (folder: Folder, patch: Partial<Pick<Folder, "name" | "parentId">>) => {
+    const next = { ...folder, ...patch, revision: folder.revision + 1, updatedAt: Date.now(), updatedBy: getActor() };
+    folders.set(folder.id, next);
+    notify(folder.workspaceId);
+    return cloneFolder(next);
+  };
+
   const commit = (file: StoredFile, content: string, actor: Actor) => {
     const now = Date.now();
     const version = file.summary.version + 1;
@@ -305,10 +352,13 @@ export function createMockApi({
         }));
     },
 
-    async createFile(workspaceId, { name, mimeType, content }) {
+    async createFile(workspaceId, { name: rawName, mimeType, content, parentId = null }) {
       await delay();
-      if (!workspaces.some((w) => w.id === workspaceId))
-        throw new TandemApiError("FORBIDDEN");
+      requireWorkspace(workspaceId);
+      requireParent(workspaceId, parentId);
+      const name = validName(rawName);
+      const existing = fileNamed(workspaceId, parentId, name);
+      if (existing) throw new TandemApiError("NAME_EXISTS", { existingName: existing.summary.name });
       const id = `file_new_${nextId++}`;
       const actor = getActor();
       const now = Date.now();
@@ -318,7 +368,7 @@ export function createMockApi({
         summary: {
           id,
           workspaceId,
-          parentId: null,
+          parentId,
           name,
           mimeType,
           version: 1,
@@ -339,6 +389,79 @@ export function createMockApi({
         permissions: { canEdit: true },
       };
       return detail;
+    },
+
+    async listFolders(workspaceId) {
+      await delay();
+      requireWorkspace(workspaceId);
+      return [...folders.values()].filter((f) => f.workspaceId === workspaceId).map(cloneFolder);
+    },
+
+    async createFolder(workspaceId, { name: rawName, parentId = null }) {
+      await delay();
+      requireWorkspace(workspaceId);
+      requireParent(workspaceId, parentId);
+      const name = validName(rawName);
+      const existing = siblingFolder(workspaceId, parentId, name);
+      if (existing) throw new TandemApiError("NAME_EXISTS", { existingName: existing.name });
+      const id = `folder_new_${nextId++}`;
+      folders.set(id, { id, workspaceId, parentId, name, revision: 1, updatedAt: Date.now(), updatedBy: getActor() });
+      notify(workspaceId);
+      return { id };
+    },
+
+    async renameFolder(folderId, { name: rawName, expectedRevision }) {
+      await delay();
+      const folder = getFolderAt(folderId, expectedRevision);
+      const name = validName(rawName);
+      // Same stored name: nothing to write. A case-only rename passes the
+      // sibling check because the folder is excluded from it.
+      if (name === folder.name) return cloneFolder(folder);
+      const existing = siblingFolder(folder.workspaceId, folder.parentId, name, folder.id);
+      if (existing) throw new TandemApiError("NAME_EXISTS", { existingName: existing.name });
+      return touchFolder(folder, { name });
+    },
+
+    async moveFolder(folderId, { parentId, expectedRevision }) {
+      await delay();
+      const folder = getFolderAt(folderId, expectedRevision);
+      const destination = requireParent(folder.workspaceId, parentId);
+      if (folder.parentId === parentId) return cloneFolder(folder);
+      // Walk up from the destination: reaching the folder means a cycle.
+      const seen = new Set<string>();
+      for (let at = destination; at && !seen.has(at.id); at = at.parentId ? (folders.get(at.parentId) ?? null) : null) {
+        if (at.id === folder.id) throw new TandemApiError("FOLDER_CYCLE");
+        seen.add(at.id);
+      }
+      const existing = siblingFolder(folder.workspaceId, parentId, folder.name, folder.id);
+      if (existing) throw new TandemApiError("NAME_EXISTS", { existingName: existing.name });
+      return touchFolder(folder, { parentId });
+    },
+
+    async moveFile(fileId, { parentId, expectedVersion }) {
+      await delay();
+      const file = getFile(fileId);
+      const { workspaceId } = file.summary;
+      if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new TandemApiError("INVALID_INPUT");
+      if (expectedVersion !== file.summary.version) {
+        throw new TandemApiError("VERSION_CONFLICT", {
+          currentVersion: file.summary.version,
+          currentContent: file.content,
+          updatedBy: { ...file.summary.updatedBy },
+        });
+      }
+      requireParent(workspaceId, parentId);
+      if (file.summary.parentId === parentId) return cloneSummary(file.summary);
+      const existing = fileNamed(workspaceId, parentId, file.summary.name);
+      if (existing)
+        throw new TandemApiError("NAME_EXISTS", {
+          existingName: existing.summary.name,
+          currentVersion: existing.summary.version,
+        });
+      // A move is metadata: no new version and no revision row.
+      file.summary = { ...file.summary, parentId, updatedAt: Date.now(), updatedBy: getActor() };
+      notify(workspaceId);
+      return cloneSummary(file.summary);
     },
 
     async updateFileContent(fileId, { expectedVersion, content }) {

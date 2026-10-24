@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import { FileQuestionIcon, HistoryIcon } from "lucide-react";
 import { TandemApiError, useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
-import { belongsToWorkspace, isTextMimeType } from "@/lib/files";
+import { belongsToWorkspace, findFolder, folderPath, isTextMimeType } from "@/lib/files";
 import { formatAbsolute } from "@/lib/time";
 import { FileEditor } from "@/components/editor/FileEditor";
 import { FileHeader } from "@/components/files/FileHeader";
@@ -19,9 +19,13 @@ export default function FilePage() {
   const { workspaceId, fileId } = useParams<{ workspaceId: string; fileId: string }>();
   const api = useTandemApi();
   const load = useCallback(async () => {
-    const file = await api.readFile(fileId);
+    const [file, folders] = await Promise.all([
+      api.readFile(fileId),
+      // The folder trail is navigation, not content: never block the editor on it.
+      api.listFolders(workspaceId).catch(() => []),
+    ]);
     if (!belongsToWorkspace(file, workspaceId)) throw new TandemApiError("FILE_NOT_FOUND");
-    return file;
+    return { file, path: folderPath(folders, findFolder(folders, file.parentId)) };
   }, [api, fileId, workspaceId]);
   const { resource, refreshing, reload } = useResource(load);
   const fileHref = `/w/${workspaceId}/files/${fileId}`;
@@ -44,10 +48,16 @@ export default function FilePage() {
     );
   }
 
-  const file = resource.data;
+  const { file, path } = resource.data;
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4">
-      <FileHeader workspaceId={workspaceId} fileId={file.id} name={file.name} mimeType={file.mimeType} />
+      <FileHeader
+        workspaceId={workspaceId}
+        fileId={file.id}
+        name={file.name}
+        mimeType={file.mimeType}
+        folderPath={path}
+      />
       {isTextMimeType(file.mimeType) && file.content !== null ? (
         // Keyed by id so a different file always starts a fresh save machine.
         <FileEditor key={file.id} file={file} historyHref={`${fileHref}/history`} />

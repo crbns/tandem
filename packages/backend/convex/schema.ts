@@ -102,6 +102,9 @@ export default defineSchema({
     workspaceId: v.id("workspaces"),
     parentId: v.optional(v.id("folders")),
     name: v.string(),
+    // Same collision key as files (lib/names.ts), in a separate namespace.
+    // Optional only for rows created before uniqueness was enforced.
+    nameKey: v.optional(v.string()),
     createdBy: actor,
     updatedBy: actor,
     revision: v.number(),
@@ -109,7 +112,12 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_workspace_and_parent", ["workspaceId", "parentId"])
-    .index("by_workspace", ["workspaceId"]),
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_and_parent_and_name_key", [
+      "workspaceId",
+      "parentId",
+      "nameKey",
+    ]),
 
   files: defineTable({
     workspaceId: v.id("workspaces"),

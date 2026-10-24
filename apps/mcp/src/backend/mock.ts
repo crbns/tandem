@@ -3,12 +3,18 @@ import {
   TandemError,
   approvalRequired,
   fileNotFound,
+  folderNameExists,
   forbidden,
+  invalidFolderFilter,
+  invalidParentFolder,
+  moveConflict,
+  moveNameExists,
   nameExists,
   versionAhead,
   versionConflict,
 } from "../errors.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
+import { folderPathResolver } from "./folders.js";
 import { nameKey, storedName } from "../names.js";
 import type {
   Actor,
@@ -19,11 +25,17 @@ import type {
   ContextField,
   ContextProposal,
   CreateDocumentInput,
+  CreateFolderInput,
   FileMetadata,
   FileVersions,
   FileWithContent,
+  FileWithPath,
+  FolderMetadata,
+  FolderWithPath,
   GetApprovalsInput,
   ListFilesInput,
+  ListFoldersInput,
+  MoveFileInput,
   Ownership,
   ProposeContextChangeInput,
   ProposedValue,
@@ -65,7 +77,12 @@ interface StoredFile {
   name: string;
   mime_type: string;
   revisions: Revision[];
+  /** The latest revision's, or the latest move's if that came after it. */
+  updated_at: string;
+  updated_by: Attribution;
 }
+
+type StoredFolder = FolderMetadata;
 
 const SEED_BRIEF = `# Project brief
 
@@ -75,12 +92,17 @@ Goal: ship the Tandem demo for Cal Hacks.
 /** Max files and events per sync_workspace call. */
 const SYNC_LIMIT = 50;
 
+/** Max folders per list_folders call, as in Convex. */
+const FOLDER_LIST_LIMIT = 500;
+
 /** In-memory backend for local development and tests. State is lost on restart. */
 export class MockBackend implements TandemBackend {
   readonly kind = "mock";
   // Insertion order matters: an actor's first workspace is their default.
   private readonly workspaces = new Map<string, StoredWorkspace>();
   private readonly files = new Map<string, StoredFile>();
+  // Insertion order is creation order.
+  private readonly folders = new Map<string, StoredFolder>();
   // Insertion order is creation order, so reversing gives newest first.
   private readonly proposals = new Map<string, ContextProposal>();
   private readonly published = new Map<string, PublishedWork>();
@@ -155,6 +177,8 @@ export class MockBackend implements TandemBackend {
       revisions: [
         { version: 1, content: SEED_BRIEF, created_at: now, created_by: sam },
       ],
+      updated_at: now,
+      updated_by: sam,
     });
     this.appendEvent(
       "ws_demo",
@@ -205,23 +229,23 @@ export class MockBackend implements TandemBackend {
   async listFiles(
     actor: Actor,
     input: ListFilesInput,
-  ): Promise<FileMetadata[]> {
+  ): Promise<FileWithPath[]> {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
-    // No folders in the mock yet, so no folder_id can name a valid folder.
-    if (input.folder_id !== undefined) {
-      throw new TandemError(
-        "INVALID_INPUT",
-        "Folders are not supported yet; omit folder_id.",
-        { folder_id: input.folder_id },
-      );
+    const folderId = input.folder_id;
+    if (
+      folderId !== undefined &&
+      this.folders.get(folderId)?.workspace_id !== workspaceId
+    ) {
+      throw invalidFolderFilter();
     }
     const query = input.query?.toLowerCase();
     return [...this.files.values()]
       .filter((f) => f.workspace_id === workspaceId)
+      .filter((f) => folderId === undefined || f.parent_id === folderId)
       .filter(
         (f) => query === undefined || f.name.toLowerCase().includes(query),
       )
-      .map(toMetadata);
+      .map(this.withPath(workspaceId));
   }
 
   async searchFiles(
@@ -230,6 +254,7 @@ export class MockBackend implements TandemBackend {
   ): Promise<SearchResult[]> {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
     const query = input.query.toLowerCase();
+    const toFile = this.withPath(workspaceId);
     const results: SearchResult[] = [];
     for (const f of this.files.values()) {
       if (f.workspace_id !== workspaceId) continue;
@@ -238,7 +263,7 @@ export class MockBackend implements TandemBackend {
       const at = content.toLowerCase().indexOf(query);
       if (!nameMatch && at === -1) continue;
       results.push({
-        file: toMetadata(f),
+        file: toFile(f),
         snippet:
           at === -1
             ? snippet(content, 0, 0)
@@ -257,7 +282,10 @@ export class MockBackend implements TandemBackend {
 
   async readFile(actor: Actor, fileId: string): Promise<FileWithContent> {
     const file = this.getFile(actor, fileId);
-    return { file: toMetadata(file), content: head(file).content };
+    return {
+      file: this.withPath(file.workspace_id)(file),
+      content: head(file).content,
+    };
   }
 
   async getFileVersions(
@@ -284,40 +312,23 @@ export class MockBackend implements TandemBackend {
     input: CreateDocumentInput,
   ): Promise<FileMetadata> {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
-    // No folders in the mock yet, so no parent_id can name a valid folder.
-    if (input.parent_id !== undefined) {
-      throw new TandemError(
-        "INVALID_INPUT",
-        "Folders are not supported yet; omit parent_id.",
-        { parent_id: input.parent_id },
-      );
-    }
-    const name = storedName(input.name);
-    const key = nameKey(name);
-    if (!key || name.length > 255) {
-      throw new TandemError(
-        "INVALID_INPUT",
-        "name must contain 1–255 visible characters.",
-        { name: input.name },
-      );
-    }
+    const parentId = this.checkParent(workspaceId, input.parent_id ?? null);
+    const { name, key } = checkName(input.name);
     // No await between the check and the insert, so this is atomic in Node.
-    const existing = [...this.files.values()].find(
-      (f) =>
-        f.workspace_id === workspaceId &&
-        f.parent_id === null &&
-        nameKey(f.name) === key,
-    );
+    const existing = this.fileNamed(workspaceId, parentId, key);
     if (existing) {
       throw nameExists(existing.id, existing.name, head(existing).version);
     }
+    const revision = newRevision(actor, 1, input.content);
     const file: StoredFile = {
       id: `file_${randomUUID()}`,
       workspace_id: workspaceId,
-      parent_id: null,
+      parent_id: parentId,
       name,
       mime_type: input.mime_type,
-      revisions: [newRevision(actor, 1, input.content)],
+      revisions: [revision],
+      updated_at: revision.created_at,
+      updated_by: revision.created_by,
     };
     this.files.set(file.id, file);
     this.appendEvent(
@@ -351,13 +362,108 @@ export class MockBackend implements TandemBackend {
         ? versionAhead(file.id, current, expected)
         : versionConflict(file.id, current, expected);
     }
-    file.revisions.push(newRevision(actor, current + 1, input.content));
+    const revision = newRevision(actor, current + 1, input.content);
+    file.revisions.push(revision);
+    file.updated_at = revision.created_at;
+    file.updated_by = revision.created_by;
     this.appendEvent(
       file.workspace_id,
       "file.updated",
       file.id,
       attribution(actor),
       `${truncate(file.name, 80)} updated to v${current + 1}`,
+    );
+    this.touch(actor, "last_action_at");
+    return toMetadata(file);
+  }
+
+  async createFolder(
+    actor: Actor,
+    input: CreateFolderInput,
+  ): Promise<FolderMetadata> {
+    const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
+    const parentId = this.checkParent(workspaceId, input.parent_id ?? null);
+    const { name, key } = checkName(input.name);
+    // Folders and files are separate namespaces: only folders clash here.
+    const existing = [...this.folders.values()].find(
+      (f) =>
+        f.workspace_id === workspaceId &&
+        f.parent_id === parentId &&
+        nameKey(f.name) === key,
+    );
+    if (existing) throw folderNameExists(existing.id, existing.name);
+    const folder: StoredFolder = {
+      id: `folder_${randomUUID()}`,
+      workspace_id: workspaceId,
+      parent_id: parentId,
+      name,
+      revision: 1,
+      updated_at: new Date().toISOString(),
+      updated_by: attribution(actor),
+    };
+    this.folders.set(folder.id, folder);
+    this.appendEvent(
+      workspaceId,
+      "folder.created",
+      folder.id,
+      folder.updated_by,
+      `folder ${truncate(folder.name, 80)} created`,
+    );
+    this.touch(actor, "last_action_at");
+    return structuredClone(folder);
+  }
+
+  async listFolders(
+    actor: Actor,
+    input: ListFoldersInput,
+  ): Promise<{ folders: FolderWithPath[]; truncated: boolean }> {
+    const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
+    const folders = [...this.folders.values()].filter(
+      (f) => f.workspace_id === workspaceId,
+    );
+    // Like the Convex adapter: paths from the listed folders only.
+    const listed = structuredClone(folders.slice(0, FOLDER_LIST_LIMIT));
+    const pathOf = folderPathResolver(listed);
+    return {
+      folders: listed.map((f) => ({ ...f, path: pathOf(f.id) })),
+      truncated: folders.length > FOLDER_LIST_LIMIT,
+    };
+  }
+
+  async moveFile(actor: Actor, input: MoveFileInput): Promise<FileMetadata> {
+    const file = this.getFile(actor, input.file_id);
+    const current = head(file).version;
+    const expected = input.expected_version;
+    if (!Number.isSafeInteger(expected) || expected < 1) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "expected_version must be a positive integer: the file.version returned by read_file.",
+        { file_id: file.id, expected_version: expected },
+      );
+    }
+    // As in Convex, any mismatch (older or newer) is a conflict.
+    if (expected !== current) throw moveConflict(file.id, current, expected);
+    const parentId = this.checkParent(file.workspace_id, input.parent_id, true);
+    if (file.parent_id === parentId) return toMetadata(file);
+    const existing = this.fileNamed(
+      file.workspace_id,
+      parentId,
+      nameKey(file.name),
+    );
+    if (existing) {
+      throw moveNameExists(existing.id, existing.name, head(existing).version);
+    }
+    file.parent_id = parentId;
+    file.updated_at = new Date().toISOString();
+    file.updated_by = attribution(actor);
+    const destination =
+      parentId === null ? "the top level" : this.folders.get(parentId)!.name;
+    this.appendEvent(
+      file.workspace_id,
+      "file.moved",
+      file.id,
+      file.updated_by,
+      `${truncate(file.name, 80)} moved to ${truncate(destination, 80)}`,
     );
     this.touch(actor, "last_action_at");
     return toMetadata(file);
@@ -756,6 +862,45 @@ export class MockBackend implements TandemBackend {
     return workspaceId;
   }
 
+  /** `parentId` if it is a folder in `workspaceId` (null for the top level); otherwise INVALID_INPUT. */
+  private checkParent(
+    workspaceId: string,
+    parentId: string | null,
+    forMove = false,
+  ): string | null {
+    if (
+      parentId !== null &&
+      this.folders.get(parentId)?.workspace_id !== workspaceId
+    ) {
+      throw invalidParentFolder(forMove);
+    }
+    return parentId;
+  }
+
+  /** toMetadata plus folder_path, resolved against `workspaceId`'s folders only. */
+  private withPath(workspaceId: string): (file: StoredFile) => FileWithPath {
+    const pathOf = folderPathResolver(
+      [...this.folders.values()].filter((f) => f.workspace_id === workspaceId),
+    );
+    return (file) => ({
+      ...toMetadata(file),
+      folder_path: pathOf(file.parent_id),
+    });
+  }
+
+  private fileNamed(
+    workspaceId: string,
+    parentId: string | null,
+    key: string,
+  ): StoredFile | undefined {
+    return [...this.files.values()].find(
+      (f) =>
+        f.workspace_id === workspaceId &&
+        f.parent_id === parentId &&
+        nameKey(f.name) === key,
+    );
+  }
+
   private getFile(actor: Actor, fileId: string): StoredFile {
     // Another tenant's file looks exactly like a missing one, so ids can't be probed.
     const file = this.files.get(fileId);
@@ -783,6 +928,20 @@ function snippet(content: string, at: number, length: number): string {
   const end = start + SNIPPET_CHARS;
   const text = content.slice(start, end).replace(/\s+/g, " ").trim();
   return (start > 0 ? "…" : "") + text + (end < content.length ? "…" : "");
+}
+
+/** The stored form and key of a file or folder name; INVALID_INPUT unless 1–255 visible characters. */
+function checkName(input: string): { name: string; key: string } {
+  const name = storedName(input);
+  const key = nameKey(name);
+  if (!key || name.length > 255) {
+    throw new TandemError(
+      "INVALID_INPUT",
+      "name must contain 1–255 visible characters.",
+      { name: input },
+    );
+  }
+  return { name, key };
 }
 
 function truncate(text: string, max: number): string {
@@ -840,7 +999,7 @@ function toMetadata(file: StoredFile): FileMetadata {
     name: file.name,
     mime_type: file.mime_type,
     version: latest.version,
-    updated_at: latest.created_at,
-    updated_by: latest.created_by,
+    updated_at: file.updated_at,
+    updated_by: file.updated_by,
   };
 }

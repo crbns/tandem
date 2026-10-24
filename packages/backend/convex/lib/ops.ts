@@ -196,6 +196,381 @@ export async function updateDocumentCore(
   return updated;
 }
 
+export function toFolderMetadata(folder: Doc<"folders">) {
+  return {
+    id: folder._id,
+    workspaceId: folder.workspaceId,
+    parentId: folder.parentId ?? null,
+    name: folder.name,
+    revision: folder.revision,
+    updatedAt: folder.updatedAt,
+    updatedBy: folder.updatedBy,
+  };
+}
+
+/** The folder in `workspaceId` with this id; otherwise INVALID_PARENT_FOLDER. */
+async function requireParentFolder(
+  ctx: ReadCtx,
+  workspaceId: Id<"workspaces">,
+  parentId: Id<"folders">,
+): Promise<Doc<"folders">> {
+  const folder = await ctx.db.get(parentId);
+  if (!folder || folder.workspaceId !== workspaceId)
+    throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
+  return folder;
+}
+
+const LEGACY_FOLDER_SCAN_LIMIT = 200;
+
+/**
+ * A folder under `parentId` whose collision key is `key`, other than
+ * `excludeId`. Reading the index range makes concurrent writes of one name
+ * conflict. Folders from before nameKey existed are matched by computing
+ * their key.
+ */
+async function findSiblingFolder(
+  ctx: ReadCtx,
+  workspaceId: Id<"workspaces">,
+  parentId: Id<"folders"> | undefined,
+  key: string,
+  excludeId?: Id<"folders">,
+): Promise<Doc<"folders"> | undefined> {
+  const withKey = (candidate: string | undefined) =>
+    ctx.db
+      .query("folders")
+      .withIndex("by_workspace_and_parent_and_name_key", (q) =>
+        q
+          .eq("workspaceId", workspaceId)
+          .eq("parentId", parentId)
+          .eq("nameKey", candidate),
+      );
+  const keyed = await withKey(key).take(2);
+  const legacy = await withKey(undefined).take(LEGACY_FOLDER_SCAN_LIMIT);
+  return (
+    keyed.find((folder) => folder._id !== excludeId) ??
+    legacy.find(
+      (folder) => folder._id !== excludeId && nameKey(folder.name) === key,
+    )
+  );
+}
+
+export async function createFolderCore(
+  ctx: MutationCtx,
+  args: {
+    workspaceId: Id<"workspaces">;
+    parentId?: Id<"folders">;
+    name: string;
+    actor: Actor;
+  },
+): Promise<Doc<"folders">> {
+  const { workspaceId, parentId, actor } = args;
+  if (parentId) await requireParentFolder(ctx, workspaceId, parentId);
+  const name = storedName(args.name);
+  const key = nameKey(name);
+  if (!key || name.length > MAX_NAME_LENGTH)
+    throw new ConvexError({ code: "INVALID_NAME" });
+  const existing = await findSiblingFolder(ctx, workspaceId, parentId, key);
+  if (existing)
+    throw new ConvexError({
+      code: "NAME_EXISTS",
+      folderId: existing._id,
+      name: existing.name,
+    });
+  const now = Date.now();
+  const folderId = await ctx.db.insert("folders", {
+    workspaceId,
+    parentId,
+    name,
+    nameKey: key,
+    createdBy: actor,
+    updatedBy: actor,
+    revision: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await recordWorkspaceEvent(ctx, {
+    workspaceId,
+    kind: "folder.created",
+    entityType: "folder",
+    entityId: folderId,
+    summary: `Created folder ${name}`,
+    actor,
+  });
+  const folder = await ctx.db.get(folderId);
+  if (!folder) throw new ConvexError({ code: "FOLDER_NOT_FOUND" });
+  return folder;
+}
+
+/** Deepest folder chain walked for cycle checks and paths. */
+export const MAX_FOLDER_DEPTH = 64;
+
+/** Exactly the folder's current revision; INVALID_INPUT or VERSION_CONFLICT otherwise. */
+function checkFolderRevision(folder: Doc<"folders">, expectedRevision: number) {
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      folderId: folder._id,
+      expectedRevision,
+    });
+  if (folder.revision !== expectedRevision)
+    throw new ConvexError({
+      code: "VERSION_CONFLICT",
+      folderId: folder._id,
+      currentRevision: folder.revision,
+      expectedRevision,
+    });
+}
+
+/**
+ * Renames a folder within its parent. A rename that keeps the collision key
+ * (case or whitespace only) is allowed; an identical name writes nothing.
+ */
+export async function renameFolderCore(
+  ctx: MutationCtx,
+  args: {
+    folder: Doc<"folders">;
+    name: string;
+    expectedRevision: number;
+    actor: Actor;
+  },
+): Promise<Doc<"folders">> {
+  const { folder, actor } = args;
+  checkFolderRevision(folder, args.expectedRevision);
+  const name = storedName(args.name);
+  const key = nameKey(name);
+  if (!key || name.length > MAX_NAME_LENGTH)
+    throw new ConvexError({ code: "INVALID_NAME" });
+  if (name === folder.name) return folder;
+  const existing = await findSiblingFolder(
+    ctx,
+    folder.workspaceId,
+    folder.parentId,
+    key,
+    folder._id,
+  );
+  if (existing)
+    throw new ConvexError({
+      code: "NAME_EXISTS",
+      folderId: existing._id,
+      name: existing.name,
+    });
+  await ctx.db.patch(folder._id, {
+    name,
+    nameKey: key,
+    updatedBy: actor,
+    revision: folder.revision + 1,
+    updatedAt: Date.now(),
+  });
+  await recordWorkspaceEvent(ctx, {
+    workspaceId: folder.workspaceId,
+    kind: "folder.renamed",
+    entityType: "folder",
+    entityId: folder._id,
+    summary: `Renamed folder ${folder.name} to ${name}`,
+    actor,
+  });
+  const renamed = await ctx.db.get(folder._id);
+  if (!renamed) throw new ConvexError({ code: "FOLDER_NOT_FOUND" });
+  return renamed;
+}
+
+/**
+ * Moves a folder (and so its subtree) under `parentId`, or to the top level
+ * for null. The destination may not be the folder itself or a descendant.
+ */
+export async function moveFolderCore(
+  ctx: MutationCtx,
+  args: {
+    folder: Doc<"folders">;
+    parentId: Id<"folders"> | null;
+    expectedRevision: number;
+    actor: Actor;
+  },
+): Promise<Doc<"folders">> {
+  const { folder, parentId, actor } = args;
+  checkFolderRevision(folder, args.expectedRevision);
+  const destination = parentId
+    ? await requireParentFolder(ctx, folder.workspaceId, parentId)
+    : null;
+  if ((folder.parentId ?? null) === parentId) return folder;
+  // Walk up from the destination: reaching the folder means a cycle.
+  let ancestor = destination;
+  for (let depth = 0; ancestor; depth++) {
+    if (ancestor._id === folder._id)
+      throw new ConvexError({ code: "FOLDER_CYCLE", folderId: folder._id });
+    if (depth >= MAX_FOLDER_DEPTH)
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        folderId: folder._id,
+        field: "parentId",
+      });
+    const next: Doc<"folders"> | null = ancestor.parentId
+      ? await ctx.db.get(ancestor.parentId)
+      : null;
+    ancestor = next && next.workspaceId === folder.workspaceId ? next : null;
+  }
+  const key = folder.nameKey ?? nameKey(folder.name);
+  const existing = await findSiblingFolder(
+    ctx,
+    folder.workspaceId,
+    parentId ?? undefined,
+    key,
+    folder._id,
+  );
+  if (existing)
+    throw new ConvexError({
+      code: "NAME_EXISTS",
+      folderId: existing._id,
+      name: existing.name,
+    });
+  await ctx.db.patch(folder._id, {
+    parentId: parentId ?? undefined,
+    nameKey: key,
+    updatedBy: actor,
+    revision: folder.revision + 1,
+    updatedAt: Date.now(),
+  });
+  await recordWorkspaceEvent(ctx, {
+    workspaceId: folder.workspaceId,
+    kind: "folder.moved",
+    entityType: "folder",
+    entityId: folder._id,
+    summary: destination
+      ? `Moved folder ${folder.name} to ${destination.name}`
+      : `Moved folder ${folder.name} to the top level`,
+    actor,
+  });
+  const moved = await ctx.db.get(folder._id);
+  if (!moved) throw new ConvexError({ code: "FOLDER_NOT_FOUND" });
+  return moved;
+}
+
+/**
+ * A resolver from a file's parentId to its folder path ("specs/api/"; "" at
+ * the top level). Shares a cache across calls, stays inside `workspaceId`, and
+ * stops after MAX_FOLDER_DEPTH folders.
+ */
+export function folderPaths(ctx: ReadCtx, workspaceId: Id<"workspaces">) {
+  const cache = new Map<Id<"folders">, string>();
+  return async (folderId: Id<"folders"> | null | undefined): Promise<string> => {
+    const chain: Doc<"folders">[] = [];
+    let prefix = "";
+    for (let id = folderId ?? undefined; id; ) {
+      const cached = cache.get(id);
+      if (cached !== undefined) {
+        prefix = cached;
+        break;
+      }
+      if (chain.length >= MAX_FOLDER_DEPTH) break;
+      const folder: Doc<"folders"> | null = await ctx.db.get(id);
+      if (!folder || folder.workspaceId !== workspaceId) break;
+      chain.push(folder);
+      id = folder.parentId;
+    }
+    for (const folder of chain.reverse()) {
+      prefix = `${prefix}${folder.name}/`;
+      cache.set(folder._id, prefix);
+    }
+    return prefix;
+  };
+}
+
+export const FOLDER_LIST_LIMIT = 500;
+
+/** Every folder in the workspace (flat; rebuild the tree from parentId), up to FOLDER_LIST_LIMIT. */
+export async function listFoldersCore(
+  ctx: ReadCtx,
+  workspaceId: Id<"workspaces">,
+) {
+  const rows = await ctx.db
+    .query("folders")
+    .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
+    .take(FOLDER_LIST_LIMIT + 1);
+  return {
+    folders: rows.slice(0, FOLDER_LIST_LIMIT).map(toFolderMetadata),
+    truncated: rows.length > FOLDER_LIST_LIMIT,
+  };
+}
+
+/** Exactly the file's current version; INVALID_INPUT or VERSION_CONFLICT otherwise. */
+export function checkFileVersion(file: Doc<"files">, expectedVersion: number) {
+  if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      fileId: file._id,
+      expectedVersion,
+    });
+  if (file.version !== expectedVersion) {
+    throw new ConvexError({
+      code: "VERSION_CONFLICT",
+      fileId: file._id,
+      currentVersion: file.version,
+      expectedVersion,
+      currentContent: file.content ?? null,
+      updatedBy: file.updatedBy,
+    });
+  }
+}
+
+/**
+ * Moves a file to `parentId` (null for the top level). A move is metadata: it
+ * bumps `revision` but not `version` and writes no file_revisions row, though
+ * it still needs the current `expectedVersion` so a stale client can't move.
+ */
+export async function moveFileCore(
+  ctx: MutationCtx,
+  args: {
+    file: Doc<"files">;
+    parentId: Id<"folders"> | null;
+    expectedVersion: number;
+    actor: Actor;
+  },
+): Promise<Doc<"files">> {
+  const { file, parentId, actor } = args;
+  checkFileVersion(file, args.expectedVersion);
+  const folder = parentId
+    ? await requireParentFolder(ctx, file.workspaceId, parentId)
+    : null;
+  if ((file.parentId ?? null) === parentId) return file;
+  const key = file.nameKey ?? nameKey(file.name);
+  const existing = await ctx.db
+    .query("files")
+    .withIndex("by_workspace_and_parent_and_name_key", (q) =>
+      q
+        .eq("workspaceId", file.workspaceId)
+        .eq("parentId", parentId ?? undefined)
+        .eq("nameKey", key),
+    )
+    .first();
+  if (existing)
+    throw new ConvexError({
+      code: "NAME_EXISTS",
+      fileId: existing._id,
+      name: existing.name,
+      currentVersion: existing.version,
+    });
+  await ctx.db.patch(file._id, {
+    parentId: parentId ?? undefined,
+    nameKey: key,
+    updatedBy: actor,
+    revision: file.revision + 1,
+    updatedAt: Date.now(),
+  });
+  await recordWorkspaceEvent(ctx, {
+    workspaceId: file.workspaceId,
+    kind: "file.moved",
+    entityType: "file",
+    entityId: file._id,
+    summary: folder
+      ? `Moved ${file.name} to ${folder.name}`
+      : `Moved ${file.name} to the top level`,
+    actor,
+  });
+  const moved = await ctx.db.get(file._id);
+  if (!moved) throw new ConvexError({ code: "FILE_NOT_FOUND" });
+  return moved;
+}
+
 const MAX_OWNER_AREA_LENGTH = 200;
 
 /**

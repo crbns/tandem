@@ -12,6 +12,7 @@ import type {
   ContextProposal,
   FileDetail,
   FileSummary,
+  Folder,
   ProjectContext,
   Revision,
 } from "./types";
@@ -97,6 +98,20 @@ function toFileSummary(file: BackendFileMetadata): FileSummary {
   };
 }
 
+type BackendFolder = FunctionReturnType<typeof api.files.listFolders>["folders"][number];
+
+function toFolder(folder: BackendFolder): Folder {
+  return {
+    id: folder.id,
+    workspaceId: folder.workspaceId,
+    parentId: folder.parentId ?? null,
+    name: folder.name,
+    revision: folder.revision,
+    updatedAt: folder.updatedAt,
+    updatedBy: toActor(folder.updatedBy),
+  };
+}
+
 // The Convex client never rejects while disconnected: queries wait for the
 // socket and mutations queue until it's back. Without a deadline, "Saving…" and
 // page loads would hang on flaky Wi-Fi. A timed-out mutation may still land
@@ -171,11 +186,13 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
         }
         throw new TandemApiError("LIST_LIMIT_EXCEEDED");
       }),
-    createFile: async (workspaceId, input) => {
+    createFile: async (workspaceId, { parentId, ...input }) => {
       const file = await call(() =>
         convex.mutation(api.files.createDocument, {
           workspaceId: workspaceId as Id<"workspaces">,
           ...input,
+          // The backend takes an omitted parentId (not null) for the top level.
+          ...(parentId ? { parentId: parentId as Id<"folders"> } : {}),
         }),
       );
       return { id: file.id, version: file.version };
@@ -191,6 +208,55 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
           permissions: { canEdit: true },
         } satisfies FileDetail;
       }),
+    listFolders: (workspaceId) =>
+      call(async () => {
+        const { folders, truncated } = await convex.query(api.files.listFolders, {
+          workspaceId: workspaceId as Id<"workspaces">,
+        });
+        // Files inside an unlisted folder would be unreachable; never show a partial tree.
+        if (truncated) throw new TandemApiError("LIST_LIMIT_EXCEEDED");
+        return folders.map(toFolder);
+      }),
+    createFolder: async (workspaceId, { name, parentId }) => {
+      const id = await call(() =>
+        convex.mutation(api.workspaces.createFolder, {
+          workspaceId: workspaceId as Id<"workspaces">,
+          name,
+          ...(parentId ? { parentId: parentId as Id<"folders"> } : {}),
+        }),
+      );
+      return { id };
+    },
+    renameFolder: async (folderId, { name, expectedRevision }) =>
+      toFolder(
+        await call(() =>
+          convex.mutation(api.workspaces.renameFolder, {
+            folderId: folderId as Id<"folders">,
+            name,
+            expectedRevision,
+          }),
+        ),
+      ),
+    moveFolder: async (folderId, { parentId, expectedRevision }) =>
+      toFolder(
+        await call(() =>
+          convex.mutation(api.workspaces.moveFolder, {
+            folderId: folderId as Id<"folders">,
+            parentId: parentId as Id<"folders"> | null,
+            expectedRevision,
+          }),
+        ),
+      ),
+    moveFile: async (fileId, { parentId, expectedVersion }) => {
+      const file = await call(() =>
+        convex.mutation(api.files.moveFile, {
+          fileId: fileId as Id<"files">,
+          parentId: parentId as Id<"folders"> | null,
+          expectedVersion,
+        }),
+      );
+      return toFileSummary(file);
+    },
     updateFileContent: async (fileId, update) => {
       const file = await call(() =>
         convex.mutation(api.files.updateDocument, {
