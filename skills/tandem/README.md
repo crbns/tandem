@@ -17,13 +17,11 @@ You need two pieces in each client:
 > change. Measure real behavior with [COMPATIBILITY.md](./COMPATIBILITY.md)
 > (in the repo's `skills/tandem/`; not shipped in the zip).
 
-> **Status:** Claude Code (skill install, the connector with the dev `api-key`
-> header, auto-sync in fresh chats, `update_document`, and `VERSION_CONFLICT`
-> recovery) was measured by the eval harness against the mock server on
-> 2026-10-23. On claude.ai web, adding the connector and tool discovery were
-> checked by hand against the old no-auth dev tunnel. The real server is now
-> `<deployment>.convex.site/mcp` with OAuth and API keys; connecting native
-> clients to it is still **to verify**. Results live in `COMPATIBILITY.md`.
+> **Status:** Claude Code CLI was measured against an isolated local
+> Convex-backed `/mcp` endpoint on 2026-10-24, using Bearer API keys and
+> project-scoped skill installation. See `COMPATIBILITY.md` for the exact
+> counts and limits. Claude web/desktop, ChatGPT and Gemini remain pending
+> human testing under `TESTING.md`; CLI results do not establish GUI support.
 
 ## Build the skill zip
 
@@ -56,7 +54,7 @@ target.
    are listed and enabled.
 
 On Team/Enterprise plans an owner may need to add the connector at org level
-first. *(to verify)*
+first. _(to verify)_
 
 ### b. Install the skill (to verify)
 
@@ -67,7 +65,7 @@ first. *(to verify)*
 4. Run the fresh-chat protocol in `COMPATIBILITY.md` to check whether it
    activates without mentioning Tandem.
 
-The exact menu labels may differ by plan or app version. *(to verify)*
+The exact menu labels may differ by plan or app version. _(to verify)_
 
 ## Claude Code
 
@@ -77,14 +75,14 @@ Create an API key on the workspace's **Assistants** page (it is shown once,
 with this command filled in):
 
 ```sh
-claude mcp add --transport http tandem https://<deployment>.convex.site/mcp \
+claude mcp add --scope project --transport http tandem https://<deployment>.convex.site/mcp \
   --header "Authorization: Bearer <API key>"
 ```
 
-Or *(to verify)* drop `--header` and run `/mcp` inside Claude Code to sign in
+Or _(to verify)_ drop `--header` and run `/mcp` inside Claude Code to sign in
 with OAuth instead. Either way, check that the `mcp__tandem__*` tools are
-listed. (The eval measured header auth against the mock server via
-`--mcp-config`, not this command.)
+listed. (The 2026-10-24 evaluation measured Bearer auth against local Convex via
+`--mcp-config`; project-scoped add/remove was also checked in a temporary directory.)
 
 ### b. Install the skill
 
@@ -101,7 +99,7 @@ mkdir -p ~/.claude/skills && unzip -o dist/tandem-skill.zip -d ~/.claude/skills
 Start a new Claude Code session and check that `tandem` appears among available
 skills. Only the project-scoped path was measured: it is what the eval uses
 (the `tandem` skill shows up in the session's `init` event). The personal
-`~/.claude/skills` path is *to verify*.
+`~/.claude/skills` path is _to verify_.
 
 ## ChatGPT: UNTESTED
 
@@ -112,17 +110,62 @@ skills. Only the project-scoped path was measured: it is what the eval uses
   `read_file`, `search_files`) only.
 - **Plus** isn't viable.
 - ChatGPT has no `SKILL.md` loader. Paste the body of `SKILL.md` into the
-  custom instructions for a project or GPT as a fallback. *(to verify)*
+  custom instructions for a project or GPT as a fallback. _(to verify)_
 - Connector setup: add a custom MCP connector/app (developer mode) pointing at
-  `https://<tandem-mcp-host>/mcp`. *(to verify: exact path and labels)*
+  `https://<tandem-mcp-host>/mcp`. _(to verify: exact path and labels)_
 
 ## Gemini: UNTESTED
 
 - Custom MCP apps have eligibility limits (account type, region, plan) as of
   Oct 2026. Confirm the test account is eligible before demoing.
 - No `SKILL.md` loader is assumed. Paste the `SKILL.md` body into a Gem's
-  instructions as a fallback. *(to verify)*
-- Connector setup path: *to verify*.
+  instructions as a fallback. _(to verify)_
+- Connector setup path: _to verify_.
+
+## Measure an external Convex-backed server
+
+Use an isolated disposable workspace. The harness can replace the brief's
+content and save shared documents; never point write trials at the team's
+shared cloud seed without authorization. For a local backend:
+
+```sh
+cd packages/backend
+CONVEX_AGENT_MODE=anonymous pnpm exec convex dev
+# In another terminal, confirm .env.local points to that local deployment:
+pnpm demo:reset --json
+```
+
+Keep the printed keys private. Supply credentials as environment variables
+rather than command-line arguments (which may appear in process listings):
+
+```sh
+export TANDEM_MCP_URL='http://127.0.0.1:<local-site-port>/mcp'
+read -r -s TANDEM_MCP_KEY; export TANDEM_MCP_KEY
+read -r -s TANDEM_MCP_TEAMMATE_KEY; export TANDEM_MCP_TEAMMATE_KEY
+export TANDEM_BRIEF_ID='<briefFileId from the local demo reset>'
+node skills/tandem/eval/run.mjs --concurrency 1 \
+  --prompts p2-goal-owners,p6-conflict-edit --reps 3 \
+  --max-turns 12 --timeout 240 --tag convex-local
+unset TANDEM_MCP_URL TANDEM_MCP_KEY TANDEM_MCP_TEAMMATE_KEY TANDEM_BRIEF_ID
+```
+
+Flags `--mcp-url`, `--mcp-key`, `--mcp-teammate-key`, and `--brief-id`
+override their environment equivalents. External mode skips building/starting
+the mock, uses `Authorization: Bearer`, requires serial trials and currently
+supports `--env bare` only. The server state persists across trials. Conflict
+trials require a real brief ID, replace its content with the synthetic fixture,
+and inject via the second actor's key (or the same key if none is supplied).
+The literal marker says "sam" even if the seeded second actor is Blake; results
+record which credential arrangement was used. Do not interpret fixture markers
+as tests of the external workspace's approved goal.
+
+External results store the URL and brief ID, never credential settings; known
+keys are redacted from saved errors and answers too. `--keep` retains temporary
+MCP configuration containing credentials, so keep those directories private and
+remove them afterward. Normal runs delete temporary configs. The harness uses
+`--strict-mcp-config` and never adds to global Claude MCP settings.
+
+For GUI clients and recording backup footage, follow `TESTING.md` in the repo.
 
 ## Measuring the skill (Claude Code)
 
@@ -150,8 +193,8 @@ It builds `apps/mcp`, then for every trial does the following:
    are denied.
 
 Prompts are in `eval/prompts.json`: the 5 fresh-chat prompts from
-`COMPATIBILITY.md`, a conflict prompt (`p6-conflict-edit`), plus 2 unrelated
-controls.
+`TESTING.md`, a conflict prompt (`p6-conflict-edit`), an explicitly authorized
+create prompt (`p7-create-document`), plus 2 unrelated controls.
 
 **Environments (`--env`).** `bare` (the default) is the setup above: an empty
 project with Tandem as the only MCP server. `realistic` gives the model
@@ -189,9 +232,7 @@ any isolation leaks it sees in the session `init` event. Ctrl-C or SIGTERM
 stops the servers and `claude` processes it started and removes its temp dirs.
 Use `--help` for the other options (`--prompts`, `--conditions`,
 `--concurrency`, `--keep`, `--rerender`, ...). Each run uses your logged-in
-Claude Code account. The default (8 prompts × 2 conditions × 2 reps = 32 runs)
-should cost about $1.25 (the 28 runs before p6 cost about $1, and a bare p6
-run about $0.06); `--env realistic --reps 3 --max-turns 8 --timeout 240` (48
+Claude Code account. The default is 9 prompts × 2 conditions × 2 reps = 36 runs. Costs vary; `--env realistic --reps 3 --max-turns 8 --timeout 240` (48
 runs) cost $1.88. The committed results were run as:
 
 ```sh
@@ -224,10 +265,10 @@ rerun to update the metrics.
 **What the 2026-10-23 results mean.** With the skill, Claude Code called
 `sync_workspace` first in 10/10 project chats. Without it, it did so in 0/10.
 Neither condition touched Tandem on the unrelated controls. Without the skill,
-though, Claude Code *still* used Tandem tools in 10/10 project chats, because
+though, Claude Code _still_ used Tandem tools in 10/10 project chats, because
 the tool descriptions were enough in a setup where Tandem is the only MCP
-server and the project dir is empty. So the skill doesn't decide *whether*
-Tandem gets used here. It changes *how*: it syncs the approved context first
+server and the project dir is empty. So the skill doesn't decide _whether_
+Tandem gets used here. It changes _how_: it syncs the approved context first
 (so answers use the approved goal and ownership), and it saved drafts with
 `create_document` in 2/4 draft chats, against 0/4 without it. The other two
 asked before saving. When it saved, it said every workspace member can see the

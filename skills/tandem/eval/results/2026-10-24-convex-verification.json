@@ -1,0 +1,300 @@
+{
+  "date": "2026-10-24",
+  "purpose": "Independent readback after native-client trials; these calls are not native-client trial counts",
+  "server": "http://127.0.0.1:3241/mcp",
+  "workspace": "Onboarding refresh",
+  "project_scoped_cli_install": {
+    "add_exit": 0,
+    "config_checked": true,
+    "skill_copied": true,
+    "remove_exit": 0,
+    "temp_directory_removed": true,
+    "scope": "project",
+    "global_mcp_config_installed": false
+  },
+  "created_document": {
+    "file": {
+      "id": "kd73nm6wjpz8e8ec2gvpkfyt7s8gx06c",
+      "workspace_id": "ms7f8fdk7v1ef5aef51kmjk3kh8gwg5d",
+      "parent_id": null,
+      "name": "client-check.md",
+      "mime_type": "text/markdown",
+      "version": 1,
+      "updated_at": "2026-10-24T14:32:23.341Z",
+      "updated_by": {
+        "actor_type": "agent",
+        "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+        "client": "claude",
+        "agent_connection_id": "j572gpbqkasy0mmrvzfvhsmq2s8gwnh8",
+        "label": "Alex's Claude"
+      }
+    },
+    "content": "# Client check\n\nSummary of brief.md (v19):\n\n- **What it is:** Tandem is a shared workspace where a team keeps canonical files and project context in one place, while each teammate uses their own AI assistant, which reads and updates those files through a remote MCP server.\n- **Goal:** Ship a working Tandem demo at Cal Hacks 13.0, with two teammates, each in their own assistant, editing one canonical brief without losing work.\n- **Scope and owners:** In scope are a shared workspace (files, revisions, approvals) and a remote MCP server for Claude and ChatGPT. Real-time co-editing and agent-to-agent messaging are out of scope. Alex owns the MCP server.\n"
+  },
+  "final_brief": {
+    "file": {
+      "id": "kd76xgba85mcfzz5fr6xzwx8gh8gxfqc",
+      "workspace_id": "ms7f8fdk7v1ef5aef51kmjk3kh8gwg5d",
+      "parent_id": null,
+      "name": "brief.md",
+      "mime_type": "text/markdown",
+      "version": 19,
+      "updated_at": "2026-10-24T14:31:52.901Z",
+      "updated_by": {
+        "actor_type": "agent",
+        "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+        "client": "claude",
+        "agent_connection_id": "j572gpbqkasy0mmrvzfvhsmq2s8gwnh8",
+        "label": "Alex's Claude"
+      }
+    },
+    "content": "# Project brief\n\nTandem is a shared workspace where a team keeps its canonical files and project context in one place, while each teammate keeps using their own AI assistant, which reads and updates those files through a remote MCP server. Read this brief before any other document: it explains what we are building, why, and what is deliberately out of scope for the Cal Hacks 13.0 demo.\n\n## Goal\n\nShip a working Tandem demo at Cal Hacks 13.0: two teammates, each in their own assistant, editing one canonical brief without losing work.\n\n## Scope\n\n- One shared workspace with files, revisions, and approvals.\n- A remote MCP server for Claude and ChatGPT.\n- Out of scope: real-time co-editing, agent-to-agent messaging.\n\n## Owners\n\n- MCP server: Alex\n\nTeammate note (sam): budget approved — keep this line.\n"
+  },
+  "revisions": {
+    "file": {
+      "id": "kd76xgba85mcfzz5fr6xzwx8gh8gxfqc",
+      "workspace_id": "ms7f8fdk7v1ef5aef51kmjk3kh8gwg5d",
+      "parent_id": null,
+      "name": "brief.md",
+      "mime_type": "text/markdown",
+      "version": 19,
+      "updated_at": "2026-10-24T14:31:52.901Z",
+      "updated_by": {
+        "actor_type": "agent",
+        "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+        "client": "claude",
+        "agent_connection_id": "j572gpbqkasy0mmrvzfvhsmq2s8gwnh8",
+        "label": "Alex's Claude"
+      }
+    },
+    "versions": [
+      {
+        "version": 19,
+        "created_at": "2026-10-24T14:31:52.901Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+          "client": "claude",
+          "agent_connection_id": "j572gpbqkasy0mmrvzfvhsmq2s8gwnh8",
+          "label": "Alex's Claude"
+        },
+        "size_bytes": 809
+      },
+      {
+        "version": 18,
+        "created_at": "2026-10-24T14:31:44.333Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 958
+      },
+      {
+        "version": 17,
+        "created_at": "2026-10-24T14:31:37.794Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 900
+      },
+      {
+        "version": 16,
+        "created_at": "2026-10-24T14:31:34.347Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+          "client": "claude",
+          "agent_connection_id": "j572gpbqkasy0mmrvzfvhsmq2s8gwnh8",
+          "label": "Alex's Claude"
+        },
+        "size_bytes": 794
+      },
+      {
+        "version": 15,
+        "created_at": "2026-10-24T14:31:26.507Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 958
+      },
+      {
+        "version": 14,
+        "created_at": "2026-10-24T14:31:16.582Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 900
+      },
+      {
+        "version": 13,
+        "created_at": "2026-10-24T14:30:48.069Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+          "client": "claude",
+          "agent_connection_id": "j572gpbqkasy0mmrvzfvhsmq2s8gwnh8",
+          "label": "Alex's Claude"
+        },
+        "size_bytes": 809
+      },
+      {
+        "version": 12,
+        "created_at": "2026-10-24T14:30:39.838Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 958
+      },
+      {
+        "version": 11,
+        "created_at": "2026-10-24T14:30:34.876Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 900
+      },
+      {
+        "version": 10,
+        "created_at": "2026-10-24T14:30:31.431Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+          "client": "claude",
+          "agent_connection_id": "j572gpbqkasy0mmrvzfvhsmq2s8gwnh8",
+          "label": "Alex's Claude"
+        },
+        "size_bytes": 817
+      },
+      {
+        "version": 9,
+        "created_at": "2026-10-24T14:30:21.039Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 958
+      },
+      {
+        "version": 8,
+        "created_at": "2026-10-24T14:30:16.330Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 900
+      },
+      {
+        "version": 7,
+        "created_at": "2026-10-24T14:29:48.958Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+          "client": "claude",
+          "agent_connection_id": "j572gpbqkasy0mmrvzfvhsmq2s8gwnh8",
+          "label": "Alex's Claude"
+        },
+        "size_bytes": 806
+      },
+      {
+        "version": 6,
+        "created_at": "2026-10-24T14:29:41.173Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 958
+      },
+      {
+        "version": 5,
+        "created_at": "2026-10-24T14:29:36.653Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 900
+      },
+      {
+        "version": 4,
+        "created_at": "2026-10-24T14:29:32.967Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+          "client": "claude",
+          "agent_connection_id": "j572gpbqkasy0mmrvzfvhsmq2s8gwnh8",
+          "label": "Alex's Claude"
+        },
+        "size_bytes": 817
+      },
+      {
+        "version": 3,
+        "created_at": "2026-10-24T14:29:24.673Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 958
+      },
+      {
+        "version": 2,
+        "created_at": "2026-10-24T14:29:19.953Z",
+        "author": {
+          "actor_type": "agent",
+          "user_id": "m97fv7b5y02cxk1wdwwzpa3jw18gwd9j",
+          "client": "claude",
+          "agent_connection_id": "j57ad10z0sg6t22ex14efzqdxh8gx7ks",
+          "label": "Blake's Claude"
+        },
+        "size_bytes": 900
+      },
+      {
+        "version": 1,
+        "created_at": "2026-10-24T14:28:15.272Z",
+        "author": {
+          "actor_type": "human",
+          "user_id": "m979c01fcmy4sb21kn9adza31s8gxmcv",
+          "client": "dashboard",
+          "label": "Alex"
+        },
+        "size_bytes": 960
+      }
+    ]
+  }
+}
