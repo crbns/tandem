@@ -9,6 +9,8 @@ export const API_ERROR_CODES = [
   "INVITE_REVOKED",
   "FORBIDDEN",
   "FILE_NOT_FOUND",
+  "FOLDER_NOT_FOUND",
+  "FOLDER_CYCLE",
   "NAME_EXISTS",
   "VERSION_CONFLICT",
   "UNAUTHENTICATED",
@@ -23,11 +25,15 @@ export const API_ERROR_CODES = [
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
 
 export interface ApiErrorDetails {
-  /** Head version on the server; set on VERSION_CONFLICT. */
+  /** Head version on the server; set on a file's VERSION_CONFLICT. */
   currentVersion?: number;
+  /** The folder's revision on the server; set on a folder's VERSION_CONFLICT. */
+  currentRevision?: number;
   /** Head content, if the backend includes it with the conflict. */
   currentContent?: string;
   updatedBy?: Actor;
+  /** On NAME_EXISTS: the name as stored on the file or folder already there. */
+  existingName?: string;
   /** Original error message, for logs only. Never shown to users verbatim. */
   cause?: string;
 }
@@ -83,6 +89,20 @@ function asActor(value: unknown): Actor | undefined {
   };
 }
 
+/** Backend codes that the dashboard groups under one of its own. */
+const BACKEND_CODES = new Map<string, ApiErrorCode>([
+  ["INVALID_PARENT_FOLDER", "FOLDER_NOT_FOUND"],
+  ["INVALID_NAME", "INVALID_INPUT"],
+  ["INVALID_EMAIL", "INVALID_INPUT"],
+  ["USER_NOT_REGISTERED", "INVALID_INPUT"],
+  ["USER_NOT_INITIALIZED", "UNAUTHENTICATED"],
+  ["WORKSPACE_NOT_FOUND", "FORBIDDEN"],
+  ["PROPOSAL_ALREADY_DECIDED", "PROPOSAL_DECIDED"],
+  ["PROPOSAL_NOT_FOUND", "PROPOSAL_DECIDED"],
+  ["PROPOSAL_STALE", "VERSION_CONFLICT"],
+  ["USER_EMAIL_NOT_VERIFIED", "APPROVAL_REQUIRED"],
+]);
+
 function fromConvexError(err: ConvexError<Value>): TandemApiError {
   const data = err.data;
   if (isApiErrorCode(data)) return new TandemApiError(data);
@@ -91,19 +111,7 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
   const backendCode = record && typeof record.code === "string" ? record.code : undefined;
   const code = backendCode && isApiErrorCode(backendCode)
     ? backendCode
-    : backendCode === "INVALID_NAME" || backendCode === "INVALID_PARENT_FOLDER" || backendCode === "INVALID_EMAIL" || backendCode === "USER_NOT_REGISTERED"
-      ? "INVALID_INPUT"
-      : backendCode === "USER_NOT_INITIALIZED"
-        ? "UNAUTHENTICATED"
-        : backendCode === "WORKSPACE_NOT_FOUND"
-          ? "FORBIDDEN"
-          : backendCode === "PROPOSAL_ALREADY_DECIDED" || backendCode === "PROPOSAL_NOT_FOUND"
-            ? "PROPOSAL_DECIDED"
-            : backendCode === "PROPOSAL_STALE"
-              ? "VERSION_CONFLICT"
-              : backendCode === "USER_EMAIL_NOT_VERIFIED"
-                ? "APPROVAL_REQUIRED"
-                : "UNKNOWN";
+    : (backendCode ? BACKEND_CODES.get(backendCode) : undefined) ?? "UNKNOWN";
   const details: ApiErrorDetails = {};
   if (record) {
     // Canonical keys are camelCase (CONTRACT_NOTES); snake_case is accepted so a
@@ -112,10 +120,14 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
     const currentContent = record.currentContent ?? record.current_content;
     if (typeof currentVersion === "number")
       details.currentVersion = currentVersion;
+    if (typeof record.currentRevision === "number")
+      details.currentRevision = record.currentRevision;
     if (typeof currentContent === "string")
       details.currentContent = currentContent;
     const updatedBy = asActor(record.updatedBy ?? record.updated_by);
     if (updatedBy) details.updatedBy = updatedBy;
+    if (code === "NAME_EXISTS" && typeof record.name === "string")
+      details.existingName = record.name;
   }
   if (code === "UNKNOWN") details.cause = JSON.stringify(data);
   return new TandemApiError(code, details);

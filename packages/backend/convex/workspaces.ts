@@ -1,6 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   ensureUser,
   humanActor,
@@ -8,6 +8,13 @@ import {
   requireMembership,
   requireUser,
 } from "./lib/auth";
+import {
+  createFolderCore,
+  moveFolderCore,
+  renameFolderCore,
+  toFolderMetadata,
+} from "./lib/ops";
+import { folderMetadataValidator } from "./lib/validators";
 
 const actorValidator = v.object({
   type: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
@@ -125,33 +132,69 @@ export const createFolder = mutation({
   returns: v.id("folders"),
   handler: async (ctx, args) => {
     const { user } = await requireMembership(ctx, args.workspaceId);
-    if (!args.name.trim()) throw new ConvexError({ code: "INVALID_NAME" });
-    if (args.parentId) {
-      const parent = await ctx.db.get(args.parentId);
-      if (!parent || parent.workspaceId !== args.workspaceId)
-        throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
-    }
-    const now = Date.now();
-    const actor = humanActor(user);
-    const folderId = await ctx.db.insert("folders", {
-      workspaceId: args.workspaceId,
+    const folder = await createFolderCore(ctx, {
+      ...args,
+      actor: humanActor(user),
+    });
+    return folder._id;
+  },
+});
+
+/** The folder, if the caller is a member of its workspace. */
+async function getAuthorizedFolder(
+  ctx: Parameters<typeof requireUser>[0],
+  folderId: Id<"folders">,
+) {
+  const user = await requireUser(ctx);
+  const folder = await ctx.db.get(folderId);
+  if (!folder) throw new ConvexError({ code: "FOLDER_NOT_FOUND", folderId });
+  const membership = await ctx.db
+    .query("workspace_members")
+    .withIndex("by_workspace_and_user", (q) =>
+      q.eq("workspaceId", folder.workspaceId).eq("userId", user._id),
+    )
+    .unique();
+  // Keep another tenant's folder indistinguishable from a missing folder.
+  if (!membership) throw new ConvexError({ code: "FOLDER_NOT_FOUND", folderId });
+  return { user, folder };
+}
+
+export const renameFolder = mutation({
+  args: {
+    folderId: v.id("folders"),
+    name: v.string(),
+    expectedRevision: v.number(),
+  },
+  returns: folderMetadataValidator,
+  handler: async (ctx, args) => {
+    const { user, folder } = await getAuthorizedFolder(ctx, args.folderId);
+    const renamed = await renameFolderCore(ctx, {
+      folder,
+      name: args.name,
+      expectedRevision: args.expectedRevision,
+      actor: humanActor(user),
+    });
+    return toFolderMetadata(renamed);
+  },
+});
+
+export const moveFolder = mutation({
+  args: {
+    folderId: v.id("folders"),
+    /** null moves the folder to the top level. */
+    parentId: v.union(v.id("folders"), v.null()),
+    expectedRevision: v.number(),
+  },
+  returns: folderMetadataValidator,
+  handler: async (ctx, args) => {
+    const { user, folder } = await getAuthorizedFolder(ctx, args.folderId);
+    const moved = await moveFolderCore(ctx, {
+      folder,
       parentId: args.parentId,
-      name: args.name.trim(),
-      createdBy: actor,
-      updatedBy: actor,
-      revision: 1,
-      createdAt: now,
-      updatedAt: now,
+      expectedRevision: args.expectedRevision,
+      actor: humanActor(user),
     });
-    await recordWorkspaceEvent(ctx, {
-      workspaceId: args.workspaceId,
-      kind: "folder.created",
-      entityType: "folder",
-      entityId: folderId,
-      summary: `Created folder ${args.name.trim()}`,
-      actor,
-    });
-    return folderId;
+    return toFolderMetadata(moved);
   },
 });
 

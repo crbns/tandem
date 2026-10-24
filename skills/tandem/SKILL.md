@@ -25,9 +25,10 @@ changes; you read, draft, save versioned edits, and propose.
 ## Tool availability
 
 Use only the tools the connector actually exposes. The full surface is:
-`sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`,
-`update_document`, `publish_work`, `propose_context_change`, `get_approvals`,
-`get_file_versions`, `get_workspace_info`.
+`sync_workspace`, `list_files`, `list_folders`, `search_files`, `read_file`,
+`create_document`, `create_folder`, `update_document`, `move_file`,
+`publish_work`, `propose_context_change`, `get_approvals`, `get_file_versions`,
+`get_workspace_info`.
 
 If a tool you need is missing from the connector, use the closest one it does
 expose and tell the user what you could not do. If no Tandem tools are available
@@ -61,6 +62,9 @@ not.
 - Locate files with `search_files` (it matches names and content); fall back to
   `list_files` to browse everything. Then open them with `read_file`. Search
   snippets are partial: read the file before relying on it.
+- When the user names a folder ("the spec in specs"), match each file's
+  `folder_path` (e.g. `specs/`, `specs/api/`), or pass that folder's id from
+  `list_folders` as `folder_id` to `list_files`.
 - For "who changed what, and when", use `get_file_versions`: it lists each
   version's author (human or agent) and time, without content.
 - Prefer the canonical Tandem file over your memory, earlier chat turns, or
@@ -99,7 +103,15 @@ Someone else saved a newer version since you read it.
 - Check with `search_files`/`list_files` first so you don't duplicate an
   existing file; update that file instead if one exists.
 - Write Markdown. Use a clear, descriptive, kebab-case name such as
-  `q4-launch-plan.md`. Only pass a folder id if a tool already returned one.
+  `q4-launch-plan.md`.
+- Folders: check `list_folders`. If the project already has folders, put the
+  document in the one that fits (`parent_id`). Create a folder with
+  `create_folder` only when it helps organize related deliverables the user
+  asked for. Only pass folder ids a tool returned.
+- Move a file with `move_file` only when the user asks or clearly wants files
+  reorganized. Pass `expected_version` from a fresh `read_file`; a move never
+  changes content or version. On `VERSION_CONFLICT`, re-read and retry once if
+  the move still makes sense. Neither folders nor moves need approval.
 - `create_document` and `update_document` write canonical workspace files that
   every workspace member can see immediately. Say so. Never tell the user a
   file you saved is private, a draft, or invisible to teammates.
@@ -150,7 +162,7 @@ Someone else saved a newer version since you read it.
 | `FORBIDDEN` | Tell the user they don't have access to that workspace or file. Don't retry or try workarounds. |
 | `FILE_NOT_FOUND` | Re-run `list_files`/`search_files` to get current ids. Don't guess ids. |
 | `VERSION_CONFLICT` | Follow section 4. |
-| `NAME_EXISTS` | A file with that name already exists in that folder (`file_id`, `name`, `current_version` in the error). Read it with `read_file`. If it is the same deliverable, merge your content into it per section 3. Otherwise ask the user whether to update it or use a different name. Never replace its content wholesale. |
+| `NAME_EXISTS` | A file with that name already exists in that folder (`file_id`, `name`, `current_version` in the error). Read it with `read_file`. If it is the same deliverable, merge your content into it per section 3. Otherwise ask the user whether to update it or use a different name. Never replace its content wholesale. From `create_folder`, the error has `folder_id` instead: that folder already exists, so use it. From `move_file`, nothing moved: the destination already has a file with that name, so ask the user. |
 | `APPROVAL_REQUIRED` | The change needs human approval. Switch to `propose_context_change` and tell the user. |
 | `INVALID_INPUT` or `Input validation error` (MCP error -32602) | Your arguments were rejected. Read the error message, fix the arguments, retry once. If `expected_version` was wrong (newer than the file), re-read with `read_file` and use its `file.version` rather than retrying with a guess. |
 

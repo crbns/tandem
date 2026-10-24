@@ -8,23 +8,35 @@ import {
   TandemError,
   approvalRequired,
   fileNotFound,
+  folderNameExists,
   forbidden,
   invalidCursor,
+  invalidFolderFilter,
+  invalidParentFolder,
+  moveConflict,
+  moveNameExists,
   nameExists,
   versionConflict,
 } from "../errors.js";
 import { encodeCursor } from "./cursor.js";
+import { folderPathResolver } from "./folders.js";
 import type {
   Actor,
   AgentConnection,
   Attribution,
   ContextProposal,
   CreateDocumentInput,
+  CreateFolderInput,
   FileMetadata,
   FileVersions,
   FileWithContent,
+  FileWithPath,
+  FolderMetadata,
+  FolderWithPath,
   GetApprovalsInput,
   ListFilesInput,
+  ListFoldersInput,
+  MoveFileInput,
   ProposalField,
   ProposeContextChangeInput,
   PublishWorkInput,
@@ -60,6 +72,21 @@ interface ConvexFile {
   name: string;
   mimeType: string;
   version: number;
+  updatedAt: number;
+  updatedBy: ConvexActor;
+}
+
+/** What mcp:listFiles, mcp:searchFiles and mcp:readFile return per file. */
+interface ConvexAgentFile extends ConvexFile {
+  folderPath: string;
+}
+
+interface ConvexFolder {
+  id: string;
+  workspaceId: string;
+  parentId: string | null;
+  name: string;
+  revision: number;
   updatedAt: number;
   updatedBy: ConvexActor;
 }
@@ -148,15 +175,15 @@ const fn = {
   }>("mcp:getConnection"),
   listFiles: makeFunctionReference("mcp:listFiles") as Mutation<
     WorkspaceArg & { folderId?: string; query?: string },
-    { files: ConvexFile[]; truncated: boolean }
+    { files: ConvexAgentFile[]; truncated: boolean }
   >,
   searchFiles: makeFunctionReference("mcp:searchFiles") as Mutation<
     WorkspaceArg & { query: string; limit: number },
-    { file: ConvexFile; snippet: string; match: "name" | "content" }[]
+    { file: ConvexAgentFile; snippet: string; match: "name" | "content" }[]
   >,
   readFile: makeFunctionReference("mcp:readFile") as Mutation<
     { fileId: string },
-    { file: ConvexFile; content: string | null }
+    { file: ConvexAgentFile; content: string | null }
   >,
   getFileVersions: makeFunctionReference("mcp:getFileVersions") as Mutation<
     { fileId: string; limit: number },
@@ -171,6 +198,18 @@ const fn = {
   >,
   updateDocument: makeFunctionReference("mcp:updateDocument") as Mutation<
     { fileId: string; content: string; expectedVersion: number },
+    ConvexFile
+  >,
+  createFolder: makeFunctionReference("mcp:createFolder") as Mutation<
+    WorkspaceArg & { parentId?: string; name: string },
+    ConvexFolder
+  >,
+  listFolders: makeFunctionReference("mcp:listFolders") as Mutation<
+    WorkspaceArg,
+    { folders: ConvexFolder[]; truncated: boolean }
+  >,
+  moveFile: makeFunctionReference("mcp:moveFile") as Mutation<
+    { fileId: string; parentId: string | null; expectedVersion: number },
     ConvexFile
   >,
   syncWorkspace: makeFunctionReference("mcp:syncWorkspace") as Mutation<
@@ -281,13 +320,13 @@ export class ConvexBackend implements TandemBackend {
     };
   }
 
-  async listFiles(actor: Actor, input: ListFilesInput): Promise<FileMetadata[]> {
+  async listFiles(actor: Actor, input: ListFilesInput): Promise<FileWithPath[]> {
     const { files } = await this.call(actor, fn.listFiles, {
       workspaceId: input.workspace_id,
       folderId: input.folder_id,
       query: input.query,
     });
-    return files.map(toFile);
+    return files.map(toFileWithPath);
   }
 
   async searchFiles(actor: Actor, input: SearchFilesInput): Promise<SearchResult[]> {
@@ -296,7 +335,11 @@ export class ConvexBackend implements TandemBackend {
       query: input.query,
       limit: input.limit,
     });
-    return rows.map((r) => ({ file: toFile(r.file), snippet: r.snippet, match: r.match }));
+    return rows.map((r) => ({
+      file: toFileWithPath(r.file),
+      snippet: r.snippet,
+      match: r.match,
+    }));
   }
 
   async readFile(actor: Actor, fileId: string): Promise<FileWithContent> {
@@ -309,7 +352,7 @@ export class ConvexBackend implements TandemBackend {
         { file_id: fileId, mime_type: file.mimeType },
       );
     }
-    return { file: toFile(file), content };
+    return { file: toFileWithPath(file), content };
   }
 
   async getFileVersions(actor: Actor, fileId: string, limit: number): Promise<FileVersions> {
@@ -346,6 +389,43 @@ export class ConvexBackend implements TandemBackend {
         expectedVersion: input.expected_version,
       },
       { fileId: input.file_id, expectedVersion: input.expected_version },
+    );
+    return toFile(file);
+  }
+
+  async createFolder(actor: Actor, input: CreateFolderInput): Promise<FolderMetadata> {
+    const folder = await this.call(actor, fn.createFolder, {
+      workspaceId: input.workspace_id,
+      parentId: input.parent_id,
+      name: input.name,
+    });
+    return toFolder(folder);
+  }
+
+  async listFolders(
+    actor: Actor,
+    input: ListFoldersInput,
+  ): Promise<{ folders: FolderWithPath[]; truncated: boolean }> {
+    const r = await this.call(actor, fn.listFolders, { workspaceId: input.workspace_id });
+    const folders = r.folders.map(toFolder);
+    const pathOf = folderPathResolver(folders);
+    return {
+      folders: folders.map((f) => ({ ...f, path: pathOf(f.id) })),
+      truncated: r.truncated,
+    };
+  }
+
+  async moveFile(actor: Actor, input: MoveFileInput): Promise<FileMetadata> {
+    const file = await this.call(
+      actor,
+      fn.moveFile,
+      {
+        fileId: input.file_id,
+        // null is meaningful here (the top level), so stripUndefined keeps it.
+        parentId: input.parent_id,
+        expectedVersion: input.expected_version,
+      },
+      { fileId: input.file_id, expectedVersion: input.expected_version, move: true },
     );
     return toFile(file);
   }
@@ -474,6 +554,8 @@ export class ConvexBackend implements TandemBackend {
 interface ErrorHint {
   fileId?: string;
   expectedVersion?: number;
+  /** The call was a move_file, which has its own recovery copy. */
+  move?: boolean;
 }
 
 function codeOf(err: ConvexError<Value>): string | undefined {
@@ -506,13 +588,20 @@ export function toTandemError(
     case "INVALID_SOURCE_FILE":
       return fileNotFound(str("fileId") ?? hint.fileId ?? "(unknown)");
     case "VERSION_CONFLICT":
-      return versionConflict(
+      return (hint.move ? moveConflict : versionConflict)(
         str("fileId") ?? hint.fileId ?? "(unknown)",
         num("currentVersion") ?? 0,
         num("expectedVersion") ?? hint.expectedVersion ?? 0,
       );
-    case "NAME_EXISTS":
-      return nameExists(str("fileId") ?? "", str("name") ?? "", num("currentVersion") ?? 1);
+    case "NAME_EXISTS": {
+      const folderId = str("folderId");
+      if (folderId !== undefined) return folderNameExists(folderId, str("name") ?? "");
+      return (hint.move ? moveNameExists : nameExists)(
+        str("fileId") ?? "",
+        str("name") ?? "",
+        num("currentVersion") ?? 1,
+      );
+    }
     case "APPROVAL_REQUIRED":
       return approvalRequired(str("field") ?? "context");
     case "INVALID_CURSOR":
@@ -520,11 +609,10 @@ export function toTandemError(
     case "INVALID_NAME":
       return new TandemError("INVALID_INPUT", "name must contain 1–255 visible characters.");
     case "INVALID_PARENT_FOLDER":
-      return new TandemError(
-        "INVALID_INPUT",
-        "parent_id must be a folder in this workspace; omit it to create at the top level.",
-      );
+      return invalidParentFolder(hint.move);
     case "INVALID_INPUT":
+      if (str("field") === "folderId") return invalidFolderFilter();
+      return new TandemError("INVALID_INPUT", `Invalid request (${code}).`, data);
     case "PROPOSAL_NOT_FOUND":
     case "PROPOSAL_ALREADY_DECIDED":
     case "CONTEXT_NOT_INITIALIZED":
@@ -657,6 +745,22 @@ function toFile(f: ConvexFile): FileMetadata {
     name: f.name,
     mime_type: f.mimeType,
     version: f.version,
+    updated_at: isoRequired(f.updatedAt),
+    updated_by: toAttribution(f.updatedBy),
+  };
+}
+
+function toFileWithPath(f: ConvexAgentFile): FileWithPath {
+  return { ...toFile(f), folder_path: f.folderPath };
+}
+
+function toFolder(f: ConvexFolder): FolderMetadata {
+  return {
+    id: f.id,
+    workspace_id: f.workspaceId,
+    parent_id: f.parentId,
+    name: f.name,
+    revision: f.revision,
     updated_at: isoRequired(f.updatedAt),
     updated_by: toAttribution(f.updatedBy),
   };

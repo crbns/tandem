@@ -53,14 +53,52 @@ export interface FileMetadata {
   updated_by: Attribution;
 }
 
+/**
+ * File metadata plus its folder path, as list_files, search_files and read_file
+ * return it. Folder names may contain "/", so the path is a lookup aid for
+ * agents, not a unique key: use parent_id for writes.
+ */
+export interface FileWithPath extends FileMetadata {
+  /**
+   * Folder names from the top level down, each followed by "/": "specs/",
+   * "specs/api/"; "" at the top level. See folderPathResolver.
+   */
+  folder_path: string;
+}
+
 export interface FileWithContent {
-  file: FileMetadata;
+  file: FileWithPath;
   content: string;
+}
+
+export interface FolderMetadata {
+  id: string;
+  workspace_id: string;
+  /** null at the top level. */
+  parent_id: string | null;
+  name: string;
+  /** Starts at 1; bumped by each rename or move of the folder. */
+  revision: number;
+  updated_at: string;
+  updated_by: Attribution;
+}
+
+/** What listFolders returns per folder. */
+export interface FolderWithPath extends FolderMetadata {
+  /**
+   * This folder's own path, same format as FileWithPath.folder_path:
+   * "specs/api/" for api inside specs. Built from the listed folders only, so
+   * it is cut short at an ancestor missing from a truncated list.
+   */
+  path: string;
 }
 
 export interface ListFilesInput {
   workspace_id?: string;
-  /** Folders aren't supported yet: throw INVALID_INPUT for any folder_id. */
+  /**
+   * Only files directly in this folder (with `query`, matches in it). It must
+   * be a folder in the workspace, else INVALID_INPUT. Omit for every file.
+   */
   folder_id?: string;
   query?: string;
 }
@@ -87,6 +125,29 @@ export interface CreateDocumentInput {
   parent_id?: string;
 }
 
+export interface CreateFolderInput {
+  /**
+   * Normalized like CreateDocumentInput.name. Unique per workspace and parent
+   * among folders (files are a separate namespace); a clash throws NAME_EXISTS
+   * with the existing folder_id and name.
+   */
+  name: string;
+  /** Same rule as CreateDocumentInput.parent_id. Omit for the top level. */
+  parent_id?: string;
+  workspace_id?: string;
+}
+
+export interface ListFoldersInput {
+  workspace_id?: string;
+}
+
+export interface MoveFileInput {
+  file_id: string;
+  /** A folder in the file's workspace, or null for the top level. */
+  parent_id: string | null;
+  expected_version: number;
+}
+
 export interface UpdateDocumentInput {
   file_id: string;
   content: string;
@@ -102,7 +163,7 @@ export interface SearchFilesInput {
 }
 
 export interface SearchResult {
-  file: FileMetadata;
+  file: FileWithPath;
   /**
    * About 160 chars of current content around the first content match (or the
    * first 160 chars for a name-only match), whitespace collapsed to single spaces.
@@ -229,17 +290,20 @@ export interface PublishedWork {
 export type WorkspaceEventType =
   | "file.created"
   | "file.updated"
+  | "file.moved"
+  | "folder.created"
   | "context.proposed"
   | "context.approved"
   | "context.rejected"
   | "work.published"
   // Recorded by the Convex backend only:
+  | "folder.renamed"
+  | "folder.moved"
   | "context.stale"
   | "workspace.created"
   | "workspace.member_added"
   | "workspace.invite_created"
   | "workspace.invite_revoked"
-  | "folder.created"
   | "agent.connected"
   | "agent.revoked";
 
@@ -345,8 +409,9 @@ export interface ApplyContextChangeInput {
  * membership on every call and throw TandemError for expected failures.
  * When `workspace_id` is omitted, use the actor's default workspace.
  *
- * Every successful write (createDocument, updateDocument, proposeContextChange,
- * publishWork, decideProposal, applyContextChange) appends a WorkspaceEvent
+ * Every successful write (createDocument, updateDocument, createFolder,
+ * moveFile, proposeContextChange, publishWork, decideProposal,
+ * applyContextChange) appends a WorkspaceEvent
  * atomically with the change. For agent actors, writes through the MCP tools
  * also set the connection's last_action_at.
  */
@@ -414,7 +479,8 @@ export interface TandemBackend {
     actor: Actor,
     input: ApplyContextChangeInput,
   ): Promise<{ context: StructuredContext; context_version: number }>;
-  listFiles(actor: Actor, input: ListFilesInput): Promise<FileMetadata[]>;
+  /** Each file carries its folder_path. */
+  listFiles(actor: Actor, input: ListFilesInput): Promise<FileWithPath[]>;
   /**
    * Searches one workspace, with the same membership check as listFiles (FORBIDDEN
    * for a non-member workspace_id). Name matches come first, then newest
@@ -454,4 +520,27 @@ export interface TandemBackend {
     actor: Actor,
     input: UpdateDocumentInput,
   ): Promise<FileMetadata>;
+  /**
+   * Same atomic name check as createDocument, against folders in the parent.
+   * An invalid parent_id throws INVALID_INPUT. Not approval-gated.
+   */
+  createFolder(actor: Actor, input: CreateFolderInput): Promise<FolderMetadata>;
+  /**
+   * Every folder in the workspace, flat (rebuild the tree from parent_id), at
+   * most 500, each with its path.
+   */
+  listFolders(
+    actor: Actor,
+    input: ListFoldersInput,
+  ): Promise<{ folders: FolderWithPath[]; truncated: boolean }>;
+  /**
+   * Moves a file, checking in this order: FILE_NOT_FOUND; INVALID_INPUT for an
+   * expected_version that isn't a safe integer >= 1; VERSION_CONFLICT for any
+   * other value than the current version; INVALID_INPUT for a parent_id that
+   * isn't a folder in the file's workspace; then, unless the file is already
+   * there (returned unchanged, no event), NAME_EXISTS for a file with the same
+   * name key in the destination. A move changes updated_at and updated_by but
+   * never version or content, and appends a file.moved event. Not approval-gated.
+   */
+  moveFile(actor: Actor, input: MoveFileInput): Promise<FileMetadata>;
 }

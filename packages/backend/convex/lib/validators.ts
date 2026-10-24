@@ -26,6 +26,23 @@ export const fileMetadataValidator = v.object({
   updatedBy: actorValidator,
 });
 
+export const folderMetadataValidator = v.object({
+  id: v.id("folders"),
+  workspaceId: v.id("workspaces"),
+  parentId: v.union(v.id("folders"), v.null()),
+  name: v.string(),
+  /** For optimistic folder writes: pass back as expectedRevision. */
+  revision: v.number(),
+  updatedAt: v.number(),
+  updatedBy: actorValidator,
+});
+
+/** Agent-facing file metadata: the shared shape plus the folder path. */
+export const agentFileMetadataValidator = fileMetadataValidator.extend({
+  /** "specs/api/" for a file in specs/api; "" at the top level. */
+  folderPath: v.string(),
+});
+
 export const contextFieldValidator = v.union(
   v.literal("goal"),
   v.literal("scope"),

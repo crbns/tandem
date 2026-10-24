@@ -20,7 +20,13 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 
-export function NewFileDialog({ workspaceId }: { workspaceId: string }) {
+interface NewFileDialogProps {
+  workspaceId: string;
+  /** The folder being viewed; new files land there. Null or omitted is the top level. */
+  parentId?: string | null;
+}
+
+export function NewFileDialog({ workspaceId, parentId = null }: NewFileDialogProps) {
   const api = useTandemApi();
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -58,6 +64,7 @@ export function NewFileDialog({ workspaceId }: { workspaceId: string }) {
         name: parsed.name,
         mimeType: parsed.mimeType,
         content,
+        parentId,
       });
       toast.success(`Created ${parsed.name} (version 1)`);
       if (thisAttempt === attempt.current) router.push(`/w/${workspaceId}/files/${id}`);

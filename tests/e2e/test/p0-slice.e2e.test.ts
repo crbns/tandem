@@ -25,10 +25,13 @@ const person = (who: string, name: string) => ({
 const TOOL_SURFACE = [
   "sync_workspace",
   "list_files",
+  "list_folders",
   "search_files",
   "read_file",
   "create_document",
+  "create_folder",
   "update_document",
+  "move_file",
   "publish_work",
   "propose_context_change",
   "get_approvals",

@@ -6,7 +6,7 @@
 // proposal or change the approved context from here.
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import {
   requireAgent,
@@ -15,25 +15,33 @@ import {
   type AgentSession,
 } from "./lib/agent";
 import {
+  checkFileVersion,
   checkSourceFiles,
   createDocumentCore,
+  createFolderCore,
+  folderPaths,
   getFileInWorkspace,
+  listFoldersCore,
   listProposals,
+  moveFileCore,
   proposeContextChangeCore,
   publishWorkCore,
   searchFilesCore,
   syncCore,
   toFileMetadata,
+  toFolderMetadata,
   toPublishedWork,
   toProposal,
   updateDocumentCore,
 } from "./lib/ops";
 import {
   actorValidator,
+  agentFileMetadataValidator,
   contextFieldValidator,
   contextValidator,
   eventValidator,
   fileMetadataValidator,
+  folderMetadataValidator,
   proposalStatusValidator,
   proposalValidator,
   publishedWorkValidator,
@@ -51,6 +59,29 @@ async function agentCall(
   const session = await requireAgent(ctx, token);
   await recordAgentAction(ctx, session, options);
   return session;
+}
+
+/** An untrusted folder id string; malformed is INVALID_PARENT_FOLDER (the core checks the tenant). */
+function parentFolderId(
+  ctx: MutationCtx,
+  parentId: string,
+): Id<"folders"> {
+  const id = ctx.db.normalizeId("folders", parentId);
+  if (!id) throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
+  return id;
+}
+
+/** File metadata plus each file's folder path ("specs/"; "" at the top level). */
+async function withFolderPaths(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  files: Doc<"files">[],
+) {
+  const pathOf = folderPaths(ctx, workspaceId);
+  const result = [];
+  for (const file of files)
+    result.push({ ...toFileMetadata(file), folderPath: await pathOf(file.parentId) });
+  return result;
 }
 
 function boundedInt(value: number, min: number, max: number): number {
@@ -210,7 +241,7 @@ export const listFiles = mutation({
     query: v.optional(v.string()),
   },
   returns: v.object({
-    files: v.array(fileMetadataValidator),
+    files: v.array(agentFileMetadataValidator),
     truncated: v.boolean(),
   }),
   handler: async (ctx, args) => {
@@ -254,7 +285,7 @@ export const listFiles = mutation({
     }
     const truncated = rows.length > LIST_LIMIT;
     const files = rows.slice(0, LIST_LIMIT);
-    return { files: files.map(toFileMetadata), truncated };
+    return { files: await withFolderPaths(ctx, workspaceId, files), truncated };
   },
 });
 
@@ -267,7 +298,7 @@ export const searchFiles = mutation({
   },
   returns: v.array(
     v.object({
-      file: fileMetadataValidator,
+      file: agentFileMetadataValidator,
       snippet: v.string(),
       match: v.union(v.literal("name"), v.literal("content")),
     }),
@@ -275,20 +306,32 @@ export const searchFiles = mutation({
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.token);
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
-    return await searchFilesCore(ctx, workspaceId, args.query, args.limit);
+    const results = await searchFilesCore(ctx, workspaceId, args.query, args.limit);
+    const pathOf = folderPaths(ctx, workspaceId);
+    const withPaths = [];
+    for (const result of results)
+      withPaths.push({
+        ...result,
+        file: { ...result.file, folderPath: await pathOf(result.file.parentId) },
+      });
+    return withPaths;
   },
 });
 
 export const readFile = mutation({
   args: { token: v.string(), fileId: v.string() },
   returns: v.object({
-    file: fileMetadataValidator,
+    file: agentFileMetadataValidator,
     content: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.token);
     const file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
-    return { file: toFileMetadata(file), content: file.content ?? null };
+    const folderPath = await folderPaths(ctx, session.workspaceId)(file.parentId);
+    return {
+      file: { ...toFileMetadata(file), folderPath },
+      content: file.content ?? null,
+    };
   },
 });
 
@@ -343,20 +386,82 @@ export const createDocument = mutation({
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
     if (!TEXT_MIME_TYPES.has(args.mimeType))
       throw new ConvexError({ code: "INVALID_INPUT", field: "mimeType" });
-    let parentId;
-    if (args.parentId !== undefined) {
-      parentId = ctx.db.normalizeId("folders", args.parentId) ?? undefined;
-      if (!parentId) throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
-    }
     const file = await createDocumentCore(ctx, {
       workspaceId,
-      parentId,
+      parentId:
+        args.parentId === undefined
+          ? undefined
+          : parentFolderId(ctx, args.parentId),
       name: args.name,
       mimeType: args.mimeType,
       content: args.content,
       actor: session.actor,
     });
     return toFileMetadata(file);
+  },
+});
+
+/** Ordinary work, not approval-gated. */
+export const createFolder = mutation({
+  args: {
+    token: v.string(),
+    workspaceId: v.optional(v.string()),
+    parentId: v.optional(v.string()),
+    name: v.string(),
+  },
+  returns: folderMetadataValidator,
+  handler: async (ctx, args) => {
+    const session = await agentCall(ctx, args.token);
+    const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
+    const folder = await createFolderCore(ctx, {
+      workspaceId,
+      parentId:
+        args.parentId === undefined
+          ? undefined
+          : parentFolderId(ctx, args.parentId),
+      name: args.name,
+      actor: session.actor,
+    });
+    return toFolderMetadata(folder);
+  },
+});
+
+export const listFolders = mutation({
+  args: { token: v.string(), workspaceId: v.optional(v.string()) },
+  returns: v.object({
+    folders: v.array(folderMetadataValidator),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const session = await agentCall(ctx, args.token);
+    const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
+    return await listFoldersCore(ctx, workspaceId);
+  },
+});
+
+/** Ordinary work, not approval-gated. Bumps revision, never version. */
+export const moveFile = mutation({
+  args: {
+    token: v.string(),
+    fileId: v.string(),
+    /** null moves the file to the top level. */
+    parentId: v.union(v.string(), v.null()),
+    expectedVersion: v.number(),
+  },
+  returns: fileMetadataValidator,
+  handler: async (ctx, args) => {
+    const session = await agentCall(ctx, args.token);
+    const file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
+    // A stale read is reported before a malformed parentId, as for any other.
+    checkFileVersion(file, args.expectedVersion);
+    const moved = await moveFileCore(ctx, {
+      file,
+      parentId:
+        args.parentId === null ? null : parentFolderId(ctx, args.parentId),
+      expectedVersion: args.expectedVersion,
+      actor: session.actor,
+    });
+    return toFileMetadata(moved);
   },
 });
 

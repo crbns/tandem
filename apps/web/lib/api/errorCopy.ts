@@ -4,6 +4,48 @@ import type { ApiErrorCode } from "./errors";
 export const CREATE_ERROR_COPY: Partial<Record<ApiErrorCode, string>> = {
   FORBIDDEN: "You can't create files in this workspace.",
   NAME_EXISTS: "A file with this name already exists here. Open it, or pick another name.",
+  FOLDER_NOT_FOUND: "The folder you're in no longer exists. Go back to Files and try again.",
+};
+
+/** Copy for creating a folder: NAME_EXISTS here means another folder, not a file. */
+export const CREATE_FOLDER_ERROR_COPY: Partial<Record<ApiErrorCode, string>> = {
+  FORBIDDEN: "You can't create folders in this workspace.",
+  NAME_EXISTS: "A folder with this name already exists here. Names ignore case and surrounding spaces.",
+  FOLDER_NOT_FOUND: "The folder you're in no longer exists. Go back to Files and try again.",
+  INVALID_INPUT: "Folder names can't be empty or longer than 255 characters.",
+};
+
+/** Copy for moving a file, where conflicts are about the destination or a newer save. */
+export const MOVE_ERROR_COPY: Partial<Record<ApiErrorCode, string>> = {
+  FORBIDDEN: "You can't move files in this workspace.",
+  NAME_EXISTS:
+    "The destination folder already has a file with this name. Pick another folder, or rename one of the files first.",
+  VERSION_CONFLICT:
+    "This file changed since you opened it, so it wasn't moved. The list now shows the latest version; try again.",
+  FOLDER_NOT_FOUND: "That folder no longer exists. Pick another destination.",
+  FILE_NOT_FOUND: "This file no longer exists, so there's nothing to move.",
+};
+
+/** Copy for renaming a folder: NAME_EXISTS means a sibling folder, VERSION_CONFLICT someone else's change. */
+export const RENAME_FOLDER_ERROR_COPY: Partial<Record<ApiErrorCode, string>> = {
+  FORBIDDEN: "You can't rename folders in this workspace.",
+  NAME_EXISTS: "Another folder here already has this name. Names ignore case and surrounding spaces.",
+  VERSION_CONFLICT:
+    "This folder changed since you opened it, so it wasn't renamed. The list now shows the latest; try again.",
+  FOLDER_NOT_FOUND: "This folder no longer exists, so there's nothing to rename.",
+  INVALID_INPUT: "Folder names can't be empty or longer than 255 characters.",
+};
+
+/** Copy for moving a folder, where the destination can't sit inside the folder itself. */
+export const MOVE_FOLDER_ERROR_COPY: Partial<Record<ApiErrorCode, string>> = {
+  FORBIDDEN: "You can't move folders in this workspace.",
+  FOLDER_CYCLE: "You can't move a folder into itself or one of its subfolders. Pick another destination.",
+  NAME_EXISTS:
+    "The destination already has a folder with this name. Pick another destination, or rename one of the folders first.",
+  VERSION_CONFLICT:
+    "This folder changed since you opened it, so it wasn't moved. The list now shows the latest; try again.",
+  FOLDER_NOT_FOUND: "This folder or the destination no longer exists. The list now shows what's there.",
+  INVALID_INPUT: "That destination is nested too deeply. Folders can go at most 64 levels down.",
 };
 
 /** Copy for deciding a proposal, where VERSION_CONFLICT means the context moved on. */
@@ -21,7 +63,7 @@ export const DECIDE_ERROR_COPY: Partial<Record<ApiErrorCode, { title: string; de
 
 /** User-facing copy for each error code. Components never show raw messages. */
 export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: string }> = {
-  LIST_LIMIT_EXCEEDED: { title: "File list is too large", description: "Tandem can load up to 10,000 files across 100 pages at once. The server returned more pages than this view can load; no partial list is shown." },
+  LIST_LIMIT_EXCEEDED: { title: "File list is too large", description: "Tandem can load up to 10,000 files and 500 folders at once. This workspace has more than this view can load, so no partial list is shown." },
   INVITE_INVALID: { title: "Invalid invite", description: "This invite link isn't valid. Ask a workspace admin for a new link." },
   INVITE_EXPIRED: { title: "Invite expired", description: "Invite links expire after seven days. Ask a workspace admin for a new link." },
   INVITE_USED: { title: "Invite already used", description: "Someone has already accepted this invite. Ask a workspace admin for a new link." },
@@ -33,6 +75,14 @@ export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: stri
   FILE_NOT_FOUND: {
     title: "File not found",
     description: "It may have been moved or deleted, or the link is wrong.",
+  },
+  FOLDER_NOT_FOUND: {
+    title: "Folder not found",
+    description: "It may have been removed, or the link points at another workspace.",
+  },
+  FOLDER_CYCLE: {
+    title: "Can't move a folder into itself",
+    description: "A folder can't move into itself or one of its subfolders. Pick another destination.",
   },
   NAME_EXISTS: {
     title: "Name already taken",
