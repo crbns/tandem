@@ -1,3 +1,4 @@
+import { CONVEX_SITE_URL } from "../config";
 import type { ConvexReactClient } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 // Through the workspace package, not a relative path, so `turbo prune web`
@@ -122,6 +123,7 @@ export function toContextDetails(context: FunctionReturnType<typeof api.context.
 // page loads would hang on flaky Wi-Fi. A timed-out mutation may still land
 // later; the next save then conflicts instead of overwriting (see errorCopy).
 export const CALL_TIMEOUT_MS = 15_000;
+const UPLOAD_MUTATION_TIMEOUT_MS = 30_000;
 export const MAX_LIST_FILES = 10_000;
 const FILES_PAGE_SIZE = 100;
 
@@ -149,7 +151,7 @@ export async function call<T>(
  * One-shot query/mutation calls, plus one reactive subscription
  * (`watchWorkspace`) that only signals "something changed, refetch".
  */
-export function createConvexApi(convex: ConvexReactClient): TandemApi {
+export function createConvexApi(convex: ConvexReactClient, getToken: () => string | null | undefined = () => null): TandemApi {
   return {
     listWorkspaces: () =>
       call(async () => {
@@ -207,6 +209,58 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
     deleteFile: async (fileId, expectedVersion) => {
       await call(() => convex.mutation(api.files.deleteFile, { fileId: fileId as Id<"files">, expectedVersion }));
     },
+    uploadFile: async (workspaceId, file, options) => {
+      try {
+        // A late URL creates no file and cannot continue this timed-out chain.
+        const uploadUrl = await call(() => convex.mutation(api.files.generateUploadUrl, { workspaceId: workspaceId as Id<"workspaces"> }), UPLOAD_MUTATION_TIMEOUT_MS);
+        const controller = new AbortController();
+        // Allow two minutes plus transfer time at 32 KiB/s, rather than sharing
+        // the short mutation deadline with potentially large blob transfers.
+        const transferTimeoutMs = 120_000 + Math.ceil(file.size / (32 * 1024)) * 1_000;
+        let storageId: Id<"_storage">;
+        try {
+          ({ storageId } = await call(async () => {
+            const response = await fetch(uploadUrl, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file, signal: controller.signal });
+            if (!response.ok) throw new TandemApiError("NETWORK");
+            return await response.json() as { storageId: Id<"_storage"> };
+          }, transferTimeoutMs));
+        } finally {
+          // Also abort the transport when the deadline wins. A failed transfer
+          // never reaches finalize, even if its response arrives later.
+          controller.abort();
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const pending = new Promise<{ pending: true }>((resolve) => {
+          timer = setTimeout(() => resolve({ pending: true }), UPLOAD_MUTATION_TIMEOUT_MS);
+        });
+        // This mutation cannot be cancelled. Keep its rejection handled after
+        // the UI stops waiting, and let reactive queries surface a late commit.
+        try {
+          return await Promise.race([convex.mutation(api.files.finalizeUpload, {
+            workspaceId: workspaceId as Id<"workspaces">, storageId, name: file.name,
+            ...(options ? { fileId: options.fileId as Id<"files">, expectedVersion: options.expectedVersion } : {}),
+          }).then((uploaded) => ({ id: uploaded.id, version: uploaded.version })), pending]);
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch (err) {
+        throw normalizeError(err);
+      }
+    },
+    getFileBlob: (fileId, version) => call(async () => {
+      const token = getToken();
+      if (!token) throw new TandemApiError("UNAUTHENTICATED");
+      const site = new URL(CONVEX_SITE_URL || convex.url);
+      if (!CONVEX_SITE_URL) {
+        if (site.hostname.endsWith(".convex.cloud")) site.hostname = site.hostname.replace(/\.convex\.cloud$/, ".convex.site");
+        else if ((site.hostname === "127.0.0.1" || site.hostname === "localhost") && site.port) site.port = String(Number(site.port) + 1);
+      }
+      const url = new URL(`/files/${encodeURIComponent(fileId)}/content`, site);
+      if (version !== undefined) url.searchParams.set("version", String(version));
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new TandemApiError(response.status === 401 ? "UNAUTHENTICATED" : response.status === 403 ? "FORBIDDEN" : response.status === 404 ? "FILE_NOT_FOUND" : "NETWORK");
+      return response.blob();
+    }),
     readFile: (fileId) =>
       call(async () => {
         const result = await convex.query(api.files.readFile, {
@@ -223,6 +277,16 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
         convex.mutation(api.files.updateDocument, {
           fileId: fileId as Id<"files">,
           ...update,
+        }),
+      );
+      return { version: file.version };
+    },
+    restoreRevision: async (fileId, version, expectedVersion) => {
+      const file = await call(() =>
+        convex.mutation(api.files.restoreRevision, {
+          fileId: fileId as Id<"files">,
+          version,
+          expectedVersion,
         }),
       );
       return { version: file.version };

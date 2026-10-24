@@ -149,10 +149,12 @@ export async function updateDocumentCore(
     content: string;
     expectedVersion: number;
     actor: Actor;
+    eventSummary?: string;
   },
 ): Promise<Doc<"files">> {
   const { file, actor, expectedVersion } = args;
   if (file.deletedAt !== undefined) throw new ConvexError({ code: "FILE_NOT_FOUND" });
+  if (file.storageId) throw new ConvexError({ code: "BINARY_FILE", message: "Upload a new binary revision in the dashboard" });
   if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
     throw new ConvexError({
       code: "INVALID_INPUT",
@@ -193,7 +195,7 @@ export async function updateDocumentCore(
     kind: "file.updated",
     entityType: "file",
     entityId: file._id,
-    summary: `Updated ${file.name} to revision ${version}`,
+    summary: args.eventSummary ?? `Updated ${file.name} to revision ${version}`,
     actor,
   });
   const updated = await ctx.db.get(file._id);
@@ -243,12 +245,16 @@ export async function renameFileCore(
     updatedAt: now,
     updatedBy: actor,
   });
-  if (file.content !== undefined)
+  const blob = file.storageId
+    ? await ctx.db.system.get("_storage", file.storageId)
+    : null;
+  if (file.content !== undefined || file.storageId)
     await ctx.db.insert("file_revisions", {
       workspaceId: file.workspaceId,
       fileId: file._id,
       version,
-      content: file.content,
+      content: file.content ?? "",
+      ...(file.storageId ? { storageId: file.storageId, mimeType: file.mimeType, size: blob?.size } : {}),
       actor,
       createdAt: now,
     });

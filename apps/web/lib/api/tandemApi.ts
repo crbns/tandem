@@ -41,12 +41,17 @@ export interface TandemApi {
   ): Promise<{ id: string; version: number }>;
   renameFile(fileId: string, name: string, expectedVersion: number): Promise<{ version: number }>;
   deleteFile(fileId: string, expectedVersion: number): Promise<void>;
+  /** Pending finalization may still commit later; it is not a failed upload. */
+  uploadFile(workspaceId: string, file: File, options?: { fileId: string; expectedVersion: number }): Promise<{ id: string; version: number; pending?: false } | { pending: true }>;
+  getFileBlob(fileId: string, version?: number): Promise<Blob>;
   readFile(fileId: string): Promise<FileDetail>;
   /** Rejects with VERSION_CONFLICT when `expectedVersion` isn't the head. */
   updateFileContent(
     fileId: string,
     update: FileUpdate,
   ): Promise<{ version: number }>;
+  /** Appends the selected content as a new human-authored head; optimistic locking applies. */
+  restoreRevision(fileId: string, version: number, expectedVersion: number): Promise<{ version: number }>;
   /** Newest first. Content may be omitted; fetch it with `getRevision`. */
   listRevisions(fileId: string): Promise<Revision[]>;
   /** One revision with its content, or null when that version doesn't exist. */

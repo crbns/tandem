@@ -2122,3 +2122,53 @@ describe("context references after source deletion (#27)", () => {
     }
   });
 });
+
+describe("restore revision (#26)", () => {
+  it("appends v1 of a v3 file as human-authored v4, preserves history and serves it to MCP", async () => {
+    const { t, alex, sam, alexId, workspaceId } = await setup();
+    const file = await alex.mutation(api.files.createDocument, {
+      workspaceId, name: "restore.md", mimeType: "text/markdown", content: "original",
+    });
+    await alex.mutation(api.files.updateDocument, { fileId: file.id, expectedVersion: 1, content: "second" });
+    await sam.mutation(api.files.updateDocument, { fileId: file.id, expectedVersion: 2, content: "third" });
+    const before = await alex.query(api.files.getFileVersions, { fileId: file.id });
+    const restored = await alex.mutation(api.files.restoreRevision, { fileId: file.id, version: 1, expectedVersion: 3 });
+    expect(restored).toMatchObject({ version: 4, updatedBy: { type: "human", userId: alexId } });
+    const after = await alex.query(api.files.getFileVersions, { fileId: file.id });
+    expect(after.map((r) => r.version)).toEqual([4, 3, 2, 1]);
+    expect(after.slice(1)).toEqual(before);
+    const events = await t.run((ctx) => ctx.db.query("workspace_events")
+      .withIndex("by_workspace_and_entity", (q) => q.eq("workspaceId", workspaceId).eq("entityType", "file").eq("entityId", file.id)).take(10));
+    expect(events).toHaveLength(4);
+    expect(events[3]).toMatchObject({ kind: "file.updated", summary: "Restored v1 as v4 for restore.md", actor: { type: "human", userId: alexId } });
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
+    expect(await t.mutation(internal.mcpTools.readFile, { principal: token, fileId: file.id }))
+      .toMatchObject({ file: { version: 4, updatedBy: { type: "human", userId: alexId } }, content: "original" });
+    expect(await alex.query(api.files.getFileRevision, { fileId: file.id, version: 4 }))
+      .toMatchObject({ content: "original", actor: { type: "human", userId: alexId } });
+  });
+
+  it("rejects stale restores without changing content, history or events", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    const file = await alex.mutation(api.files.createDocument, { workspaceId, name: "race.txt", mimeType: "text/plain", content: "original" });
+    await sam.mutation(api.files.updateDocument, { fileId: file.id, expectedVersion: 1, content: "newer" });
+    expect(await errorData(alex.mutation(api.files.restoreRevision, { fileId: file.id, version: 1, expectedVersion: 1 })))
+      .toMatchObject({ code: "VERSION_CONFLICT", currentVersion: 2, currentContent: "newer" });
+    expect(await alex.query(api.files.readFile, { fileId: file.id })).toMatchObject({ file: { version: 2 }, content: "newer" });
+    expect(await alex.query(api.files.getFileVersions, { fileId: file.id })).toHaveLength(2);
+    expect(await t.run((ctx) => ctx.db.query("workspace_events").withIndex("by_workspace_and_entity", (q) => q.eq("workspaceId", workspaceId).eq("entityType", "file").eq("entityId", file.id)).take(10))).toHaveLength(2);
+  });
+
+  it("requires membership and rejects missing or invalid versions", async () => {
+    const { t, alex, jordan, workspaceId } = await setup();
+    const file = await alex.mutation(api.files.createDocument, { workspaceId, name: "member.txt", mimeType: "text/plain", content: "" });
+    const args = { fileId: file.id, version: 1, expectedVersion: 1 };
+    expect(await errorData(t.mutation(api.files.restoreRevision, args))).toMatchObject({ code: "UNAUTHENTICATED" });
+    expect(await errorData(jordan.mutation(api.files.restoreRevision, args))).toMatchObject({ code: "FILE_NOT_FOUND" });
+    for (const version of [0, 1.5, 99]) {
+      expect(await errorData(alex.mutation(api.files.restoreRevision, { ...args, version }))).toMatchObject({ code: "INVALID_INPUT" });
+    }
+    expect(await errorData(alex.mutation(api.files.restoreRevision, { ...args, expectedVersion: 0 }))).toMatchObject({ code: "INVALID_INPUT" });
+    expect(await alex.query(api.files.getFileVersions, { fileId: file.id })).toHaveLength(1);
+  });
+});

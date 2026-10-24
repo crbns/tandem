@@ -1,8 +1,13 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalQuery, mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { humanActor, requireMembership, requireUser } from "./lib/auth";
+import {
+  humanActor,
+  recordWorkspaceEvent,
+  requireMembership,
+  requireUser,
+} from "./lib/auth";
 import {
   createDocumentCore,
   renameFileCore,
@@ -10,6 +15,9 @@ import {
   toFileMetadata,
   updateDocumentCore,
 } from "./lib/ops";
+
+import { validateBinaryUpload } from "./lib/binaries";
+import { MAX_NAME_LENGTH, nameKey, storedName } from "./lib/names";
 
 const actorValidator = v.object({
   type: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
@@ -140,6 +148,37 @@ export const updateDocument = mutation({
   },
 });
 
+/** Restore content by appending a revision; prior revisions remain immutable. */
+export const restoreRevision = mutation({
+  args: {
+    fileId: v.id("files"),
+    version: v.number(),
+    expectedVersion: v.number(),
+  },
+  returns: fileValidator,
+  handler: async (ctx, args) => {
+    const file = await getAuthorizedFile(ctx, args.fileId);
+    const user = await requireUser(ctx);
+    if (!Number.isSafeInteger(args.version) || args.version < 1)
+      throw new ConvexError({ code: "INVALID_INPUT" });
+    const revision = await ctx.db
+      .query("file_revisions")
+      .withIndex("by_file_and_version", (q) =>
+        q.eq("fileId", file._id).eq("version", args.version),
+      )
+      .unique();
+    if (!revision) throw new ConvexError({ code: "INVALID_INPUT" });
+    const updated = await updateDocumentCore(ctx, {
+      file,
+      content: revision.content,
+      expectedVersion: args.expectedVersion,
+      actor: humanActor(user),
+      eventSummary: `Restored v${args.version} as v${file.version + 1} for ${file.name}`,
+    });
+    return toMetadata(updated);
+  },
+});
+
 export const getFileVersions = query({
   args: { fileId: v.id("files"), limit: v.optional(v.number()) },
   returns: v.array(
@@ -222,5 +261,178 @@ export const deleteFile = mutation({
     const user = await requireUser(ctx);
     await deleteFileCore(ctx, { ...args, file, actor: humanActor(user) });
     return null;
+  },
+});
+
+/** Only members can obtain a storage upload URL; publication validates the stored blob. */
+export const generateUploadUrl = mutation({
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.string(),
+  handler: async (ctx, { workspaceId }) => {
+    await requireMembership(ctx, workspaceId);
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+export const finalizeUpload = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    storageId: v.id("_storage"),
+    name: v.string(),
+    fileId: v.optional(v.id("files")),
+    expectedVersion: v.optional(v.number()),
+  },
+  returns: fileValidator,
+  handler: async (ctx, args) => {
+    const { user } = await requireMembership(ctx, args.workspaceId);
+    const actor = humanActor(user);
+    const metadata = await ctx.db.system.get("_storage", args.storageId);
+    if (!metadata) throw new ConvexError({ code: "UPLOAD_NOT_FOUND" });
+    const mimeType = validateBinaryUpload(metadata.size, metadata.contentType);
+    const used = await ctx.db
+      .query("storage_objects")
+      .withIndex("by_storage_id", (q) => q.eq("storageId", args.storageId))
+      .first();
+    if (used) throw new ConvexError({ code: "UPLOAD_ALREADY_FINALIZED" });
+    const now = Date.now();
+    let fileId: Id<"files">;
+    let version = 1;
+    let name: string;
+    if (args.fileId) {
+      const file = await ctx.db.get(args.fileId);
+      if (!file || file.deletedAt !== undefined || file.workspaceId !== args.workspaceId)
+        throw new ConvexError({ code: "FILE_NOT_FOUND" });
+      if (!file.storageId) throw new ConvexError({ code: "NOT_BINARY_FILE" });
+      if (
+        !Number.isSafeInteger(args.expectedVersion) ||
+        args.expectedVersion! < 1
+      )
+        throw new ConvexError({ code: "INVALID_INPUT" });
+      if (args.expectedVersion !== file.version)
+        throw new ConvexError({
+          code: "VERSION_CONFLICT",
+          currentVersion: file.version,
+          expectedVersion: args.expectedVersion,
+        });
+      fileId = file._id;
+      name = file.name;
+      version = file.version + 1;
+      await ctx.db.patch(fileId, {
+        storageId: args.storageId,
+        mimeType,
+        version,
+        revision: file.revision + 1,
+        updatedBy: actor,
+        updatedAt: now,
+      });
+    } else {
+      if (args.expectedVersion !== undefined)
+        throw new ConvexError({ code: "INVALID_INPUT" });
+      name = storedName(args.name);
+      const key = nameKey(name);
+      if (!key || name.length > MAX_NAME_LENGTH)
+        throw new ConvexError({ code: "INVALID_NAME" });
+      const existing = await ctx.db
+        .query("files")
+        .withIndex("by_workspace_and_parent_and_name_key", (q) =>
+          q
+            .eq("workspaceId", args.workspaceId)
+            .eq("parentId", undefined)
+            .eq("nameKey", key),
+        )
+        .first();
+      if (existing)
+        throw new ConvexError({
+          code: "NAME_EXISTS",
+          fileId: existing._id,
+          currentVersion: existing.version,
+        });
+      fileId = await ctx.db.insert("files", {
+        workspaceId: args.workspaceId,
+        name,
+        nameKey: key,
+        mimeType,
+        storageId: args.storageId,
+        version,
+        revision: 1,
+        createdBy: actor,
+        updatedBy: actor,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    await ctx.db.insert("file_revisions", {
+      workspaceId: args.workspaceId,
+      fileId,
+      version,
+      content: "",
+      storageId: args.storageId,
+      mimeType,
+      size: metadata.size,
+      actor,
+      createdAt: now,
+    });
+    await ctx.db.insert("storage_objects", {
+      workspaceId: args.workspaceId,
+      fileId,
+      storageId: args.storageId,
+      fileName: name,
+      mimeType,
+      size: metadata.size,
+      uploadedBy: actor,
+      updatedBy: actor,
+      revision: version,
+      createdAt: now,
+    });
+    await recordWorkspaceEvent(ctx, {
+      workspaceId: args.workspaceId,
+      kind: version === 1 ? "file.created" : "file.updated",
+      entityType: "file",
+      entityId: fileId,
+      summary: `Uploaded ${name} revision ${version}`,
+      actor,
+    });
+    const file = await ctx.db.get(fileId);
+    if (!file) throw new ConvexError({ code: "FILE_NOT_FOUND" });
+    return toMetadata(file);
+  },
+});
+
+/** Resolves a private blob for the HTTP action after checking the caller's membership. */
+export const getBinaryContent = internalQuery({
+  args: { fileId: v.string(), version: v.optional(v.number()) },
+  returns: v.object({
+    storageId: v.id("_storage"),
+    mimeType: v.string(),
+    name: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+    const id = ctx.db.normalizeId("files", args.fileId);
+    const file = id ? await ctx.db.get(id) : null;
+    if (!file || file.deletedAt !== undefined) throw new ConvexError({ code: "FILE_NOT_FOUND" });
+    await requireMembership(ctx, file.workspaceId);
+    if (
+      args.version !== undefined &&
+      (!Number.isSafeInteger(args.version) || args.version < 1)
+    )
+      throw new ConvexError({ code: "INVALID_INPUT" });
+    const revision =
+      args.version === undefined
+        ? null
+        : await ctx.db
+            .query("file_revisions")
+            .withIndex("by_file_and_version", (q) =>
+              q.eq("fileId", file._id).eq("version", args.version!),
+            )
+            .unique();
+    const storageId =
+      args.version === undefined ? file.storageId : revision?.storageId;
+    if (!storageId) throw new ConvexError({ code: "FILE_NOT_FOUND" });
+    return {
+      storageId,
+      mimeType: revision?.mimeType ?? file.mimeType,
+      name: file.name,
+    };
   },
 });

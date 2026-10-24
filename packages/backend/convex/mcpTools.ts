@@ -252,7 +252,7 @@ export const readFile = internalMutation({
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal);
     const file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
-    return { file: toFileMetadata(file), content: file.content ?? null };
+    return { file: toFileMetadata(file), content: file.storageId ? "binary: view or download in the dashboard" : (file.content ?? null) };
   },
 });
 
@@ -286,7 +286,7 @@ export const getFileVersions = internalMutation({
         version: revision.version,
         createdAt: revision.createdAt,
         actor: revision.actor,
-        sizeBytes: encoder.encode(revision.content).byteLength,
+        sizeBytes: revision.size ?? encoder.encode(revision.content).byteLength,
       })),
     };
   },

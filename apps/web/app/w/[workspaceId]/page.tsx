@@ -10,6 +10,7 @@ import { filterAndSortFiles } from "@/lib/files";
 import { FileTable, FileTableSkeleton } from "@/components/files/FileTable";
 import { CustodyPanel } from "@/components/files/CustodyPanel";
 import { InviteDialog } from "@/components/files/InviteDialog";
+import { UploadButton } from "@/components/files/UploadButton";
 import { NewFileDialog } from "@/components/files/NewFileDialog";
 import { ErrorState } from "@/components/common/ErrorState";
 import { TandemMark } from "@/components/common/TandemMark";
@@ -50,6 +51,7 @@ export default function FilesPage() {
             Refresh
           </Button>
           <InviteDialog workspaceId={workspaceId} />
+          <UploadButton workspaceId={workspaceId} />
           <NewFileDialog workspaceId={workspaceId} />
         </div>
       </div>

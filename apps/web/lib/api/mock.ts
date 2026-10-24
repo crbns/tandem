@@ -1,5 +1,6 @@
 import { MAX_NAME_LENGTH, nameKey, storedName } from "@repo/backend/convex/lib/names.ts";
 import { TandemApiError } from "./errors";
+import { BINARY_MIME_TYPES, MAX_UPLOAD_BYTES } from "@repo/backend/convex/lib/binaries.js";
 
 const MOCK_MCP_URL = "https://mock-deployment.convex.site/mcp";
 import type { TandemApi } from "./tandemApi";
@@ -39,7 +40,8 @@ interface StoredFile {
   deletedAt?: number;
   deletedBy?: Actor;
   summary: FileSummary;
-  content: string;
+  content: string | null;
+  blobs?: Map<number, Blob>;
   revisions: Revision[]; // oldest first; append-only
 }
 
@@ -302,9 +304,11 @@ export function createMockApi({
     if (file.summary.version !== expectedVersion) throw new TandemApiError("VERSION_CONFLICT", { currentVersion: file.summary.version });
   };
 
-  const commit = (file: StoredFile, content: string, actor: Actor) => {
+  const commit = (file: StoredFile, content: string | null, actor: Actor) => {
     const now = Date.now();
     const version = file.summary.version + 1;
+    const blob = file.blobs?.get(file.summary.version);
+    if (blob) file.blobs!.set(version, blob);
     file.content = content;
     file.summary = {
       ...file.summary,
@@ -312,7 +316,7 @@ export function createMockApi({
       updatedAt: now,
       updatedBy: actor,
     };
-    file.revisions.push({ ...actor, version, createdAt: now, content });
+    file.revisions.push({ ...actor, version, createdAt: now, ...(content === null ? {} : { content }) });
     notify(file.summary.workspaceId);
     return version;
   };
@@ -447,6 +451,38 @@ export function createMockApi({
       notify(file.summary.workspaceId);
     },
 
+    async uploadFile(workspaceId, blob, options) {
+      await delay();
+      requireMember(workspaceId);
+      if (blob.size < 1 || blob.size > MAX_UPLOAD_BYTES || !BINARY_MIME_TYPES.has(blob.type || "application/octet-stream")) throw new TandemApiError("INVALID_INPUT");
+      const actor = getActor();
+      const now = Date.now();
+      const existing = options ? getFile(options.fileId) : undefined;
+      if (existing && existing.summary.workspaceId !== workspaceId) throw new TandemApiError("FORBIDDEN");
+      if (existing && existing.summary.version !== options!.expectedVersion) throw new TandemApiError("VERSION_CONFLICT");
+      if (existing && existing.content !== null) throw new TandemApiError("INVALID_INPUT");
+      const name = existing?.summary.name ?? validateName(workspaceId, null, blob.name);
+      const id = existing?.summary.id ?? `file_new_${nextId++}`;
+      const version = (existing?.summary.version ?? 0) + 1;
+      const stored: StoredFile = existing ?? { content: null, revisions: [], summary: { id, workspaceId, parentId: null, name, mimeType: blob.type || "application/octet-stream", version, updatedAt: now, updatedBy: actor } };
+      stored.summary = { ...stored.summary, name, mimeType: blob.type || "application/octet-stream", version, updatedAt: now, updatedBy: actor };
+      stored.blobs ??= new Map();
+      stored.blobs.set(version, blob);
+      stored.revisions.push({ ...actor, version, createdAt: now });
+      files.set(id, stored);
+      notify(workspaceId);
+      return { id, version };
+    },
+
+    async getFileBlob(fileId, version) {
+      await delay();
+      const file = getFile(fileId);
+      requireMember(file.summary.workspaceId);
+      const blob = file.blobs?.get(version ?? file.summary.version);
+      if (!blob) throw new TandemApiError("FILE_NOT_FOUND");
+      return blob.slice(0, blob.size, blob.type);
+    },
+
     async readFile(fileId) {
       await delay();
       const file = getFile(fileId);
@@ -461,6 +497,26 @@ export function createMockApi({
     async updateFileContent(fileId, { expectedVersion, content }) {
       await delay();
       const file = getFile(fileId);
+      if (file.content === null) throw new TandemApiError("BINARY_FILE");
+      if (expectedVersion !== file.summary.version) {
+        throw new TandemApiError("VERSION_CONFLICT", {
+          currentVersion: file.summary.version,
+          currentContent: file.content ?? undefined,
+          updatedBy: { ...file.summary.updatedBy },
+        });
+      }
+      return { version: commit(file, content, getActor()) };
+    },
+
+    async restoreRevision(fileId, version, expectedVersion) {
+      await delay();
+      const file = getFile(fileId);
+      if (file.content === null) throw new TandemApiError("BINARY_FILE");
+      if (!Number.isSafeInteger(version) || version < 1 ||
+          !Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
+        throw new TandemApiError("INVALID_INPUT");
+      const revision = file.revisions.find((r) => r.version === version);
+      if (!revision || revision.content === undefined) throw new TandemApiError("INVALID_INPUT");
       if (expectedVersion !== file.summary.version) {
         throw new TandemApiError("VERSION_CONFLICT", {
           currentVersion: file.summary.version,
@@ -468,7 +524,7 @@ export function createMockApi({
           updatedBy: { ...file.summary.updatedBy },
         });
       }
-      return { version: commit(file, content, getActor()) };
+      return { version: commit(file, revision.content, getActor()) };
     },
 
     async listRevisions(fileId) {
