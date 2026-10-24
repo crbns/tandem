@@ -102,6 +102,11 @@ async function callTool(
   };
 }
 
+/** Lets context proposals apply without approval, as the old working tier did. */
+async function automatic(owner: Caller, workspaceId: Id<"workspaces">) {
+  await owner.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "automatic" });
+}
+
 async function setup() {
   const t = newTest();
   mcpTest.register(t);
@@ -1699,6 +1704,7 @@ describe("OAuth consent", () => {
 describe("context tiers (#25)", () => {
   it("records working context immediately and retains resolved questions with attribution", async () => {
     const { t, alex, sam, workspaceId } = await setup();
+    await automatic(alex, workspaceId);
     const { token } = await connect(sam, { workspaceId, client: "claude" });
     const before = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
     const { proposal } = await t.mutation(internal.mcpTools.proposeContextChange, {
@@ -1888,6 +1894,76 @@ describe("context tiers (#25)", () => {
   });
 });
 
+describe("context approval setting", () => {
+  it("holds every proposal for approval by default, including findings and resolves", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    const { apiKey, token } = await connect(sam, { workspaceId, client: "claude" });
+    const info = (await callTool(t, apiKey, "get_workspace_info")).structuredContent;
+    expect(info.workspaces[0].context_approval).toBe("manual");
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId, field: "open_question", proposedValue: "Who reviews?", sourceFileIds: [], expectedVersion: 1,
+    });
+    const before = await alex.query(api.context.getDetails, { workspaceId });
+    const added = await t.mutation(internal.mcpTools.proposeContextChange, {
+      principal: token, field: "constraint", proposedValue: "Ship by Sunday", rationale: "Deadline", sourceFileIds: [],
+    });
+    expect(added.proposal).toMatchObject({ status: "pending", operation: "add" });
+    const resolve = await t.mutation(internal.mcpTools.proposeContextChange, {
+      principal: token, field: "open_question", operation: "resolve", entryId: before.openQuestions[0]!.id,
+      expectedVersion: before.revision, rationale: "Answered", sourceFileIds: [],
+    });
+    expect(resolve.proposal).toMatchObject({ status: "pending", operation: "resolve", proposedValue: "Who reviews?" });
+    const synced = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
+    expect(synced.pending_proposals.map((p: { operation: string }) => p.operation).sort()).toEqual(["add", "resolve"]);
+    const unchanged = await alex.query(api.context.getDetails, { workspaceId });
+    expect(unchanged.revision).toBe(before.revision);
+    expect(unchanged.constraints).toEqual([]);
+    expect(unchanged.openQuestions[0]).toMatchObject({ status: "active" });
+
+    await alex.mutation(api.context.decideContextProposal, { proposalId: resolve.proposal.id, decision: "approved" });
+    await alex.mutation(api.context.decideContextProposal, { proposalId: added.proposal.id, decision: "approved" });
+    const approved = await alex.query(api.context.getDetails, { workspaceId });
+    expect(approved.openQuestions[0]).toMatchObject({ status: "resolved" });
+    expect(approved.constraints).toMatchObject([{ text: "Ship by Sunday", status: "active" }]);
+  });
+
+  it("marks a pending remove stale when its entry is already gone", async () => {
+    const { alex, sam, workspaceId } = await setup();
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId, field: "constraint", proposedValue: "No new deps", sourceFileIds: [], expectedVersion: 1,
+    });
+    const context = await alex.query(api.context.getDetails, { workspaceId });
+    const input = {
+      workspaceId, field: "constraint" as const, operation: "remove" as const, entryId: context.constraints[0]!.id,
+      expectedVersion: context.revision, rationale: "Obsolete", sourceFileIds: [],
+    };
+    const first = await sam.mutation(api.context.proposeContextChange, input);
+    const second = await sam.mutation(api.context.proposeContextChange, input);
+    expect([first.status, second.status]).toEqual(["pending", "pending"]);
+    await alex.mutation(api.context.decideContextProposal, { proposalId: first.id, decision: "approved" });
+    expect((await alex.query(api.context.getDetails, { workspaceId })).constraints).toEqual([]);
+    await alex.mutation(api.context.decideContextProposal, { proposalId: second.id, decision: "approved" });
+    const proposals = await alex.query(api.context.getApprovals, { workspaceId });
+    expect(proposals.find((p) => p.id === second.id)?.status).toBe("stale");
+  });
+
+  it("applies every proposal at once when automatic, and only owners or admins choose", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    expect(await errorData(sam.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "automatic" })))
+      .toMatchObject({ code: "FORBIDDEN" });
+    await automatic(alex, workspaceId);
+    expect((await alex.query(api.workspaces.getWorkspaceInfo, { workspaceId })).contextApproval).toBe("automatic");
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const goal = await callTool(t, apiKey, "propose_context_change", {
+      field: "goal", proposed_value: "Win Cal Hacks", rationale: "Kickoff",
+    });
+    expect(goal.structuredContent.proposal).toMatchObject({ status: "applied", field: "goal" });
+    expect((await alex.query(api.context.getDetails, { workspaceId })).goal?.text).toBe("Win Cal Hacks");
+    const events = await t.run((ctx) => ctx.db.query("workspace_events").collect());
+    expect(events.map((e) => e.kind)).toContain("workspace.context_approval_changed");
+  });
+});
+
 describe("context lifecycle review regressions", () => {
   it("preserves ownership identity when editing by ID or legacy index", async () => {
     const { alex, samId, workspaceId } = await setup();
@@ -1921,6 +1997,7 @@ describe("context lifecycle review regressions", () => {
     "resolves a dashboard-created long question without depending on the supplied value (%#)",
     async (proposedValue) => {
       const { t, alex, sam, workspaceId } = await setup();
+      await automatic(alex, workspaceId);
       const text = "Q".repeat(3000);
       await alex.mutation(api.context.updateContextField, {
         workspaceId,
@@ -1974,6 +2051,7 @@ describe("context lifecycle review regressions", () => {
 describe("context tiers over the hosted MCP contract", () => {
   it("maps stable IDs, lifecycle attribution and pending supersession through real tool handlers", async () => {
     const { t, alex, sam, samId, workspaceId } = await setup();
+    await automatic(alex, workspaceId);
     const { apiKey, connectionId } = await connect(sam, { workspaceId, client: "claude" });
     const added = await callTool(t, apiKey, "propose_context_change", {
       field: "open_questions", proposed_value: "Who reviews?", rationale: "Planning",
@@ -1994,6 +2072,7 @@ describe("context tiers over the hosted MCP contract", () => {
     expect(after.context.open_questions[0]).toMatchObject({ id: question.id, status: "resolved", resolved_at: expect.any(Number),
       resolved_by: { actor_type: "agent", agent_connection_id: connectionId } });
     await alex.mutation(api.context.updateContextField, { workspaceId, field: "decision", proposedValue: "D1", sourceFileIds: [], expectedVersion: after.context_version });
+    await alex.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "manual" });
     const initial = (await callTool(t, apiKey, "sync_workspace")).structuredContent;
     const d1 = initial.context.decisions[0];
     const replacement = (await callTool(t, apiKey, "propose_context_change", {
@@ -2042,6 +2121,7 @@ describe("context references after source deletion (#27)", () => {
 
   it.each(["dashboard", "MCP"])("resolves a question with a deleted source through %s, then removes it", async (caller) => {
     const { t, alex, sam, workspaceId, file, context } = await sourcedContext();
+    await automatic(alex, workspaceId);
     const input = {
       field: "open_question" as const, operation: "resolve" as const,
       entryId: context.openQuestions[0]!.id, rationale: "Answered", sourceFileIds: [file.id],
@@ -2194,6 +2274,8 @@ describe("sync brief and server instructions", () => {
       field: "decisions", proposed_value: "Usage pricing", rationale: "Research", supersedes: old.id,
     })).proposal;
     await alex.mutation(api.context.decideContextProposal, { proposalId: replacement.id, decision: "approved" });
+    // Working entries apply at once; the goal below stays pending.
+    await automatic(alex, workspaceId);
     const blocker = (await tool("propose_context_change", {
       field: "open_questions", proposed_value: "Who signs off on launch?", rationale: "Blocks launch",
     })).proposal;
@@ -2204,6 +2286,7 @@ describe("sync brief and server instructions", () => {
       field: "open_questions", operation: "resolve", entry_id: logo.id,
       expected_version: (await tool("sync_workspace")).context_version, rationale: "Blue",
     });
+    await alex.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "manual" });
     const goal = (await tool("propose_context_change", {
       field: "goal", proposed_value: "Ship the beta", rationale: "Kickoff",
     })).proposal;

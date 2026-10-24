@@ -14,6 +14,11 @@ import { cn } from "@/lib/utils";
 
 export type Decision = "approved" | "rejected";
 
+const OPERATION_LABELS: Partial<Record<ContextProposal["operation"], string>> = {
+  resolve: "resolve proposed by",
+  remove: "removal proposed by",
+};
+
 interface ProposalCardProps {
   proposal: ContextProposal;
   /** The approved value it would replace (goal and scope only); "" when unset. */
@@ -37,7 +42,7 @@ export function ProposalCard({ proposal, current, canDecide, deciding, busy, onD
     <article aria-labelledby={headingId} className="rounded-md border bg-card px-5 py-4">
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
         <span className="label-caps rounded-sm bg-archive-tint px-1.5 py-0.5 text-archive">{label}</span>
-        <span>{replacesValue(proposal.field) ? "change proposed by" : "addition proposed by"}</span>
+        <span>{OPERATION_LABELS[proposal.operation] ?? (replacesValue(proposal.field) ? "change proposed by" : "addition proposed by")}</span>
         <ActorBadge actor={proposal.createdBy} />
         <span title={formatAbsolute(proposal.createdAt)}>{formatRelative(proposal.createdAt, now)}</span>
       </p>
@@ -110,7 +115,9 @@ export function DecidedProposal({ proposal }: { proposal: ContextProposal }) {
     <li className="flex flex-col gap-1 border-b px-4 py-3 text-sm last:border-b-0">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className={cn("label-caps w-18 shrink-0", status.className)}>{status.label}</span>
-        <span className="label-caps text-muted-foreground">{FIELD_LABELS[proposal.field]}</span>
+        <span className="label-caps text-muted-foreground">
+          {proposal.operation === "add" ? FIELD_LABELS[proposal.field] : `${proposal.operation === "resolve" ? "Resolve" : "Remove"} ${FIELD_LABELS[proposal.field].toLowerCase()}`}
+        </span>
         <span className="min-w-0 flex-1 truncate font-medium">{proposal.proposedValue}</span>
         <span className="text-xs text-muted-foreground" title={formatAbsolute(at)}>
           {formatRelative(at, now)}
@@ -125,7 +132,9 @@ export function DecidedProposal({ proposal }: { proposal: ContextProposal }) {
             <ActorBadge actor={proposal.decidedBy} />
           </>
         ) : (
-          proposal.status === "stale" && <span>· the field changed before it was approved</span>
+          proposal.status === "stale" && (
+            <span>· {proposal.operation === "add" ? "the field changed" : "the entry was already gone"} before it was approved</span>
+          )
         )}
       </p>
     </li>

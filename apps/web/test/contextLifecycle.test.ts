@@ -22,6 +22,7 @@ describe("context lifecycle", () => {
   it("immediately records agent working context, retains stable IDs and resolver attribution, and lets a human remove it", async () => {
     const { mock, as } = setup();
     await mock.listWorkspaces();
+    await mock.setContextApproval(workspaceId, "automatic");
     const changed = vi.fn();
     mock.watchWorkspace(workspaceId, changed);
     as(agent);
@@ -53,6 +54,28 @@ describe("context lifecycle", () => {
     expect(changed).toHaveBeenCalledTimes(3);
   });
 
+  it("holds working context and resolves for approval in a manual workspace, the default", async () => {
+    const { mock, as } = setup();
+    expect(await mock.getContextApproval(workspaceId)).toBe("manual");
+    as(agent);
+    const added = await mock.proposeContextChange(workspaceId, input);
+    expect(added.status).toBe("pending");
+    as(human);
+    expect((await mock.getContextDetails(workspaceId)).openQuestions).toEqual([]);
+    await mock.decideProposal({ id: added.id, workspaceId }, "approved");
+    const context = await mock.getContextDetails(workspaceId);
+    const entry = context.openQuestions[0]!;
+    expect(entry).toMatchObject({ text: input.proposedValue, status: "active" });
+    const resolve = await mock.proposeContextChange(workspaceId, {
+      ...input, operation: "resolve", entryId: entry.id, expectedVersion: context.version,
+    });
+    expect(resolve.status).toBe("pending");
+    expect((await mock.listProposals(workspaceId, "pending")).find((p) => p.id === resolve.id))
+      .toMatchObject({ operation: "resolve", proposedValue: input.proposedValue });
+    await mock.decideProposal({ id: resolve.id, workspaceId }, "approved");
+    expect((await mock.getContextDetails(workspaceId)).openQuestions[0]).toMatchObject({ id: entry.id, status: "resolved" });
+  });
+
   it("requires a version and the right field for lifecycle writes, and checks optional add versions", async () => {
     const { mock } = setup();
     const context = await mock.getContextDetails(workspaceId);
@@ -65,6 +88,7 @@ describe("context lifecycle", () => {
 
   it("uses stable IDs after removal shifts list indexes", async () => {
     const { mock } = setup();
+    await mock.setContextApproval(workspaceId, "automatic");
     let context = await mock.getContextDetails(workspaceId);
     const [first, second] = context.constraints;
     await mock.proposeContextChange(workspaceId, { ...input, field: "constraint", operation: "remove", entryId: first!.id, expectedVersion: context.version });
@@ -108,6 +132,7 @@ describe("context lifecycle", () => {
 
   it("edits, resolves, and removes a question after its source is deleted", async () => {
     const { mock } = setup();
+    await mock.setContextApproval(workspaceId, "automatic");
     const file = await mock.createFile(workspaceId, { name: "source.md", mimeType: "text/markdown", content: "Evidence" });
     await mock.proposeContextChange(workspaceId, { ...input, sourceFileIds: [file.id] });
     await mock.deleteFile(file.id, file.version);

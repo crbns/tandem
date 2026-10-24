@@ -24,6 +24,7 @@ interface ProposalRow {
   id: string;
   workspaceId: string;
   field: Field;
+  operation?: "add" | "resolve" | "remove";
   proposedValue: string;
   rationale: string;
   sourceFileIds: string[];
@@ -294,6 +295,7 @@ export function toProposal(p: ProposalRow, contextRevision: number) {
     id: p.id,
     workspace_id: p.workspaceId,
     field: toProposalField(p.field),
+    operation: p.operation ?? "add",
     proposed_value:
       p.field === "ownership" && p.ownerUserId !== null && p.ownerArea !== null
         ? { area: p.ownerArea, owner_user_id: p.ownerUserId }
@@ -367,7 +369,7 @@ function toContext(c: ContextRow) {
 type SyncRow = {
   workspace: { id: string; name: string };
   context: ContextRow;
-  pendingProposals: Pick<ProposalRow, "id" | "field" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt">[];
+  pendingProposals: Pick<ProposalRow, "id" | "field" | "operation" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt">[];
   changedFiles: FileRow[];
   filesTruncated: boolean;
   recentWork: Parameters<typeof toPublished>[0][];
@@ -454,6 +456,7 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
       status: "pending" as const,
       id: p.id,
       field: toProposalField(p.field),
+      operation: p.operation ?? "add",
       rationale: p.rationale,
       proposed_by: toAttribution(p.createdBy),
       created_at: iso(p.createdAt),
