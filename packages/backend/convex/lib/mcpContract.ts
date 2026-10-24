@@ -364,7 +364,7 @@ function toContext(c: ContextRow) {
   };
 }
 
-export function toSyncResult(r: {
+type SyncRow = {
   workspace: { id: string; name: string };
   context: ContextRow;
   pendingProposals: Pick<ProposalRow, "id" | "field" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt">[];
@@ -375,8 +375,76 @@ export function toSyncResult(r: {
   events: EventRow[];
   eventsTruncated: boolean;
   cursorSeq: number;
-}) {
+};
+
+/** Cap on each list in the sync brief. */
+export const BRIEF_LIMIT = 10;
+
+/**
+ * What an assistant should read first: the goal, what's decided, what's
+ * blocking, and what just changed. Built only from the sync result; `truncated`
+ * says a list was capped at BRIEF_LIMIT (the full lists are in context,
+ * pending_proposals and events).
+ */
+function toSyncBrief(r: SyncRow) {
+  const active = (entries: ContextEntry[]) => entries.filter((e) => e.status === "active");
+  const decisions = active(r.context.decisions);
+  const questions = active(r.context.openQuestions);
   return {
+    goal: r.context.goal?.text ?? "",
+    scope: r.context.scope?.text ?? "",
+    // Newest last in context, so keep the tail.
+    active_decisions: decisions.slice(-BRIEF_LIMIT).map((e) => ({ id: e.id, text: e.text })),
+    blockers: {
+      open_questions: questions.slice(-BRIEF_LIMIT).map((e) => ({ id: e.id, text: e.text })),
+      pending_approvals: r.pendingProposals.slice(0, BRIEF_LIMIT).map((p) => ({
+        id: p.id,
+        field: toProposalField(p.field),
+        proposed_value: p.proposedValue,
+      })),
+    },
+    // Events arrive oldest first; the brief lists the newest first.
+    recent_changes: r.events.slice(-BRIEF_LIMIT).reverse().map((e) => ({
+      type: e.kind,
+      subject_id: e.entityId,
+      summary: e.summary,
+      actor: e.actor.label,
+      at: iso(e.createdAt),
+    })),
+    changed_file_count: r.changedFiles.length,
+    truncated:
+      decisions.length > BRIEF_LIMIT ||
+      questions.length > BRIEF_LIMIT ||
+      r.pendingProposals.length > BRIEF_LIMIT ||
+      r.events.length > BRIEF_LIMIT,
+  };
+}
+
+/**
+ * `detail: "full"` keeps the whole contract with `brief` first; `"brief"`
+ * drops context, proposals and events and trims files to id/name/version.
+ */
+export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
+  const brief = toSyncBrief(r);
+  const cursor = encodeCursor(r.workspace.id, r.cursorSeq);
+  if (detail === "brief")
+    return {
+      brief,
+      workspace: r.workspace,
+      context_version: r.context.revision,
+      changed_files: r.changedFiles.map((f) => ({ id: f.id, name: f.name, version: f.version })),
+      // The cursor acknowledges the whole event page, not just recent_changes.
+      // Preserve every tombstone even when the brief's ten-event list is capped.
+      deleted_file_ids: r.events.filter((e) => e.kind === "file.deleted").map((e) => e.entityId),
+      files_truncated: r.filesTruncated,
+      // Full publications: the cursor acknowledges them and no tool reads one by id.
+      recent_work: r.recentWork.map(toPublished),
+      work_truncated: r.workTruncated,
+      events_truncated: r.eventsTruncated,
+      cursor,
+    };
+  return {
+    brief,
     workspace: r.workspace,
     context: toContext(r.context),
     context_version: r.context.revision,
@@ -404,7 +472,7 @@ export function toSyncResult(r: {
       summary: e.summary,
     })),
     events_truncated: r.eventsTruncated,
-    cursor: encodeCursor(r.workspace.id, r.cursorSeq),
+    cursor,
   };
 }
 
