@@ -9,7 +9,7 @@ import { safeNext } from "./lib/safeNext";
 const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 
 const isSignInPage = createRouteMatcher(["/sign-in"]);
-const isProtectedRoute = createRouteMatcher(["/w(.*)"]);
+const isProtectedRoute = createRouteMatcher(["/w(.*)", "/oauth(.*)"]);
 
 // Built lazily so mock mode never needs NEXT_PUBLIC_CONVEX_URL.
 let authProxy: ReturnType<typeof convexAuthNextjsMiddleware> | null = null;
@@ -25,7 +25,8 @@ function getAuthProxy() {
       return nextjsMiddlewareRedirect(request, next);
     }
     if (isProtectedRoute(request) && !signedIn) {
-      const next = encodeURIComponent(request.nextUrl.pathname);
+      // Keep the query: the OAuth consent page needs its ?request= back.
+      const next = encodeURIComponent(request.nextUrl.pathname + request.nextUrl.search);
       return nextjsMiddlewareRedirect(request, `/sign-in?next=${next}`);
     }
   });

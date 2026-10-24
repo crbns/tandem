@@ -1,10 +1,9 @@
-// Brings up the two live processes the scenario needs:
-// - the local Convex deployment (reused when it's already serving, otherwise
-//   `convex dev` is started from packages/backend and stopped afterwards), and
-// - the real MCP server (apps/mcp, TANDEM_BACKEND=convex) on a free port,
-//   unless MCP_URL points at one that's already deployed.
+// Brings up the live process the scenario needs: the local Convex deployment
+// (reused when it's already serving, otherwise `convex dev` is started from
+// packages/backend and stopped afterwards). The MCP server is part of it:
+// @convex-dev/mcp serves /mcp from the deployment's HTTP actions origin
+// (MCP_URL overrides it, e.g. for a deployed endpoint).
 import { spawn, type ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
 
@@ -17,7 +16,6 @@ declare module "vitest" {
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const backendDir = `${repoRoot}packages/backend`;
-const mcpDir = `${repoRoot}apps/mcp`;
 
 async function reachable(url: string): Promise<boolean> {
   try {
@@ -28,16 +26,20 @@ async function reachable(url: string): Promise<boolean> {
   }
 }
 
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      server.close(() => resolve(port));
-    });
-  });
+/**
+ * The HTTP actions origin for a deployment URL: CONVEX_SITE_URL when set,
+ * `.convex.site` for a cloud `.convex.cloud` URL, and the next port for a
+ * local backend (3210 serves the API, 3211 HTTP actions).
+ */
+function siteUrlFor(convexUrl: string): string {
+  if (process.env.CONVEX_SITE_URL) return process.env.CONVEX_SITE_URL.replace(/\/+$/, "");
+  const url = new URL(convexUrl);
+  if (url.hostname.endsWith(".convex.cloud")) {
+    url.hostname = url.hostname.replace(/\.convex\.cloud$/, ".convex.site");
+  } else {
+    url.port = String(Number(url.port) + 1);
+  }
+  return url.origin;
 }
 
 /** Spawns a process in its own group and resolves once `ready` appears in its output. */
@@ -101,36 +103,10 @@ export default async function setup(project: TestProject) {
     });
   }
 
-  // A deployed MCP server (MCP_URL) is used as is; otherwise one is spawned.
-  if (process.env.MCP_URL) {
-    project.provide("convexUrl", convexUrl);
-    project.provide("mcpUrl", process.env.MCP_URL);
-    return () => stop(convex);
-  }
-
-  const port = await freePort();
-  const mcpEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    TANDEM_BACKEND: "convex",
-    CONVEX_URL: convexUrl,
-    HOST: "127.0.0.1",
-    PORT: String(port),
-  };
-  // Mock-only settings; the Convex backend refuses to start with anon mode.
-  delete mcpEnv.TANDEM_DEV_TOKENS;
-  delete mcpEnv.TANDEM_DEV_ANON_USER;
-  const mcp = await start("mcp", `${mcpDir}/node_modules/.bin/tsx`, ["src/index.ts"], {
-    cwd: mcpDir,
-    env: mcpEnv,
-    ready: /listening on http/,
-    timeoutMs: 60_000,
-  });
-
   project.provide("convexUrl", convexUrl);
-  project.provide("mcpUrl", `http://127.0.0.1:${port}/mcp`);
+  project.provide("mcpUrl", process.env.MCP_URL ?? `${siteUrlFor(convexUrl)}/mcp`);
 
   return () => {
-    stop(mcp);
     stop(convex);
   };
 }

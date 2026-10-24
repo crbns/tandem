@@ -98,7 +98,13 @@ export const AGENT_CLIENTS = ["claude", "chatgpt", "gemini", "other"] as const;
 export type AgentClient = (typeof AGENT_CLIENTS)[number];
 
 /**
- * One assistant a person connected to one workspace. Its token is only ever
+ * How a connection signs in to the MCP server: an API key (Claude Code,
+ * scripts) or OAuth through the consent page (claude.ai and other connectors).
+ */
+export type AgentAuthKind = "api_key" | "oauth";
+
+/**
+ * One assistant a person connected to one workspace. An API key is only ever
  * returned by `createAgentConnection`, once. Times are what the backend last
  * saw over MCP; they never mean the assistant is "online".
  */
@@ -108,6 +114,10 @@ export interface AgentConnection {
   userName?: string;
   client: string;
   displayName?: string;
+  /** Absent on legacy token connections, which no longer work. */
+  authKind?: AgentAuthKind;
+  /** OAuth only: the name the client gave itself. Unverified. */
+  oauthClientName?: string;
   createdAt: number;
   lastMcpActionAt?: number;
   lastSyncAt?: number;
@@ -116,9 +126,29 @@ export interface AgentConnection {
 
 export interface NewAgentConnection {
   connectionId: string;
-  /** Plaintext bearer token. Shown once; the backend only keeps its hash. */
+  /** Plaintext API key. Shown once; the backend only keeps its hash. */
   token: string;
   createdAt: number;
+  /** The MCP server URL to configure next to the key. */
+  mcpUrl: string;
+}
+
+export interface OAuthScope {
+  name: string;
+  description: string;
+}
+
+/** An assistant asking to connect over OAuth, as the consent page shows it. */
+export interface ConsentRequest {
+  status: "pending" | "approved" | "denied";
+  /** Self-reported by the assistant when it registered. Unverified. */
+  clientName?: string;
+  /** Where the assistant receives access, e.g. "claude.ai". */
+  redirectHost?: string;
+  suggestedClient: AgentClient;
+  scopes: OAuthScope[];
+  /** Workspaces the signed-in person can connect it to. */
+  workspaces: { id: string; name: string; role: "owner" | "admin" | "member" }[];
 }
 
 export type ContextField = "goal" | "scope" | "constraint" | "decision" | "ownership" | "open_question";
