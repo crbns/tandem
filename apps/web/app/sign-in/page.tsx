@@ -6,29 +6,25 @@ import { AlertCircleIcon, Loader2Icon } from "lucide-react";
 import { useSession, InvalidCredentialsError } from "@/lib/auth/useSession";
 import { USE_MOCKS } from "@/lib/config";
 import { MOCK_USERS } from "@/lib/auth/mockUsers";
+import { safeNext } from "@/lib/safeNext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-/** Only follow same-origin relative paths, never `//evil.com` or absolute URLs. */
-function safeNext(next: string | null): string {
-  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
-}
-
 function SignInForm() {
   const session = useSession();
   const router = useRouter();
-  const next = safeNext(useSearchParams().get("next"));
+  const rawNext = useSearchParams().get("next");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (session.status === "authenticated") router.replace(next);
-  }, [session.status, next, router]);
+    if (session.status === "authenticated") router.replace(safeNext(rawNext, window.location.origin));
+  }, [session.status, rawNext, router]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
