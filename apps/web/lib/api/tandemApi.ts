@@ -6,6 +6,8 @@ import type {
   ProjectContext,
   Revision,
   Workspace,
+  InviteRole,
+  WorkspaceInvite,
 } from "./types";
 
 /**
@@ -17,6 +19,10 @@ import type {
 export interface TandemApi {
   listWorkspaces(): Promise<Workspace[]>;
   createWorkspace(name: string): Promise<string>;
+  createInvite(workspaceId: string, role: InviteRole): Promise<{ inviteId: string; token: string; expiresAt: number }>;
+  acceptInvite(token: string): Promise<{ workspaceId: string }>;
+  listInvites(workspaceId: string): Promise<WorkspaceInvite[]>;
+  revokeInvite(inviteId: string): Promise<void>;
   listFiles(workspaceId: string): Promise<FileSummary[]>;
   createFile(
     workspaceId: string,

@@ -2,6 +2,10 @@ import { ConvexError, type Value } from "convex/values";
 import type { Actor } from "./types";
 
 export const API_ERROR_CODES = [
+  "INVITE_INVALID",
+  "INVITE_EXPIRED",
+  "INVITE_USED",
+  "INVITE_REVOKED",
   "FORBIDDEN",
   "FILE_NOT_FOUND",
   "VERSION_CONFLICT",

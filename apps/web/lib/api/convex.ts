@@ -84,10 +84,20 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
           api.workspaces.listWorkspaces,
           {},
         );
-        return workspaces.map(({ id, name }) => ({ id, name }));
+        return workspaces.map(({ id, name, role }) => ({ id, name, role }));
       }),
     createWorkspace: (name) =>
       call(() => convex.mutation(api.workspaces.createWorkspace, { name })),
+    createInvite: (workspaceId, role) => call(() => convex.mutation(api.workspaces.createWorkspaceInvite, {
+      workspaceId: workspaceId as Id<"workspaces">, role,
+    })),
+    acceptInvite: (token) => call(() => convex.mutation(api.workspaces.acceptWorkspaceInvite, { token })),
+    listInvites: (workspaceId) => call(() => convex.query(api.workspaces.listWorkspaceInvites, {
+      workspaceId: workspaceId as Id<"workspaces">,
+    })),
+    revokeInvite: (inviteId) => call(async () => {
+      await convex.mutation(api.workspaces.revokeWorkspaceInvite, { inviteId: inviteId as Id<"workspace_invites"> });
+    }),
     listFiles: (workspaceId) =>
       call(async () => {
         const files = await convex.query(api.files.listFiles, {

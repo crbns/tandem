@@ -19,6 +19,10 @@ Convex is the source of truth. Use the backend functions under `packages/backend
 | Operation                | Convex function                      | Notes                                                                                  |
 | ------------------------ | ------------------------------------ | -------------------------------------------------------------------------------------- |
 | List workspaces          | `api.workspaces.listWorkspaces`      | Authenticated member scope; bounded to 100                                             |
+| Create invite | `api.workspaces.createWorkspaceInvite` | Owner/admin; `{ workspaceId, role: "admin" \| "member" }`; returns `{ inviteId, token, expiresAt }` once |
+| Accept invite | `api.workspaces.acceptWorkspaceInvite` | Signed-in user; `{ token }` returns `{ workspaceId }`; membership, acceptance, and event commit atomically |
+| List invites | `api.workspaces.listWorkspaceInvites` | Owner/admin; newest 100 invite metadata; never returns tokens or hashes |
+| Revoke invite | `api.workspaces.revokeWorkspaceInvite` | Owner/admin of invite's own workspace; `{ inviteId }` |
 | Workspace details/events | `api.workspaces.getWorkspaceInfo`    | Requires workspace membership                                                          |
 | Approved project context | `api.workspaces.getWorkspaceContext` | Requires workspace membership                                                          |
 | List/search file names   | `api.files.listFiles`                | `query` is a case-insensitive filename substring, not full-text search                 |
@@ -63,3 +67,9 @@ TANDEM_DEV_TOKENS=alex-dev-token:user_alex,sam-dev-token:user_sam pnpm --filter 
 ```
 
 The dashboard uses `apps/web/.env.local`. The MCP server reads environment variables from its process and defaults to `TANDEM_BACKEND=mock`. These two commands intentionally exercise different data stores until the identity bridge and Convex adapter are implemented.
+
+## Workspace invite links
+
+Email-based member addition has been replaced by bearer invite tokens, independent of Password email verification. Owners/admins create a member link on the workspace page and copy it for a teammate; `/invite/<token>` signs the recipient in with a same-origin return path and then accepts the invite. Treat the link as a credential and share it only with its intended recipient.
+
+Tokens have 256 random bits from `crypto.getRandomValues`; only SHA-256 hashes are stored. They expire after seven days, can be revoked, and admit one new member. A current member following a valid unused link returns to the workspace without consuming it. Invalid, expired, revoked, and used links return `INVITE_INVALID`, `INVITE_EXPIRED`, `INVITE_REVOKED`, and `INVITE_USED`. Creation/revocation require owner/admin; invite roles never include owner. Invite records carry attribution, revision, and timestamps.

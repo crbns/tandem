@@ -155,52 +155,120 @@ export const createFolder = mutation({
   },
 });
 
-export const addWorkspaceMember = mutation({
-  args: {
-    workspaceId: v.id("workspaces"),
-    email: v.string(),
-  },
-  returns: v.id("workspace_members"),
-  handler: async (ctx, args) => {
-    const { user, membership } = await requireMembership(ctx, args.workspaceId);
+const inviteRole = v.union(v.literal("admin"), v.literal("member"));
+
+async function hashInviteToken(token: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export const createWorkspaceInvite = mutation({
+  args: { workspaceId: v.id("workspaces"), role: inviteRole },
+  returns: v.object({ inviteId: v.id("workspace_invites"), token: v.string(), expiresAt: v.number() }),
+  handler: async (ctx, { workspaceId, role }) => {
+    const { user, membership } = await requireMembership(ctx, workspaceId);
     if (membership.role !== "owner" && membership.role !== "admin")
       throw new ConvexError({ code: "FORBIDDEN" });
-    const email = args.email.trim().toLocaleLowerCase();
-    if (!email) throw new ConvexError({ code: "INVALID_EMAIL" });
-    const invitee = await ctx.db
-      .query("users")
-      .withIndex("email", (q) => q.eq("email", email))
-      .unique();
-    if (!invitee) throw new ConvexError({ code: "USER_NOT_REGISTERED" });
-    // Membership is explicitly added by a workspace owner/admin. Password
-    // accounts have no verification flow configured in this hackathon build,
-    // so requiring emailVerificationTime would make every invite impossible.
-    const existing = await ctx.db
-      .query("workspace_members")
-      .withIndex("by_workspace_and_user", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("userId", invitee._id),
-      )
-      .unique();
-    if (existing) return existing._id;
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
     const now = Date.now();
-    const memberId = await ctx.db.insert("workspace_members", {
-      workspaceId: args.workspaceId,
-      userId: invitee._id,
-      role: "member",
-      updatedBy: humanActor(user),
-      revision: 1,
-      joinedAt: now,
-      updatedAt: now,
+    const expiresAt = now + 7 * 24 * 60 * 60 * 1000;
+    const actor = humanActor(user);
+    const inviteId = await ctx.db.insert("workspace_invites", {
+      workspaceId, tokenHash: await hashInviteToken(token), role,
+      createdBy: user._id, createdAt: now, expiresAt,
+      updatedBy: actor, revision: 1, updatedAt: now,
     });
     await recordWorkspaceEvent(ctx, {
-      workspaceId: args.workspaceId,
-      kind: "workspace.member_added",
-      entityType: "workspace_member",
-      entityId: memberId,
-      summary: `Added ${invitee.name ?? invitee.email ?? "a member"} to the workspace`,
-      actor: humanActor(user),
+      workspaceId, kind: "workspace.invite_created", entityType: "workspace_invite",
+      entityId: inviteId, summary: `Created a ${role} invite`, actor,
     });
-    return memberId;
+    return { inviteId, token, expiresAt };
+  },
+});
+
+export const acceptWorkspaceInvite = mutation({
+  args: { token: v.string() },
+  returns: v.object({ workspaceId: v.id("workspaces") }),
+  handler: async (ctx, { token }) => {
+    const user = await requireUser(ctx);
+    if (!/^[a-f0-9]{64}$/.test(token))
+      throw new ConvexError({ code: "INVITE_INVALID" });
+    const tokenHash = await hashInviteToken(token);
+    const invite = await ctx.db.query("workspace_invites")
+      .withIndex("by_token_hash", (q) => q.eq("tokenHash", tokenHash)).unique();
+    if (!invite) throw new ConvexError({ code: "INVITE_INVALID" });
+    if (invite.revokedAt !== undefined) throw new ConvexError({ code: "INVITE_REVOKED" });
+    if (invite.expiresAt <= Date.now()) throw new ConvexError({ code: "INVITE_EXPIRED" });
+    if (invite.acceptedAt !== undefined) throw new ConvexError({ code: "INVITE_USED" });
+    const { workspaceId } = invite;
+    if (!await ctx.db.get(workspaceId)) throw new ConvexError({ code: "INVITE_INVALID" });
+    const existing = await ctx.db.query("workspace_members")
+      .withIndex("by_workspace_and_user", (q) => q.eq("workspaceId", workspaceId).eq("userId", user._id)).unique();
+    if (existing) return { workspaceId };
+    const now = Date.now();
+    const actor = humanActor(user);
+    const memberId = await ctx.db.insert("workspace_members", {
+      workspaceId, userId: user._id, role: invite.role, updatedBy: actor,
+      revision: 1, joinedAt: now, updatedAt: now,
+    });
+    await ctx.db.patch(invite._id, {
+      acceptedBy: user._id, acceptedAt: now, updatedBy: actor,
+      updatedAt: now, revision: invite.revision + 1,
+    });
+    await recordWorkspaceEvent(ctx, {
+      workspaceId, kind: "workspace.member_added", entityType: "workspace_member",
+      entityId: memberId, summary: `${actor.label} joined through an invite`, actor,
+    });
+    return { workspaceId };
+  },
+});
+
+export const revokeWorkspaceInvite = mutation({
+  args: { inviteId: v.id("workspace_invites") },
+  returns: v.null(),
+  handler: async (ctx, { inviteId }) => {
+    // Check the invite's own workspace, never a client-supplied tenant ID.
+    await requireUser(ctx);
+    const invite = await ctx.db.get(inviteId);
+    if (!invite) throw new ConvexError({ code: "INVITE_INVALID" });
+    const { user, membership } = await requireMembership(ctx, invite.workspaceId);
+    if (membership.role !== "owner" && membership.role !== "admin")
+      throw new ConvexError({ code: "FORBIDDEN" });
+    if (invite.revokedAt !== undefined) return null;
+    const actor = humanActor(user);
+    const now = Date.now();
+    await ctx.db.patch(inviteId, {
+      revokedAt: now, updatedAt: now, updatedBy: actor, revision: invite.revision + 1,
+    });
+    await recordWorkspaceEvent(ctx, {
+      workspaceId: invite.workspaceId, kind: "workspace.invite_revoked", entityType: "workspace_invite",
+      entityId: inviteId, summary: "Revoked a workspace invite", actor,
+    });
+    return null;
+  },
+});
+
+export const listWorkspaceInvites = query({
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.array(v.object({
+    id: v.id("workspace_invites"), workspaceId: v.id("workspaces"), role: inviteRole,
+    createdBy: v.id("users"), createdAt: v.number(), expiresAt: v.number(),
+    acceptedBy: v.optional(v.id("users")), acceptedAt: v.optional(v.number()),
+    revokedAt: v.optional(v.number()), updatedAt: v.number(),
+  })),
+  handler: async (ctx, { workspaceId }) => {
+    const { membership } = await requireMembership(ctx, workspaceId);
+    if (membership.role !== "owner" && membership.role !== "admin")
+      throw new ConvexError({ code: "FORBIDDEN" });
+    const invites = await ctx.db.query("workspace_invites")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId)).order("desc").take(100);
+    return invites.map((invite) => ({
+      id: invite._id, workspaceId, role: invite.role, createdBy: invite.createdBy,
+      createdAt: invite.createdAt, expiresAt: invite.expiresAt, acceptedBy: invite.acceptedBy,
+      acceptedAt: invite.acceptedAt, revokedAt: invite.revokedAt, updatedAt: invite.updatedAt,
+    }));
   },
 });
 

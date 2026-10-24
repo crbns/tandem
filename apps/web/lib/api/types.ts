@@ -23,6 +23,22 @@ export interface Actor {
 export interface Workspace {
   id: string;
   name: string;
+  role?: "owner" | "admin" | "member";
+}
+
+export type InviteRole = "admin" | "member";
+
+export interface WorkspaceInvite {
+  id: string;
+  workspaceId: string;
+  role: InviteRole;
+  createdBy: string;
+  createdAt: number;
+  expiresAt: number;
+  acceptedBy?: string;
+  acceptedAt?: number;
+  revokedAt?: number;
+  updatedAt: number;
 }
 
 export interface FileSummary {

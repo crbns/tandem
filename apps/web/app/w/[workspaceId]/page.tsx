@@ -8,6 +8,7 @@ import { useResource } from "@/lib/api/useResource";
 import { filterAndSortFiles } from "@/lib/files";
 import { FileTable, FileTableSkeleton } from "@/components/files/FileTable";
 import { CustodyPanel } from "@/components/files/CustodyPanel";
+import { InviteDialog } from "@/components/files/InviteDialog";
 import { NewFileDialog } from "@/components/files/NewFileDialog";
 import { ErrorState } from "@/components/common/ErrorState";
 import { TandemMark } from "@/components/common/TandemMark";
@@ -48,6 +49,7 @@ export default function FilesPage() {
             <RotateCwIcon className={cn(refreshing && "animate-spin")} />
             Refresh
           </Button>
+          <InviteDialog workspaceId={workspaceId} />
           <NewFileDialog workspaceId={workspaceId} />
         </div>
       </div>

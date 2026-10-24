@@ -7,6 +7,10 @@ export const CREATE_ERROR_COPY: Partial<Record<ApiErrorCode, string>> = {
 
 /** User-facing copy for each error code. Components never show raw messages. */
 export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: string }> = {
+  INVITE_INVALID: { title: "Invalid invite", description: "This invite link isn't valid. Ask a workspace admin for a new link." },
+  INVITE_EXPIRED: { title: "Invite expired", description: "Invite links expire after seven days. Ask a workspace admin for a new link." },
+  INVITE_USED: { title: "Invite already used", description: "Someone has already accepted this invite. Ask a workspace admin for a new link." },
+  INVITE_REVOKED: { title: "Invite revoked", description: "A workspace admin revoked this invite. Ask for a new link." },
   FORBIDDEN: {
     title: "You don't have access",
     description: "You're not a member of this workspace, or you can't edit this file.",

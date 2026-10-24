@@ -7,6 +7,7 @@ import type {
   ProjectContext,
   Revision,
   Workspace,
+  WorkspaceInvite,
 } from "./types";
 
 export const MOCK_WORKSPACE_ID = "ws_demo";
@@ -142,6 +143,23 @@ export function createMockApi({
     [MOCK_WORKSPACE_ID, context],
   ]);
   let nextId = 1;
+  const invites = new Map<string, WorkspaceInvite & { token: string }>();
+  const memberships = new Map<string, Map<string, "owner" | "admin" | "member">>();
+  const signedInUser = () => {
+    const actor = getActor();
+    if (!actor.userId || actor.userId === "user_anonymous" || actor.actorType !== "human")
+      throw new TandemApiError("UNAUTHENTICATED");
+    return actor.userId;
+  };
+  const membersFor = (workspaceId: string) => {
+    if (!workspaces.some((w) => w.id === workspaceId)) throw new TandemApiError("FORBIDDEN");
+    if (!memberships.has(workspaceId)) memberships.set(workspaceId, new Map([[signedInUser(), "owner"]]));
+    return memberships.get(workspaceId)!;
+  };
+  const requireAdmin = (workspaceId: string) => {
+    const role = membersFor(workspaceId).get(signedInUser());
+    if (role !== "owner" && role !== "admin") throw new TandemApiError("FORBIDDEN");
+  };
 
   const delay = () => {
     const [min, max] = latencyMs;
@@ -180,7 +198,7 @@ export function createMockApi({
   return {
     async listWorkspaces() {
       await delay();
-      return workspaces.map((w) => ({ ...w }));
+      return workspaces.map((w) => ({ ...w, role: membersFor(w.id).get(signedInUser()) })).filter((w) => w.role);
     },
 
     async createWorkspace(name) {
@@ -189,7 +207,56 @@ export function createMockApi({
       if (!trimmedName) throw new TandemApiError("INVALID_INPUT");
       const id = `ws_new_${nextId++}`;
       workspaces.push({ id, name: trimmedName });
+      memberships.set(id, new Map([[signedInUser(), "owner"]]));
       return id;
+    },
+
+    async createInvite(workspaceId, role) {
+      await delay();
+      requireAdmin(workspaceId);
+      if (role !== "admin" && role !== "member") throw new TandemApiError("INVALID_INPUT");
+      const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
+      const now = Date.now();
+      const id = `invite_${nextId++}`;
+      const expiresAt = now + 7 * 24 * 60 * 60 * 1000;
+      invites.set(id, { id, workspaceId, role, token, createdBy: signedInUser(), createdAt: now, updatedAt: now, expiresAt });
+      return { inviteId: id, token, expiresAt };
+    },
+
+    async acceptInvite(token) {
+      await delay();
+      const userId = signedInUser();
+      const invite = [...invites.values()].find((i) => i.token === token);
+      if (!invite) throw new TandemApiError("INVITE_INVALID");
+      if (invite.revokedAt !== undefined) throw new TandemApiError("INVITE_REVOKED");
+      if (invite.expiresAt <= Date.now()) throw new TandemApiError("INVITE_EXPIRED");
+      if (invite.acceptedAt !== undefined) throw new TandemApiError("INVITE_USED");
+      const members = membersFor(invite.workspaceId);
+      if (!members.has(userId)) {
+        members.set(userId, invite.role);
+        invite.acceptedBy = userId;
+        invite.acceptedAt = invite.updatedAt = Date.now();
+      }
+      return { workspaceId: invite.workspaceId };
+    },
+
+    async listInvites(workspaceId) {
+      await delay();
+      requireAdmin(workspaceId);
+      return [...invites.values()].filter((i) => i.workspaceId === workspaceId).reverse().slice(0, 100).map((invite) => ({
+        id: invite.id, workspaceId, role: invite.role, createdBy: invite.createdBy,
+        createdAt: invite.createdAt, expiresAt: invite.expiresAt, acceptedBy: invite.acceptedBy,
+        acceptedAt: invite.acceptedAt, revokedAt: invite.revokedAt, updatedAt: invite.updatedAt,
+      }));
+    },
+
+    async revokeInvite(inviteId) {
+      await delay();
+      signedInUser();
+      const invite = invites.get(inviteId);
+      if (!invite) throw new TandemApiError("INVITE_INVALID");
+      requireAdmin(invite.workspaceId);
+      if (invite.revokedAt === undefined) invite.revokedAt = invite.updatedAt = Date.now();
     },
 
     async listFiles(workspaceId) {
