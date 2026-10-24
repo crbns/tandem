@@ -2998,7 +2998,7 @@ describe("sync brief and server instructions", () => {
     // Everything between the brief and next_steps is the pre-brief contract, key for key and value for value.
     const { brief, next_steps, ...rest } = sync;
     expect(Object.keys(sync).at(-1)).toBe("next_steps");
-    expect(next_steps).toEqual(syncNextSteps());
+    expect(next_steps).toEqual(syncNextSteps({ contextEmpty: false }));
     expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "pending_proposals", "changed_files", "files_truncated", "folders", "folders_truncated",
       "recent_work", "work_truncated", "tasks", "tasks_truncated", "events", "events_truncated", "cursor"]);
     const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
@@ -3083,7 +3083,12 @@ describe("sync brief and server instructions", () => {
       return result.structuredContent;
     };
 
-    expect((await tool("sync_workspace", { detail: "brief" })).next_steps).toEqual(syncNextSteps());
+    // A fresh workspace has no approved context, so sync asks to seed it from the files.
+    const empty = (await tool("sync_workspace", { detail: "brief" })).next_steps;
+    expect(empty).toEqual(syncNextSteps({ contextEmpty: true }));
+    expect(empty[0]).toMatch(/context is empty.*propose_context_change.*source_ids/);
+    expect(syncNextSteps({ contextEmpty: false })).toEqual(empty.slice(1));
+    expect(empty.join(" ")).toMatch(/publish_work, even if no file changed/);
 
     const created = await tool("create_document", { name: "loop.md", content: "v1" });
     expect(created.next_steps).toEqual(savedNextSteps(created as { id: string; version: number }));
@@ -3091,6 +3096,8 @@ describe("sync brief and server instructions", () => {
     const { next_steps: savedSteps, ...file } = created;
     expect(file).toEqual(expect.objectContaining({ id: expect.any(String), path: "/loop.md", version: 1 }));
     expect(savedSteps[1]).toContain(`["${created.id}"]`);
+    expect(savedSteps[2]).toMatch(/propose_context_change.*approved context lacks/);
+    expect(savedSteps[2]).toContain(`source_ids ["${created.id}"]`);
 
     const updated = await tool("update_document", { file_id: created.id, content: "v2", expected_version: 1 });
     expect(updated.next_steps[0]).toBe("Saved as version 2; pass expected_version=2 for your next edit of this file.");
@@ -3103,6 +3110,10 @@ describe("sync brief and server instructions", () => {
     expect(pending.proposal.status).toBe("pending");
     expect(pending.next_steps).toEqual(proposedNextSteps("pending"));
     expect(pending.next_steps.join(" ")).toMatch(/human owner or admin/);
+    // A pending goal isn't approved context yet; once approved, the seeding step goes away.
+    expect((await tool("sync_workspace")).next_steps).toEqual(syncNextSteps({ contextEmpty: true }));
+    await alex.mutation(api.context.decideContextProposal, { proposalId: pending.proposal.id, decision: "approved" });
+    expect((await tool("sync_workspace")).next_steps).toEqual(syncNextSteps({ contextEmpty: false }));
 
     await automatic(alex, workspaceId);
     const applied = await tool("propose_context_change", { field: "constraints", proposed_value: "No mobile", rationale: "Budget" });
@@ -3124,7 +3135,8 @@ describe("sync brief and server instructions", () => {
   it("tells assistants when to sync and how to share work back, in a short instructions string", async () => {
     const { MCP_INSTRUCTIONS } = await import("./mcp");
     for (const term of ["sync_workspace", "since", "cursor", "read_file", "update_document", "publish_work", "propose_context_change",
-      "expected_version", "open_questions", "best effort", "without waiting to be asked", "private conversation history", "untrusted"])
+      "expected_version", "open_questions", "best effort", "without waiting to be asked", "private conversation history", "untrusted",
+      "even if no file changed", "create or edit", "that context lacks", "especially if empty"])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);

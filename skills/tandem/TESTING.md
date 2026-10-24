@@ -185,6 +185,10 @@ Add a one-paragraph status note for this week as a new doc.
 ```
 
 ```text
+Which of these risks should we tackle first?
+```
+
+```text
 We've decided to cut the mobile app from v1.
 ```
 
@@ -198,17 +202,34 @@ Expected, per turn (record each as yes / no / prompted):
 | 1    | `sync_workspace` (brief); answer cites the approved goal         | none (question only)                                                              |
 | 2    | `sync_workspace` with `since`, `read_file` of `brief.md`         | `update_document` with the version read, then `publish_work`; one-line report     |
 | 3    | `sync_workspace` with `since` (sees the teammate edit)           | `create_document`, then `publish_work`; one-line report                           |
-| 4    | `sync_workspace` with `since`                                    | `propose_context_change` (`decisions`), reported as pending; no file edit claims it |
+| 4    | `sync_workspace` with `since`, `read_file` of `brief.md`         | no file change; still `publish_work` kind `"finding"` with the recommendation     |
+| 5    | `sync_workspace` with `since`                                    | `propose_context_change` (`decisions`), reported as pending; no file edit claims it |
 
 Also check in the dashboard: the new revisions, the published work, and the
 pending proposal, each attributed to the assistant. Check that no published
 summary quotes the chat beyond the work itself. Note every client
 write-confirmation prompt; "Always allow" on Tandem's tools removes them.
 
-| Client         | Run | T1 read | T2 read/write | T3 read/write | T4 propose | Prompted? | Notes |
-| -------------- | --- | ------- | ------------- | ------------- | ---------- | --------- | ----- |
-| Claude web     |     | PENDING | PENDING       | PENDING       | PENDING    |           |       |
-| Claude desktop |     | PENDING | PENDING       | PENDING       | PENDING    |           |       |
+| Client         | Run | T1 read | T2 read/write | T3 read/write | T4 finding | T5 propose | Prompted? | Notes |
+| -------------- | --- | ------- | ------------- | ------------- | ---------- | ---------- | --------- | ----- |
+| Claude web     |     | PENDING | PENDING       | PENDING       | PENDING    | PENDING    |           |       |
+| Claude desktop |     | PENDING | PENDING       | PENDING       | PENDING    | PENDING    |           |       |
+
+**Empty-context run.** Send turns 1 to 3 once per client in a fresh chat on a
+workspace with no approved goal, scope or entries, after seeding `brief.md`
+with a goal, an owner and an open question in its text (turn 1 then finds no
+approved goal). Expected: the first
+`sync_workspace` result's `next_steps` starts with the "context is empty" step,
+and after each `create_document` / `update_document` the assistant calls
+`propose_context_change` for what the file shows (goal, scope, constraints,
+decisions, owners, open questions) with that file's id in `source_ids`. Check
+in the dashboard that the proposals are pending (manual workspace) and cite
+the file. Record yes / no / prompted per client.
+
+| Client         | Run | Empty-context step seen | Proposals after save | Cite file in `source_ids` | Notes |
+| -------------- | --- | ----------------------- | -------------------- | ------------------------- | ----- |
+| Claude web     |     | PENDING                 | PENDING              | PENDING                   |       |
+| Claude desktop |     | PENDING                 | PENDING              | PENDING                   |       |
 
 ## Record and replay
 

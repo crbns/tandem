@@ -779,6 +779,10 @@ describe("read-before / write-back loop", () => {
       "best effort",
       "private conversation history",
       "untrusted",
+      "even if no file changed",
+      "create or edit",
+      "that context lacks",
+      "especially if empty",
     ])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
@@ -794,7 +798,10 @@ describe("read-before / write-back loop", () => {
       return result.structuredContent as Record<string, any>;
     };
 
-    expect((await ok("sync_workspace", {})).next_steps).toEqual(syncNextSteps());
+    // The demo workspace has an approved goal, so no context-seeding step.
+    expect((await ok("sync_workspace", {})).next_steps).toEqual(
+      syncNextSteps({ contextEmpty: false }),
+    );
 
     const created = await ok("create_document", { name: "loop.md", content: "v1" });
     expect(created).toMatchObject({ path: "/loop.md", version: 1 });
@@ -810,6 +817,8 @@ describe("read-before / write-back loop", () => {
     const { next_steps } = JSON.parse(text(updated));
     expect(next_steps[0]).toContain("expected_version=2");
     expect(next_steps[1]).toContain(`["${created.id}"]`);
+    expect(next_steps[2]).toContain("approved context lacks");
+    expect(next_steps[2]).toContain(`source_ids ["${created.id}"]`);
 
     const published = await ok("publish_work", {
       kind: "deliverable",

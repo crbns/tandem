@@ -265,7 +265,10 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
             sinceSeq: since?.seq,
             cursorWorkspaceId: since?.workspaceId,
           });
-          return { ...toSyncResult(r, args.detail), next_steps: syncNextSteps() };
+          const c = r.context;
+          const contextEmpty = !c.goal?.text && !c.scope?.text &&
+            [c.constraints, c.decisions, c.ownership, c.openQuestions].every((entries) => entries.every((e) => e.status !== "active"));
+          return { ...toSyncResult(r, args.detail), next_steps: syncNextSteps({ contextEmpty }) };
         }, { workspaceId: args.workspace_id }),
     }),
 
@@ -567,6 +570,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       title: "Propose context change",
       description:
         "Update project context; use this to record decisions. Re-sync with since first so you propose against current context. " +
+        "If you haven't called sync_workspace in this conversation, do that first. " +
         "In a manual workspace (the default; see context_approval in get_workspace_info) every change, " +
         "including constraints, open_questions and resolve/remove, creates a pending proposal requiring human owner/admin approval. " +
         "In an automatic workspace every change applies immediately (status applied). operation defaults to add. " +
@@ -662,7 +666,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
     manage_task: tool({
       title: "Manage tasks",
       description:
-        "Coordinate work with teammates' assistants through shared workspace tasks. operation: " +
+        "Coordinate work with teammates' assistants through shared workspace tasks. If you haven't called sync_workspace in this conversation, do that first. operation: " +
         '"list" (optional status "open", "in_progress" or "done"; omit for all; limit 1–100, default 50; newest first), ' +
         '"create" (title 1–200 characters, optional description up to 4000), ' +
         '"claim" (task_id, expected_version), "update" (task_id, expected_version, and any of title, description, ' +
@@ -750,10 +754,12 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         'Share a project deliverable or finding with the team, linked to the files it covers. kind: "deliverable" for finished work, ' +
         '"finding" for facts learned or progress. title: 1–200 characters; summary: what the team should know, 1–4000 characters; ' +
         "file_ids: up to 20 files in this workspace. " +
-        "Publish progress and findings after meaningful steps, so teammates' assistants see them on their next sync. " +
+        "Publish after each project request that did work, even with no file change (analysis, plans, reviews and decisions discussed as findings; files produced as deliverables), " +
+        "so teammates' assistants see them on their next sync. " +
         "Raise team-blocking questions with propose_context_change field open_questions instead; those appear in the sync brief's blockers. " +
         "Only publish relevant project work the user has authorized sharing; never private conversation history or personal content. " +
-        "Publishing does not change files or the approved context: for goal, scope, decisions or ownership use propose_context_change.",
+        "Publishing does not change files or the approved context: for goal, scope, decisions or ownership use propose_context_change. " +
+        "If you haven't called sync_workspace in this conversation, do that first.",
       args: {
         kind: v.union(v.literal("deliverable"), v.literal("finding")),
         title: v.string(),

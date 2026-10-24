@@ -1,7 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import type { Actor, TandemBackend } from "./backend/types.js";
+import type {
+  Actor,
+  StructuredContext,
+  TandemBackend,
+} from "./backend/types.js";
 import { TandemError } from "./errors.js";
 import {
   MCP_INSTRUCTIONS,
@@ -97,10 +101,15 @@ export function createMcpServer(
       },
     },
     (args) =>
-      run(async () => ({
-        ...(await backend.syncWorkspace(actor, args)),
-        next_steps: syncNextSteps(),
-      })),
+      run(async () => {
+        const result = await backend.syncWorkspace(actor, args);
+        return {
+          ...result,
+          next_steps: syncNextSteps({
+            contextEmpty: contextEmpty(result.context),
+          }),
+        };
+      }),
   );
 
   server.registerTool(
@@ -467,6 +476,7 @@ export function createMcpServer(
       title: "Propose context change",
       description:
         "Update project context. Goal, scope, decisions and ownership create pending proposals requiring human owner/admin approval. " +
+        "If you haven't called sync_workspace in this conversation, do that first. " +
         "Constraints and open_questions additions apply immediately (status applied). operation defaults to add. " +
         "Resolve an open question with operation resolve, entry_id and expected_version from sync context_version; history is retained. " +
         "Only humans can remove working entries. Resolve/remove require expected_version. " +
@@ -601,8 +611,10 @@ export function createMcpServer(
       title: "Publish work",
       description:
         "Share a project deliverable or finding with the team, linked to the files it covers. " +
+        "Publish after each project request that did work, even with no file change. " +
         "Only publish relevant project work the user has authorized sharing; never private conversation history or personal content. " +
-        "Publishing does not change files or the approved context: for goal, scope, decisions or ownership use propose_context_change.",
+        "Publishing does not change files or the approved context: for goal, scope, decisions or ownership use propose_context_change. " +
+        "If you haven't called sync_workspace in this conversation, do that first.",
       inputSchema: {
         kind: z
           .enum(["deliverable", "finding"])
@@ -643,6 +655,20 @@ export function createMcpServer(
   );
 
   return server;
+}
+
+/** No goal, scope or active entries: sync's next_steps then asks to seed it. */
+function contextEmpty(context: StructuredContext): boolean {
+  return (
+    !context.goal &&
+    !context.scope &&
+    [
+      context.constraints,
+      context.decisions,
+      context.ownership,
+      context.open_questions,
+    ].every((entries) => entries.every((e) => e.status !== "active"))
+  );
 }
 
 /** A saved file's metadata plus what to do next. */

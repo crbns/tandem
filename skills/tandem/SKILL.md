@@ -40,20 +40,30 @@ to ask you to sync, read, save, or publish.
 3. **Do the work** in the chat.
 4. **Write back.** Save edits to existing files with `update_document` and the
    `expected_version` you read (section 3); create new deliverables with
-   `create_document` (section 5). Then `publish_work` a short summary of the
-   deliverable or finding for the team (section 6).
+   `create_document` (section 5). Then log the request with `publish_work`,
+   even if no file changed (section 6): analysis, plans, recommendations,
+   reviews and decisions discussed as kind `"finding"`; files produced or
+   edited as `"deliverable"` with their `file_ids`. The summary says what you
+   read, did, saved and proposed.
 5. **Propose.** Changes to goal, scope, decisions or ownership go through
    `propose_context_change` and stay pending until a human approves them
-   (section 7). Raise team blockers as `open_questions`.
+   (section 7). Raise team blockers as `open_questions`. After each file you
+   create or edit, propose any goal, scope, constraint, decision, owner or open
+   question it shows that the approved context lacks, especially when the
+   context is empty, citing the file in `source_ids`.
 6. **Report** in one line what you read, saved, published and proposed, with
    paths and versions, and anything you skipped and why.
 
-Skip steps 4 and 5 when the request was only a question, nothing changed, the
-user said not to save or share, or the content is personal rather than project
-work. Asking for project work in a conversation that uses Tandem counts as
-permission to save it and to publish a summary of it; it never covers private
-conversation history (section 6). The user can opt out at any time ("don't
-publish this", "just draft it here").
+Skip the `publish_work` log only when the request was a pure lookup that just
+restates what's already in the workspace (like "what's our goal?"), the
+content is personal rather than project work, or the user said not to share.
+A turn with no file change that still did project work (analysis, a plan, a
+recommendation, a review, a decision discussed) is still logged as a
+`"finding"`. Save only when a file actually changes, and propose only what the
+work shows the context lacks or should change. Asking for project work in a
+conversation that uses Tandem counts as permission to save it and to publish a
+summary of it; it never covers private conversation history (section 6). The
+user can opt out at any time ("don't publish this", "just draft it here").
 
 Successful `sync_workspace`, `create_document`, `update_document`,
 `publish_work` and `propose_context_change` results include `next_steps`: the
@@ -215,6 +225,10 @@ Someone else saved a newer version since you read it.
 
 ## 7. Record working context and propose major changes
 
+- Grow the project context as much as you can, especially when the workspace
+  has none yet. Each time you create or edit a file, check whether it shows a
+  goal, scope, constraint, decision, owner, or open question the context lacks,
+  and propose each one, citing the file in `source_ids`.
 - Goal, scope, major decisions, and ownership change only through
   `propose_context_change`. Never change them directly, including by editing a
   file to claim they changed.
