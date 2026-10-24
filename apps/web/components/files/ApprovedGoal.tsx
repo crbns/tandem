@@ -4,6 +4,7 @@ import { useCallback } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
+import { useWorkspaceRefresh } from "@/lib/api/useWorkspace";
 import { formatAbsolute, formatRelative } from "@/lib/time";
 import { useNow } from "@/lib/useNow";
 import { ActorBadge } from "@/components/common/ActorBadge";
@@ -18,6 +19,8 @@ export function ApprovedGoal({ workspaceId }: { workspaceId: string }) {
   const now = useNow();
   const load = useCallback(() => api.getContext(workspaceId), [api, workspaceId]);
   const { resource, reload } = useResource(load);
+  // An approval elsewhere (another tab, a teammate) updates the goal here.
+  useWorkspaceRefresh(workspaceId, reload);
 
   if (resource.status === "loading") {
     return <Skeleton className="h-[5.5rem] w-full" aria-label="Loading the approved goal" />;

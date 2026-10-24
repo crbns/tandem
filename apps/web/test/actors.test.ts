@@ -17,16 +17,19 @@ describe("actor display", () => {
   it("names an agent by its assistant and says whose it is", () => {
     expect(actorName(alexsClaude)).toBe("Claude");
     expect(onBehalfOf(alexsClaude)).toBe("Alex");
-    expect(actorLabel(alexsClaude)).toBe("Claude for Alex");
+    expect(actorLabel(alexsClaude)).toBe("Alex via Claude");
   });
 
-  it("falls back to the client id, then a generic name, when the agent name is missing", () => {
-    expect(actorName({ actorType: "agent", userId: "u", agentClient: "chatgpt" })).toBe("chatgpt");
+  it("prefers the client's product name, then the label, then a generic name", () => {
+    expect(actorName({ actorType: "agent", userId: "u", agentClient: "chatgpt" })).toBe("ChatGPT");
+    expect(actorName({ actorType: "agent", userId: "u", agentClient: "claude", agentName: "Work laptop" })).toBe("Claude");
+    expect(actorName({ actorType: "agent", userId: "u", agentClient: "other", agentName: "Copilot" })).toBe("Copilot");
+    expect(actorName({ actorType: "agent", userId: "u", agentClient: "acme" })).toBe("acme");
     expect(actorName({ actorType: "agent", userId: "u" })).toBe("An assistant");
     expect(actorLabel({ actorType: "agent", userId: "u", agentName: "Gemini" })).toBe("Gemini (agent)");
   });
 
-  it("names a human by their own name, with no 'for'", () => {
+  it("names a human by their own name, with no 'via'", () => {
     expect(actorName(alex)).toBe("Alex");
     expect(onBehalfOf(alex)).toBeNull();
     expect(actorLabel(alex)).toBe("Alex");

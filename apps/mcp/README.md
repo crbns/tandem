@@ -4,7 +4,7 @@ Remote MCP server (Streamable HTTP, stateless) that lets assistants read and edi
 
 Tools:
 
-- Read: `get_workspace_info` (caller identity, workspaces, roles, and this connection's `last_synced_at` / `last_action_at`), `list_files`, `search_files` (name/content match with snippets), `read_file`, `get_file_versions` (revision history with authors, no content), `get_approvals` (context proposals by status, newest first)
+- Read: `get_workspace_info` (caller identity, workspaces, roles, the default workspace's `members` as `{ user_id, name, role }` for ownership proposals, and this connection's `last_synced_at` / `last_action_at`), `list_files`, `search_files` (name/content match with snippets), `read_file`, `get_file_versions` (revision history with authors, no content), `get_approvals` (context proposals by status, newest first)
 - Sync: `sync_workspace` (approved context, pending proposal summaries, changed files, events, and an opaque `cursor`; pass it back as `since` for incremental syncs). It only records the last sync time.
 - Write: `create_document`, `update_document` (optimistic versioning via `expected_version`), `propose_context_change` (creates a pending proposal, never changes context), `publish_work` (records an authorized deliverable or finding)
 
@@ -37,7 +37,7 @@ The keys are exported only in the terminal running the server. Before using `$AL
 - The server binds `127.0.0.1` by default, so it isn't reachable from your LAN. Set `HOST` (e.g. `HOST=0.0.0.0` in a container) to change that.
 - `/mcp` requests that carry an `Origin` header not listed in `TANDEM_ALLOWED_ORIGINS` get `403` (DNS-rebinding protection). Server-side clients (claude.ai, Claude Code, curl) send no `Origin` and are unaffected.
 
-Every `/mcp` request needs an `api-key: <key>` header with a key from `TANDEM_DEV_TOKENS` (unless dev anon mode is on; see below). A missing, empty, comma-containing (e.g. a repeated header), or unknown key gets `401` with `WWW-Authenticate: ApiKey realm="tandem"` and `{"error":{"code":"UNAUTHENTICATED",...}}`. The `Authorization` header is ignored. This is temporary until OAuth lands (see `docs/mcp-auth-design.md`). The env vars are read from the process environment; the server doesn't load `.env` files itself.
+Every `/mcp` request needs an `api-key: <key>` header with a key from `TANDEM_DEV_TOKENS` (unless dev anon mode is on; see below). A missing, empty, comma-containing (e.g. a repeated header), or unknown key gets `401` with `WWW-Authenticate: ApiKey realm="tandem"` and `{"error":{"code":"UNAUTHENTICATED",...}}`. With the mock backend the `Authorization` header is ignored (the Convex backend accepts it; see "Run against Convex"). This is temporary until OAuth lands (see `docs/mcp-auth-design.md`). The env vars are read from the process environment; the server doesn't load `.env` files itself.
 
 ```sh
 curl -s http://localhost:8787/mcp \
@@ -48,6 +48,17 @@ curl -s http://localhost:8787/mcp \
 ```
 
 Production build: `pnpm --filter mcp build && node apps/mcp/dist/index.js`. The dev script sets `NODE_ENV=development`; the production command doesn't, so dev anon mode refuses to start there.
+
+## Run against Convex
+
+`TANDEM_BACKEND=convex CONVEX_URL=<deployment url>` swaps the mock for `src/backend/convex.ts`, which calls the token-verifying functions in `packages/backend/convex/mcp.ts`. Local setup, including how to get a token, is in [`docs/local-dev.md`](../../docs/local-dev.md).
+
+- **Auth.** Each request carries an agent connection token (`tdm_…`, created per person and workspace in the dashboard) as `Authorization: Bearer <token>` or `api-key: <token>`. The server asks Convex to verify it (`mcp:verifyToken`) and forwards it on every backend call; Convex is the authority and re-checks the connection, revocation and membership each time. No deploy or admin key is used. A missing or rejected token gets `401` with `WWW-Authenticate: Bearer realm="tandem"`. Sending both headers with different tokens is rejected.
+- **Workspace scope.** A connection belongs to one workspace, which is its default; `get_workspace_info` lists only that workspace, and its `members` only that workspace's members (`mcp:listMembers`: ids, names and roles, at most 100 with `members_truncated`; never emails), and any other `workspace_id` gets `FORBIDDEN`. Presence (`last_synced_at`, `last_action_at`) is per connection; every tool call updates `last_action_at`, including failed ones (a failing Convex mutation rolls back its own update, so the server then calls `mcp:touchConnection`; it skips that after successes and after `UNAUTHENTICATED`). `sync_workspace` also records the cursor it returned in `sync_cursors`, one row per connection; clients still send their own `since`.
+- **Proposals: one value per proposal, the same in the mock and Convex.** `goal`/`scope`: the new text. `decisions`: one decision. `constraints`: one new constraint as a string; approval appends it (lists are rejected, and existing constraints can't be edited or removed through a proposal). `ownership`: `{ area, owner_user_id }`; Convex rejects an owner who isn't a current member of the workspace with `INVALID_INPUT`, checks again on approval, stores the owner's user id with the area, shows approvers "area: member name", and on approval replaces any owner of the same area (trimmed, case-insensitive). `get_approvals` and `sync_workspace` may also show `open_questions` proposals (created from the dashboard) and the `stale` status (the context changed before approval, so it wasn't applied); `get_approvals` accepts `status: "stale"` to list them.
+- **Versions.** Any `expected_version` other than the current one, older or newer, is `VERSION_CONFLICT` (the mock returns `INVALID_INPUT` for a newer one).
+- **Events.** `sync_workspace` events also include Convex-only types such as `workspace.created`, `agent.connected`, and `context.stale`.
+- **Files.** `folder_id`/`parent_id` accept Convex folder ids. `list_files` returns at most the 200 most recently updated files; with `query` it uses the name search index over the whole workspace (word-prefix matching, so `road` finds `roadmap.md` but `map` doesn't), returns up to 200 matches, and `truncated` means more files matched; `search_files` content-matches the 200 most recent files (older files still match by name). `read_file` on a binary upload returns `INVALID_INPUT`.
 
 ## Connect MCP Inspector
 
@@ -97,20 +108,33 @@ Caveats:
 | `HOST`                   | `127.0.0.1` | Interface to bind. Use `0.0.0.0` only inside a container.                                                                                              |
 | `NODE_ENV`               | unset       | Must be exactly `development` or `test` for dev anon mode. The `dev` script sets `development`.                                                        |
 | `TANDEM_ALLOWED_ORIGINS` | empty       | Comma-separated browser origins allowed to call `/mcp`. Any other `Origin` gets `403`; requests without `Origin` are unaffected. Trailing `/` is OK.   |
-| `TANDEM_BACKEND`         | `mock`      | Storage backend. `mock` is in-memory and seeded with `ws_demo` (owner `user_alex`, admin `user_taylor`, member `user_sam`) containing `brief.md` v1 and project context, and `ws_other` (owner `user_jordan`).                   |
+| `CONVEX_URL`             | unset       | Convex deployment URL; required with `TANDEM_BACKEND=convex`.                                                                                          |
+| `TANDEM_BACKEND`         | `mock`      | Storage backend: `mock` or `convex` (see "Run against Convex"). `mock` is in-memory and seeded with `ws_demo` (owner `user_alex`, admin `user_taylor`, member `user_sam`) containing `brief.md` v1 and project context, and `ws_other` (owner `user_jordan`).                   |
 | `TANDEM_DEV_TOKENS`      | empty       | Comma-separated `key:user_id` pairs (split on the first `:`); clients send the key in the `api-key` header. Generate keys with `openssl rand -hex 24`. |
 | `TANDEM_DEV_ANON_USER`   | unset       | TEMPORARY. Requests with no `api-key` header act as this user. Mock backend and `NODE_ENV=development`/`test` only (see above).                        |
+
+## Deploy (Docker)
+
+The image always runs with `TANDEM_BACKEND=convex`, `HOST=0.0.0.0` and `PORT=8787`, as a non-root user. `CONVEX_URL` is read at runtime, so one image works against any deployment. Build from the repo root, since the Dockerfile runs `turbo prune mcp`:
+
+```sh
+docker build -f apps/mcp/Dockerfile -t tandem-mcp .
+docker run --rm -p 8787:8787 -e CONVEX_URL=https://<deployment>.convex.cloud tandem-mcp
+curl http://127.0.0.1:8787/healthz   # {"ok":true}
+```
+
+On the Vultr instance, use `deploy/compose.mcp.yml` (runtime env: `CONVEX_URL`, optional `TANDEM_ALLOWED_ORIGINS`) behind Caddy with `deploy/Caddyfile.mcp`, which serves `https://$MCP_DOMAIN/mcp`. Set the dashboard's `NEXT_PUBLIC_MCP_URL` build arg to `https://$MCP_DOMAIN`.
 
 ## Layout
 
 - `src/server.ts`: HTTP routing, `api-key` auth, per-request MCP server and transport
 - `src/tools.ts`: tool definitions; maps `TandemError` to `isError` results
 - `src/auth.ts`: `IdentityResolver` interface, the dev token resolver, and the temporary dev anon wrapper (swap for OAuth/JWT later)
-- `src/backend/types.ts`: `TandemBackend` interface; `src/backend/mock.ts`: in-memory implementation; `src/backend/cursor.ts`: sync cursor encoding
+- `src/backend/types.ts`: `TandemBackend` interface; `src/backend/mock.ts`: in-memory implementation; `src/backend/convex.ts`: Convex adapter (snake_case/ISO ↔ camelCase/epoch ms, `ConvexError` codes → `TandemError`); `src/backend/cursor.ts`: sync cursor encoding
 - `src/errors.ts`: `TandemError` and its error codes
 - `src/names.ts`: `nameKey`, the file-name normalization used for `NAME_EXISTS`
 
-The caller's identity always comes from the `api-key` header (or the server's anon config), never from tool arguments.
+The caller's identity always comes from the `api-key` header (or the server's anon config), or with Convex from the token Convex verifies, never from tool arguments.
 
 ## Backend contract (shared with the web dashboard)
 
@@ -118,7 +142,7 @@ The dashboard calls the same Convex functions directly, so both callers must agr
 
 - **Convex speaks camelCase with numeric (epoch ms) timestamps.** The snake_case keys and ISO strings in `src/backend/types.ts` are this server's *tool* format. Convert at the tool boundary when a Convex-backed `TandemBackend` replaces the mock; never store or return them from Convex.
 - **One set of function names**: `files:read` / `files:create` / `files:update` back `readFile` / `createDocument` / `updateDocument`, so there's a single write path and a single optimistic-lock check.
-- **Attribution names person and agent.** `Attribution { actor_type, user_id, client }` maps to the shared `Actor { actorType, userId, agentClient }`.
+- **Attribution names person and agent.** `Attribution { actor_type, user_id, client, agent_connection_id?, label? }` maps from the Convex `Actor { type, userId, client, agentConnectionId, label }`; `agent_connection_id` tells apart two connections of the same person and client.
 - **Business errors are `ConvexError({ code })`.** Production Convex redacts other errors' messages, so codes like `VERSION_CONFLICT` and `UNAUTHENTICATED` must travel in `data.code`.
 
 ## Tests

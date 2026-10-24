@@ -5,6 +5,9 @@ import { ConvexError } from "convex/values";
 
 type ReadCtx = QueryCtx | MutationCtx;
 
+/** Attribution stored on every mutable record: the person, plus the agent connection for MCP writes. */
+export type Actor = Doc<"workspace_events">["actor"];
+
 export async function requireUser(ctx: ReadCtx): Promise<Doc<"users">> {
   const userId = await getAuthUserId(ctx);
   if (!userId) throw new ConvexError({ code: "UNAUTHENTICATED" });
@@ -91,12 +94,23 @@ export async function recordWorkspaceEvent(
     entityType: string;
     entityId: string;
     summary: string;
-    actor: ReturnType<typeof humanActor>;
+    actor: Actor;
   },
 ) {
   const now = Date.now();
+  // Reading the newest seq puts the index range in this transaction's read
+  // set, so concurrent writers conflict and retry: seqs stay gapless and in
+  // commit order, which is what the sync cursor relies on.
+  const last = await ctx.db
+    .query("workspace_events")
+    .withIndex("by_workspace_and_seq", (q) =>
+      q.eq("workspaceId", args.workspaceId),
+    )
+    .order("desc")
+    .first();
   const eventId = await ctx.db.insert("workspace_events", {
     ...args,
+    seq: (last?.seq ?? 0) + 1,
     createdAt: now,
   });
   await ctx.db.insert("outbox_events", {

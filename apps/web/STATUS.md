@@ -1,8 +1,8 @@
 # Web dashboard: gate status
 
-Person 3's checklist from the build brief. `PASS` = verified in this repo; `PENDING (backend)` = blocked on Person 2's Convex functions.
+Person 3's checklist from the build brief. `PASS` = verified in this repo; `PENDING (live)` = blocked on Person 2's Convex functions.
 
-> **Backend state (Oct 23):** `packages/backend/convex/` contains only an empty `schema.ts`. There are no functions and no `_generated/api`. Per conflict rule 3, the whole dashboard runs in mock mode; Convex wiring is `PENDING (backend)`. See `CONTRACT_NOTES.md`.
+> **Backend state (Oct 24):** `packages/backend/convex` ships files, workspaces/invites, context proposals/approvals and `agentConnections`, all with Convex Auth and coded `ConvexError`s. The dashboard's Convex adapter calls every one of them through `TandemApi` (see `CONTRACT_NOTES.md`); mock mode implements the same interface. Rows below marked PASS (mock / unit) were verified against the mock and adapter unit tests; live-deployment checks still need a seeded Convex deployment.
 
 ## Gate 1: shell, routing, auth
 
@@ -10,7 +10,7 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 |---|---|---|
 | Dev server runs; `/` redirects signed-in and signed-out (mock) | PASS | `/` → `/sign-in` signed out; → `/w/<id>` signed in |
 | Sign-in/out in mock mode | PASS | bad password shows "Email or password is incorrect."; sign-out returns to `/sign-in`; `/w/*` signed out → `/sign-in?next=…` |
-| Real-mode providers + proxy compile | PASS (typecheck) | Functional check is `PENDING (backend)`: no Convex Auth config yet |
+| Real-mode providers + proxy compile | PASS (typecheck) | Functional check is `PENDING (live)`: no Convex Auth config yet |
 | Typecheck + lint | PASS | |
 
 ## Gate 2: API layer + mock adapter
@@ -18,8 +18,9 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | Check | Status | Notes |
 |---|---|---|
 | Tests pass | PASS | `pnpm --filter web test`: errors + mock API suites |
-| Function mapping and gaps in `CONTRACT_NOTES.md` | PASS | every function is "requested from Person 2" |
-| Convex adapter against a live deployment | PENDING (backend) | no functions exist yet |
+| Function mapping in `CONTRACT_NOTES.md` | PASS | rewritten Oct 24 to match the generated API (issue #12) |
+| Convex adapter mapping (fixtures typed from generated API) | PASS | `convexAdapter.test.ts`, `approvalsAndConnections.test.ts` |
+| Convex adapter against a live deployment | PENDING (live) | needs a seeded deployment + `.env.local` |
 
 ## Gate 3: file list
 
@@ -27,7 +28,8 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 |---|---|---|
 | Seeded files render with correct versions and actor badges | PASS | proposal.md v1 Agent · Claude; brief.md v2 Human · Alex; notes.txt v1 |
 | Create file → v1 → opens detail | PASS | verified end-to-end after Phase 4 added the detail route |
-| Refresh button + refetch on window focus | PASS | how MCP-created files appear in P0 (no realtime) |
+| Refresh button + refetch on window focus | PASS | |
+| Agent-created/saved files appear without reload | PASS (mock / unit) | `watchWorkspace`: one reactive `getWorkspaceInfo` subscription; refetch when the newest event changes |
 
 ## Gate 4: editor, optimistic-lock save, conflict UI
 
@@ -45,23 +47,36 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 
 | Check | Status | Notes |
 |---|---|---|
-| `brief.md` history: v1 agent, v2 human, labeled correctly | PASS | "Agent · Claude" / "Human · Alex"; head marked Current |
+| `brief.md` history: v1 agent, v2 human, labeled correctly | PASS | agent writes read "AGENT Alex via Claude", human writes "HUMAN Alex"; head marked Current |
+| `toActor` uses the actor's `client`/`label`/`userName`, never `agentConnectionId` | PASS | issue #12; `approvalsAndConnections.test.ts` |
 | A Phase 4 save appears with the signed-in human as author | PASS | proposal.md v2/v4 "Human · Demo Human" between Claude's v1/v3/v5 |
 | View prior version read-only (rendered/raw) + compare with current | PASS | no restore in P0 |
 
-## Gate 6: live Convex integration
-
-All `PENDING (backend)`. The Convex deployment has no functions, auth config, or seeded users yet, so there's nothing to integrate with. When Person 2 lands them, Person 3 needs: the dev `NEXT_PUBLIC_CONVEX_URL`, the default workspace ID, and a seeded test login (in `apps/web/.env.local` only).
+## Gate 5b: approvals and assistant connections (P1)
 
 | Check | Status | Notes |
 |---|---|---|
-| Claude-created file appears in the dashboard (after refresh/focus) | PENDING (backend) | refresh + focus refetch verified in mock |
-| Human save → v2; Claude rereads v2 | PENDING (backend) | needs Person 1's MCP + Person 2's functions |
-| Stale write from a second tab → ConflictPanel; Convex keeps newer | PENDING (backend) | same flow verified in mock via Simulate agent edit |
-| History attributes agent vs human | PENDING (backend) | verified in mock |
+| `/w/<id>/approvals`: pending proposals with what they replace, why, sources | PASS (mock) | headless-Chrome check in mock mode |
+| Approve/Reject only for owner/admin; members read-only | PASS (unit + mock) | `canDecideProposals`; backend also enforces |
+| Stale approval shows VERSION_CONFLICT clearly, context untouched | PASS (mock / unit) | ochre alert; adapter re-reads stale proposals because the backend returns null |
+| Pending approvals listed on workspace home, linked to the screen | PASS (mock) | |
+| `/w/<id>/assistants`: create connection, token shown once + copy + Claude Code command | PASS (mock) | `NEXT_PUBLIC_MCP_URL`; placeholder + warning when unset |
+| Connections list "Last MCP action / Last sync", never "online"; revoke with confirmation | PASS (mock) | |
+| Against live `agentConnections` + MCP server | PENDING (live) | needs T1's deployment and the MCP Convex adapter |
+
+## Gate 6: live Convex integration
+
+The backend functions exist; these need a seeded deployment (dev `NEXT_PUBLIC_CONVEX_URL`, a test login, and `NEXT_PUBLIC_MCP_URL`, in `apps/web/.env.local` only).
+
+| Check | Status | Notes |
+|---|---|---|
+| Claude-created file appears in the dashboard without reload | PENDING (live) | reactive refresh verified in mock + adapter unit test |
+| Human save → v2; Claude rereads v2 | PENDING (live) | needs Person 1's MCP + Person 2's functions |
+| Stale write from a second tab → ConflictPanel; Convex keeps newer | PENDING (live) | same flow verified in mock via Simulate agent edit |
+| History attributes agent vs human | PENDING (live) | verified in mock |
 | Signed-out `/w/*` redirects (real-mode proxy) | PASS | production standalone server: `/w/ws_demo` → 307 `/sign-in?next=%2Fw%2Fws_demo` |
-| Outsider gets the FORBIDDEN UI | PENDING (backend) | copy + ErrorState exist |
-| UNAUTHENTICATED on save stashes and restores the draft | PENDING (backend) | |
+| Outsider gets the FORBIDDEN UI | PENDING (live) | copy + ErrorState exist |
+| UNAUTHENTICATED on save stashes and restores the draft | PENDING (live) | |
 
 ## Gate 7: deploy artifacts + demo hardening
 
@@ -72,4 +87,4 @@ All `PENDING (backend)`. The Convex deployment has no functions, auth config, or
 | Compose + Caddy snippets, README deploy steps | PASS | `deploy/compose.web.yml`, `deploy/Caddyfile.web` (no root compose/Caddyfile exist yet) |
 | Friendly copy for every error code | PASS | `lib/api/errorCopy.ts` |
 | Dev mock controls hidden in production | PASS | the image forces `NEXT_PUBLIC_USE_MOCKS=false`; controls only render when the mock API is mounted |
-| Seed-reset instructions link | PENDING (backend) | Person 2 hasn't written them yet |
+| Seed-reset instructions link | PENDING (live) | Person 2 hasn't written them yet |

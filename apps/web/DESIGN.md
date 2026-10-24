@@ -190,7 +190,7 @@ A cool, nearly achromatic archive palette with one slate structure colour, two i
 - **Acid-free Board** (background): the page ground behind every panel.
 - **Paper White** (card): panels, the register, the white left rail, the top bar, dialogs, toasts and inputs. Card, popover and sidebar all use this value.
 - **Archival Ink** (foreground): all primary text.
-- **Graphite** (muted-foreground): secondary text, timestamps, column heads, "for Alex" qualifiers.
+- **Graphite** (muted-foreground): secondary text, timestamps, column heads, "via Claude" qualifiers.
 - **Board Grey** (muted): disabled primary fill, diff column headers at 50%, segmented-control track. Same value as `secondary`.
 - **Rule Grey** (border): every 1px panel, row and rail rule.
 - **Field Grey** (input): input outlines.
@@ -268,7 +268,7 @@ Compact and quiet; the red one is the only loud object on screen.
 - **Internal Padding:** 20px. The approved goal pads 20px × 16px, and the save bar pads 12px × 8px.
 
 ### Navigation
-- **Rail:** a white 232px rail. The Tandem mark and workspace name (600) sit at the top, with "Tandem workspace" in graphite beneath. The single Files item shows its count in catalogue caps. The Assistants note at the foot explains the agent and human marks inline. Active item: slate tint with slate text. Inactive item: ink text with the slate tint on hover.
+- **Rail:** a white 232px rail. The Tandem mark and workspace name (600) sit at the top, with "Tandem workspace" in graphite beneath. Three items follow: Files (with its count in catalogue caps), Approvals and Assistants. Below 768px the account menu carries Approvals and Assistants. The Assistants note at the foot explains the agent and human marks inline. Active item: slate tint with slate text. Inactive item: ink text with the slate tint on hover.
 - **Top bar:** a white 56px bar. Breadcrumb: workspace in graphite, a slash, the current section in 600. On the right are the account menu (an ink-blue initial disc plus the name) and, in mock mode, a dashed "MOCK DATA" caps badge.
 - **In-page breadcrumb:** graphite links separated by 14px chevrons, with the current item in ink, above each file headline. An accession-number and type line in catalogue caps sits under the headline.
 
@@ -280,7 +280,7 @@ The file table, styled as an accession register. Column heads use catalogue caps
 - **Strip:** one mark per recent version in a row with 4px gaps, the head mark one size larger, then the version tag (V2) in catalogue caps. A screen-reader label states the agent and human counts.
 
 ### Identity Plate
-Every actor appears in one fixed form: the mark, then the catalogue label (AGENT in verdigris or HUMAN in ink-blue), then the name in 500 ink. Agents add "for {person}" in graphite. The plate states attribution only and never presence.
+Every actor appears in one fixed form: the mark, then the catalogue label (AGENT in verdigris or HUMAN in ink-blue), then the name in 500 ink. For agents the name is the person whose assistant it was, followed by "via {assistant}" in graphite ("Alex via Claude"); an agent write with no recorded person shows the assistant alone. The plate states attribution only and never presence.
 
 ### Custody Record Panel (signature)
 A 20rem paper panel to the right of the register at 1280px and up. It shows the "Custody record" title, then the file name and accession code, then a vertical 2px rule with up to six versions, newest first. Each entry has a 12px mark on the rule, the version tag, CURRENT in slate on the head, the identity plate, and a 12px line ("Saved via MCP" or "Saved in the dashboard" plus a relative time). The panel ends with Open file (primary) and Full history (outline). It enters with the custody-in motion: 180ms, `cubic-bezier(0.16, 1, 0.3, 1)`, from opacity 0 and 4px below. The motion is disabled under reduced-motion.
@@ -298,7 +298,7 @@ The conflict alert is an ochre wash with an ochre rule and ochre text, a 16px ic
 
 ### Do:
 - **Do** put Accession Red only on pressable primary actions, and strip it from disabled ones.
-- **Do** show every actor through the identity plate: mark, AGENT/HUMAN catalogue label, name, and "for {person}" for agents.
+- **Do** show every actor through the identity plate: mark, AGENT/HUMAN catalogue label, name, and "{person} via {assistant}" for agents.
 - **Do** keep custody marks at fixed sizes: 8px for every version, 12px for the head.
 - **Do** draw a chain of custody as one 2px vertical rule with marks centred on it, newest first.
 - **Do** set codes, versions, column heads and actor class in Archivo Narrow 600 caps at 12px with 0.06em tracking.

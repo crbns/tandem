@@ -10,7 +10,8 @@
     "dev": "convex dev",
     "setup": "convex dev --until-success",
     "deploy": "convex deploy",
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@auth/core": "0.41.1",
@@ -19,6 +20,10 @@
     "jose": "^6.2.13"
   },
   "devDependencies": {
-    "typescript": "7.0.2"
+    "@edge-runtime/vm": "^5.0.0",
+    "convex-test": "^0.0.64",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
   }
 }

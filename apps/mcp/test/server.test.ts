@@ -246,6 +246,8 @@ describe("Tandem MCP server", () => {
       actor_type: "agent",
       user_id: "user_alex",
       client: "dev-token",
+      agent_connection_id: "conn_user_alex_dev-token",
+      label: "user_alex's dev-token assistant",
     });
     expect(JSON.parse((created.content[0] as { text: string }).text)).toEqual(
       file,
@@ -488,6 +490,13 @@ describe("Tandem MCP server", () => {
           is_default: true,
         },
       ],
+      // Members of the default workspace, for ownership proposals.
+      members: [
+        { user_id: "user_alex", name: "Alex", role: "owner" },
+        { user_id: "user_sam", name: "Sam", role: "member" },
+        { user_id: "user_taylor", name: "Taylor", role: "admin" },
+      ],
+      members_truncated: false,
       // A fresh connection has not synced or written.
       connection: {
         client: "dev-token",
@@ -504,6 +513,10 @@ describe("Tandem MCP server", () => {
     expect(
       (theirs.structuredContent as { workspaces: unknown[] }).workspaces,
     ).toHaveLength(1);
+    // Only their own workspace's members.
+    expect(
+      (theirs.structuredContent as { members: unknown[] }).members,
+    ).toEqual([{ user_id: "user_jordan", name: "Jordan", role: "owner" }]);
 
     await Promise.all([alex.close(), jordan.close()]);
   });
@@ -609,6 +622,8 @@ describe("Tandem MCP server", () => {
             actor_type: "agent",
             user_id: "user_alex",
             client: "dev-token",
+            agent_connection_id: "conn_user_alex_dev-token",
+            label: "user_alex's dev-token assistant",
           },
           size_bytes: 2,
         },
@@ -788,6 +803,7 @@ describe("context tools", () => {
     workspace: { id: string; name: string };
     context: {
       goal: string;
+      constraints: string[];
       decisions: { text: string; source_ids: string[] }[];
       ownership: { area: string; owner_user_id: string }[];
     };
@@ -872,6 +888,8 @@ describe("context tools", () => {
           actor_type: "agent",
           user_id: "user_alex",
           client: "dev-token",
+          agent_connection_id: "conn_user_alex_dev-token",
+          label: "user_alex's dev-token assistant",
         },
         at: expect.any(String),
         summary: "brief.md updated to v2",
@@ -942,6 +960,8 @@ describe("context tools", () => {
         actor_type: "agent",
         user_id: "user_alex",
         client: "dev-token",
+        agent_connection_id: "conn_user_alex_dev-token",
+        label: "user_alex's dev-token assistant",
       },
       created_at: expect.any(String),
     });
@@ -957,6 +977,8 @@ describe("context tools", () => {
         actor_type: "agent",
         user_id: "user_alex",
         client: "dev-token",
+        agent_connection_id: "conn_user_alex_dev-token",
+        label: "user_alex's dev-token assistant",
       },
       created_at: expect.any(String),
     });
@@ -977,14 +999,30 @@ describe("context tools", () => {
     expect(
       (approved.structuredContent as { proposals: { id: string }[] }).proposals,
     ).not.toContainEqual(expect.objectContaining({ id: proposal.id }));
+    const stale = await call(alex, "get_approvals", { status: "stale" });
+    expect(stale.isError).toBeFalsy();
+    expect(
+      (stale.structuredContent as { proposals: { id: string }[] }).proposals,
+    ).not.toContainEqual(expect.objectContaining({ id: proposal.id }));
     await alex.close();
   });
 
   it("propose_context_change validates values, sources and rationale", async () => {
     const alex = await connect("alex-token", url);
+    // Lists are not part of the contract (constraints take one string each).
+    for (const args of [
+      { field: "goal", proposed_value: ["not", "text"] },
+      { field: "constraints", proposed_value: ["Ship by Friday", "No PII"] },
+      { field: "constraints", proposed_value: "   " },
+    ]) {
+      const result = await call(alex, "propose_context_change", {
+        rationale: "because",
+        ...args,
+      });
+      expect(result.isError).toBe(true);
+      expect(messageOf(result)).toMatch(/Input validation error/);
+    }
     const cases: [Record<string, unknown>, string][] = [
-      [{ field: "goal", proposed_value: ["not", "text"] }, "INVALID_INPUT"],
-      [{ field: "constraints", proposed_value: "one string" }, "INVALID_INPUT"],
       [
         {
           field: "ownership",
@@ -1066,6 +1104,12 @@ describe("context tools", () => {
       source_ids: ["file_brief"],
     });
     await backend.decideProposal(alexHuman, decision.id, "approve");
+    // Same as Convex: one constraint per proposal, appended on approval.
+    const constraint = await propose(alex, {
+      field: "constraints",
+      proposed_value: " Keep the demo under three minutes. ",
+    });
+    await backend.decideProposal(alexHuman, constraint.id, "approve");
     const owner = await propose(alex, {
       field: "ownership",
       proposed_value: { area: "mcp SERVER ", owner_user_id: "user_sam" },
@@ -1091,7 +1135,11 @@ describe("context tools", () => {
     expect(latest.context.ownership).toEqual([
       { area: "mcp SERVER", owner_user_id: "user_sam" },
     ]);
-    expect(latest.context_version).toBe(after.context_version + 2);
+    expect(latest.context.constraints).toEqual([
+      ...after.context.constraints,
+      "Keep the demo under three minutes.",
+    ]);
+    expect(latest.context_version).toBe(after.context_version + 3);
     expect(latest.events.at(-1)).toMatchObject({
       type: "context.rejected",
       subject_id: rejected.id,
@@ -1329,6 +1377,8 @@ describe("context tools", () => {
           actor_type: "agent",
           user_id: "user_alex",
           client: "dev-token",
+          agent_connection_id: "conn_user_alex_dev-token",
+          label: "user_alex's dev-token assistant",
         },
         created_at: expect.any(String),
       },

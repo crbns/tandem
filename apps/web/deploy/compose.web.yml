@@ -10,6 +10,7 @@
 # Root `.env` (never committed):
 #   NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud
 #   NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=<optional>
+#   NEXT_PUBLIC_MCP_URL=<optional, MCP server base URL>
 
 services:
   web:
@@ -19,6 +20,7 @@ services:
       args:
         NEXT_PUBLIC_CONVEX_URL: ${NEXT_PUBLIC_CONVEX_URL:?set NEXT_PUBLIC_CONVEX_URL}
         NEXT_PUBLIC_DEFAULT_WORKSPACE_ID: ${NEXT_PUBLIC_DEFAULT_WORKSPACE_ID:-}
+        NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL:-}
     image: tandem-web
     restart: unless-stopped
     # NEXT_PUBLIC_* values are inlined at build time, including in the proxy and

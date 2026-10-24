@@ -124,14 +124,22 @@ Someone else saved a newer version since you read it.
 - Call `propose_context_change` with `field`, `proposed_value`, a short
   `rationale`, and `source_ids` (ids of files that support it). Value by field:
   - `goal` or `scope`: the full new text.
-  - `constraints`: the full new list of strings (it replaces the old list).
+  - `constraints`: the text of one new constraint, as a string; approval
+    appends it. Send each new constraint as its own proposal. Existing
+    constraints can't be edited or removed through a proposal: ask the user
+    to change them in the dashboard.
   - `decisions`: the text of one new decision.
-  - `ownership`: `{ area, owner_user_id }` for one area; the owner must be a
-    workspace member.
+  - `ownership`: `{ area, owner_user_id }` for one area; approval replaces
+    that area's owner. Get the owner's `user_id` from
+    `get_workspace_info.members` (match the person the user named; ask if
+    it's ambiguous). The owner must be a current workspace member, otherwise
+    it fails with `INVALID_INPUT`.
 - It returns a `proposal` with `status: "pending"` and changes nothing. Tell
   the user it awaits a human owner or admin's approval in the dashboard and has not
   taken effect. Use `get_approvals` (default `status: "pending"`; also
-  `"approved"`, `"rejected"`, `"all"`) to check when asked.
+  `"approved"`, `"rejected"`, `"stale"`, `"all"`) to check when asked. A
+  `stale` proposal was not applied because the context changed first; reread
+  with `sync_workspace` and propose again against the current value.
 - Until approved, treat the current approved context as authoritative.
 
 ## 8. Error codes

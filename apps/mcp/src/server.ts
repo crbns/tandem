@@ -1,6 +1,10 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { authenticate, type IdentityResolver } from "./auth.js";
+import {
+  authenticate,
+  credentialHeader,
+  type IdentityResolver,
+} from "./auth.js";
 import type { TandemBackend } from "./backend/types.js";
 import { createMcpServer } from "./tools.js";
 
@@ -13,6 +17,12 @@ export interface AppOptions {
    * any other Origin gets 403, which blocks DNS rebinding.
    */
   allowedOrigins?: readonly string[];
+  /**
+   * Also accept `Authorization: Bearer <token>` and challenge with Bearer.
+   * On for the Convex backend (agent connection tokens); off for the mock,
+   * whose dev keys travel only in `api-key`.
+   */
+  acceptBearer?: boolean;
 }
 
 /**
@@ -48,6 +58,7 @@ export function createApp({
   backend,
   identity,
   allowedOrigins = [],
+  acceptBearer = false,
 }: AppOptions): Server {
   return createServer(async (req, res) => {
     try {
@@ -67,16 +78,24 @@ export function createApp({
         });
       }
 
-      // Static dev API keys for now; OAuth via the Convex MCP component
-      // (docs/mcp-auth-design.md) will replace this. The challenge isn't Bearer
-      // so OAuth-capable clients don't start discovery against routes that 404.
-      const actor = await authenticate(identity, req.headers["api-key"]);
+      // Mock: static dev API keys, and the challenge isn't Bearer so
+      // OAuth-capable clients don't start discovery against routes that 404.
+      // Convex: agent connection tokens, verified by Convex itself.
+      const actor = await authenticate(
+        identity,
+        credentialHeader(req.headers, acceptBearer),
+      );
       if (!actor) {
-        res.setHeader("WWW-Authenticate", 'ApiKey realm="tandem"');
+        res.setHeader(
+          "WWW-Authenticate",
+          acceptBearer ? 'Bearer realm="tandem"' : 'ApiKey realm="tandem"',
+        );
         return sendJson(res, 401, {
           error: {
             code: "UNAUTHENTICATED",
-            message: "Missing or invalid api-key header.",
+            message: acceptBearer
+              ? "Missing or invalid agent token. Send it as Authorization: Bearer <token> or in the api-key header."
+              : "Missing or invalid api-key header.",
           },
         });
       }

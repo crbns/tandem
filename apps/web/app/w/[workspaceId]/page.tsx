@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useParams } from "next/navigation";
 import { RotateCwIcon, SearchIcon, XIcon } from "lucide-react";
 import { useTandemApi, type FileSummary } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
+import { useWorkspaceRefresh } from "@/lib/api/useWorkspace";
 import { filterAndSortFiles } from "@/lib/files";
 import { FileTable, FileTableSkeleton } from "@/components/files/FileTable";
 import { CustodyPanel } from "@/components/files/CustodyPanel";
@@ -14,6 +15,7 @@ import { ErrorState } from "@/components/common/ErrorState";
 import { TandemMark } from "@/components/common/TandemMark";
 import { CustodyMark } from "@/components/common/CustodyMark";
 import { ApprovedGoal } from "@/components/files/ApprovedGoal";
+import { PendingApprovals } from "@/components/approvals/PendingApprovals";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -27,11 +29,9 @@ export default function FilesPage() {
   const load = useCallback(() => api.listFiles(workspaceId), [api, workspaceId]);
   const { resource, refreshing, reload } = useResource(load);
 
-  // No realtime in P0: refetching on focus is how an MCP-created file shows up.
-  useEffect(() => {
-    window.addEventListener("focus", reload);
-    return () => window.removeEventListener("focus", reload);
-  }, [reload]);
+  // A file an assistant creates or saves through MCP records a workspace
+  // event; refetch on it (and on focus) so it shows up without a reload.
+  useWorkspaceRefresh(workspaceId, reload);
 
   const count = resource.status === "ready" ? resource.data.length : null;
 
@@ -55,6 +55,7 @@ export default function FilesPage() {
       </div>
 
       <ApprovedGoal workspaceId={workspaceId} />
+      <PendingApprovals workspaceId={workspaceId} />
 
       {/* The rail carries the mark legend on wide screens; small screens get it here. */}
       <p className="flex items-center gap-3 text-xs text-muted-foreground md:hidden">
@@ -101,7 +102,7 @@ export default function FilesPage() {
           <p className="text-base font-semibold">No files yet</p>
           <p className="max-w-sm text-sm text-muted-foreground">
             Create one, or ask your assistant to create one through Tandem. Files an assistant saves appear here
-            marked Agent; press Refresh if one doesn&apos;t show up yet.
+            marked Agent, usually within a moment.
           </p>
         </div>
       )}

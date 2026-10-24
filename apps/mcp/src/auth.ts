@@ -15,6 +15,34 @@ export interface IdentityResolver {
   resolve(key: string | null): Promise<Identity | null>;
 }
 
+/**
+ * Forwards the caller's token to Convex, which is the authority: Convex hashes
+ * it, checks the agent connection and membership, and returns who it belongs
+ * to. The token rides along on the actor as `credential` so every backend call
+ * is authorized by Convex again; this server never decides identity itself.
+ */
+export class ConvexTokenResolver implements IdentityResolver {
+  constructor(
+    private readonly verifier: {
+      verifyToken(
+        token: string,
+      ): Promise<{ userId: string; client: string } | null>;
+    },
+  ) {}
+
+  async resolve(key: string | null): Promise<Identity | null> {
+    if (!key) return null;
+    const verified = await this.verifier.verifyToken(key);
+    return (
+      verified && {
+        user_id: verified.userId,
+        client: verified.client,
+        credential: key,
+      }
+    );
+  }
+}
+
 /** Resolves keys from a static map, e.g. TANDEM_DEV_TOKENS="key1:user_alex,key2:user_sam". */
 export class DevTokenResolver implements IdentityResolver {
   private readonly tokens: Map<string, string>;
@@ -100,6 +128,25 @@ export async function authenticate(
   if (header !== undefined && !key) return null;
   const resolved = await identity.resolve(key);
   return resolved && { ...resolved, actor_type: "agent" };
+}
+
+/**
+ * With `acceptBearer`, the token may come from `Authorization: Bearer <token>`
+ * or the `api-key` header. Returns a value for `authenticate`: undefined when
+ * neither header is present, "" (rejected) for a malformed Authorization
+ * header or two headers carrying different tokens.
+ */
+export function credentialHeader(
+  headers: { authorization?: string; "api-key"?: string | string[] },
+  acceptBearer: boolean,
+): string | string[] | undefined {
+  const apiKey = headers["api-key"];
+  if (!acceptBearer || headers.authorization === undefined) return apiKey;
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(headers.authorization);
+  if (!match) return "";
+  const bearer = match[1]!;
+  if (apiKey !== undefined && apiKeyFromHeader(apiKey) !== bearer) return "";
+  return bearer;
 }
 
 export function apiKeyFromHeader(

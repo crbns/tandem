@@ -5,7 +5,7 @@
     "build": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "env": ["NEXT_PUBLIC_CONVEX_URL", "NEXT_PUBLIC_DEFAULT_WORKSPACE_ID", "NEXT_PUBLIC_USE_MOCKS"],
+      "env": ["NEXT_PUBLIC_CONVEX_URL", "NEXT_PUBLIC_DEFAULT_WORKSPACE_ID", "NEXT_PUBLIC_MCP_URL", "NEXT_PUBLIC_USE_MOCKS"],
       "outputs": [".next/**", "!.next/cache/**", "!.next/dev/**", "dist/**"]
     },
     "lint": {

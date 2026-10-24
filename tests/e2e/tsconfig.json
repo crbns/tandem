@@ -1,0 +1,14 @@
+{
+  "extends": "@repo/typescript-config/base.json",
+  "compilerOptions": {
+    // Bundler resolution: the dashboard's adapter (apps/web/lib/api) is
+    // imported directly and uses extensionless relative imports.
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true
+  },
+  "include": ["src", "test", "vitest.config.ts"]
+}

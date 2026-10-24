@@ -1,4 +1,5 @@
 import type { ConvexReactClient } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 // Through the workspace package, not a relative path, so `turbo prune web`
 // keeps packages/backend in the Docker build context.
 import { api } from "@repo/backend/convex/_generated/api.js";
@@ -7,6 +8,8 @@ import { normalizeError, TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
 import type {
   Actor,
+  AgentConnection,
+  ContextProposal,
   FileDetail,
   FileSummary,
   ProjectContext,
@@ -25,14 +28,59 @@ type BackendFileMetadata = {
   updatedBy: BackendActor;
 };
 
-function toActor(actor: BackendActor): Actor {
+/**
+ * The backend actor as the dashboard's Actor. An agent write names the person
+ * (`userName`) and the assistant (`client`, display `label`); the connection id
+ * is the backend's business and never shown.
+ */
+export function toActor(actor: BackendActor): Actor {
+  const userId = actor.userId ?? "";
+  if (actor.type === "agent") {
+    return {
+      actorType: "agent",
+      userId,
+      ...(actor.userName ? { userName: actor.userName } : {}),
+      agentName: actor.label,
+      ...(actor.client ? { agentClient: actor.client } : {}),
+    };
+  }
+  // Humans and system writes: the label is the name ("Tandem" for system).
+  return { actorType: "human", userId, userName: actor.userName ?? actor.label };
+}
+
+type BackendProposal = FunctionReturnType<typeof api.context.getApprovals>[number];
+
+function toProposal(proposal: BackendProposal): ContextProposal {
   return {
-    actorType: actor.type === "agent" ? "agent" : "human",
-    userId: actor.userId ?? "",
-    userName:
-      actor.userName ?? (actor.type === "agent" ? undefined : actor.label),
-    ...(actor.type === "agent" ? { agentName: actor.label } : {}),
-    ...(actor.client ? { agentClient: actor.client } : {}),
+    id: proposal.id,
+    workspaceId: proposal.workspaceId,
+    field: proposal.field,
+    proposedValue: proposal.proposedValue,
+    rationale: proposal.rationale,
+    sourceFileIds: proposal.sourceFileIds,
+    status: proposal.status,
+    createdBy: toActor(proposal.createdBy),
+    createdAt: proposal.createdAt,
+    decidedBy: proposal.decidedBy ? toActor(proposal.decidedBy) : null,
+    decidedAt: proposal.decidedAt,
+  };
+}
+
+type BackendAgentConnection = FunctionReturnType<typeof api.agentConnections.listAgentConnections>[number];
+
+export function toAgentConnection(connection: BackendAgentConnection): AgentConnection {
+  const optional = <K extends string, V>(key: K, value: V | null | undefined) =>
+    value === null || value === undefined ? {} : ({ [key]: value } as Record<K, V>);
+  return {
+    id: connection.connectionId,
+    userId: connection.userId,
+    client: connection.client,
+    createdAt: connection.createdAt,
+    ...optional("userName", connection.userName),
+    ...optional("displayName", connection.displayName),
+    ...optional("lastMcpActionAt", connection.lastMcpActionAt),
+    ...optional("lastSyncAt", connection.lastSyncAt),
+    ...optional("revokedAt", connection.revokedAt),
   };
 }
 
@@ -77,7 +125,10 @@ export async function call<T>(
   }
 }
 
-/** One-shot query/mutation calls only; no reactive subscriptions in P0. */
+/**
+ * One-shot query/mutation calls, plus one reactive subscription
+ * (`watchWorkspace`) that only signals "something changed, refetch".
+ */
 export function createConvexApi(convex: ConvexReactClient): TandemApi {
   return {
     listWorkspaces: () =>
@@ -193,5 +244,68 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
           approvedAt: context.goal.updatedAt,
         } satisfies ProjectContext;
       }),
+    listProposals: (workspaceId, status) =>
+      call(async () => {
+        const proposals = await convex.query(api.context.getApprovals, {
+          workspaceId: workspaceId as Id<"workspaces">,
+          ...(status ? { status } : {}),
+        });
+        return proposals.map(toProposal);
+      }),
+    decideProposal: ({ id, workspaceId }, decision) =>
+      call(async () => {
+        const proposalId = id as Id<"context_proposals">;
+        await convex.mutation(api.context.decideContextProposal, { proposalId, decision });
+        if (decision !== "approved") return;
+        // A stale approval doesn't throw: the backend marks the proposal stale
+        // and returns null. Look where it landed so the UI can say so.
+        const stale = await convex.query(api.context.getApprovals, {
+          workspaceId: workspaceId as Id<"workspaces">,
+          status: "stale",
+        });
+        if (stale.some((p) => p.id === proposalId)) throw new TandemApiError("VERSION_CONFLICT");
+      }),
+    createAgentConnection: (workspaceId, { client, displayName }) =>
+      call(() =>
+        convex.mutation(api.agentConnections.createAgentConnection, {
+          workspaceId: workspaceId as Id<"workspaces">,
+          client,
+          ...(displayName?.trim() ? { displayName: displayName.trim() } : {}),
+        }),
+      ),
+    listAgentConnections: (workspaceId) =>
+      call(async () => {
+        const connections = await convex.query(api.agentConnections.listAgentConnections, {
+          workspaceId: workspaceId as Id<"workspaces">,
+        });
+        return connections.map(toAgentConnection);
+      }),
+    revokeAgentConnection: (connectionId) =>
+      call(async () => {
+        await convex.mutation(api.agentConnections.revokeAgentConnection, {
+          connectionId: connectionId as Id<"agent_connections">,
+        });
+      }),
+    watchWorkspace: (workspaceId, onChange) => {
+      // getWorkspaceInfo carries the newest workspace events; every commit,
+      // proposal and decision records one. A bounded (20-row) subscription
+      // instead of watching every file page.
+      const watch = convex.watchQuery(api.workspaces.getWorkspaceInfo, {
+        workspaceId: workspaceId as Id<"workspaces">,
+      });
+      let newest: string | null | undefined; // undefined until the first result
+      return watch.onUpdate(() => {
+        let info: ReturnType<typeof watch.localQueryResult>;
+        try {
+          info = watch.localQueryResult();
+        } catch {
+          return; // the page's own one-shot loads report errors
+        }
+        if (!info) return;
+        const head = info.recentEvents[0]?.id ?? null;
+        if (newest !== undefined && head !== newest) onChange();
+        newest = head;
+      });
+    },
   };
 }

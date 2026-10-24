@@ -8,11 +8,17 @@
  * @module
  */
 
+import type * as agentConnections from "../agentConnections.js";
 import type * as auth from "../auth.js";
 import type * as context from "../context.js";
 import type * as files from "../files.js";
 import type * as http from "../http.js";
+import type * as lib_agent from "../lib/agent.js";
 import type * as lib_auth from "../lib/auth.js";
+import type * as lib_names from "../lib/names.js";
+import type * as lib_ops from "../lib/ops.js";
+import type * as lib_validators from "../lib/validators.js";
+import type * as mcp from "../mcp.js";
 import type * as workspaces from "../workspaces.js";
 
 import type {
@@ -22,11 +28,17 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  agentConnections: typeof agentConnections;
   auth: typeof auth;
   context: typeof context;
   files: typeof files;
   http: typeof http;
+  "lib/agent": typeof lib_agent;
   "lib/auth": typeof lib_auth;
+  "lib/names": typeof lib_names;
+  "lib/ops": typeof lib_ops;
+  "lib/validators": typeof lib_validators;
+  mcp: typeof mcp;
   workspaces: typeof workspaces;
 }>;
 

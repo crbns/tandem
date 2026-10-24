@@ -1,0 +1,37 @@
+# MCP server service for the Vultr Docker Compose stack.
+# There is no root compose file yet: merge this `mcp` service into it when one
+# exists. Paths below are relative to THIS file (apps/mcp/deploy/), so the build
+# context `../../..` is the repo root, which the Dockerfile needs for `turbo prune`.
+#
+# Run from the repo root, pointing compose at the root .env:
+#   docker compose -f apps/mcp/deploy/compose.mcp.yml --env-file .env build mcp
+#   docker compose -f apps/mcp/deploy/compose.mcp.yml --env-file .env up -d mcp
+#
+# Root `.env` (never committed):
+#   CONVEX_URL=https://<deployment>.convex.cloud
+#   TANDEM_ALLOWED_ORIGINS=<optional, comma-separated browser origins allowed to call /mcp>
+
+services:
+  mcp:
+    build:
+      context: ../../..
+      dockerfile: apps/mcp/Dockerfile
+    image: tandem-mcp
+    restart: unless-stopped
+    # Read at runtime; no rebuild needed to point at another deployment.
+    environment:
+      CONVEX_URL: ${CONVEX_URL:?set CONVEX_URL}
+      TANDEM_ALLOWED_ORIGINS: ${TANDEM_ALLOWED_ORIGINS:-}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    # Not published on the host: Caddy reaches it as mcp:8787 on the compose network.
+    expose:
+      - "8787"
+    healthcheck:
+      # /healthz doesn't touch Convex, so a backend outage won't restart this container.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

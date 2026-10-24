@@ -8,3 +8,5 @@ out
 .omc
 **/.env*
 npm-debug.log*
+**/dist
+**/.convex

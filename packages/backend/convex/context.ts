@@ -1,6 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import {
   humanActor,
@@ -8,45 +8,20 @@ import {
   requireHumanSession,
   requireMembership,
 } from "./lib/auth";
-
-const fieldValidator = v.union(
-  v.literal("goal"),
-  v.literal("scope"),
-  v.literal("constraint"),
-  v.literal("decision"),
-  v.literal("ownership"),
-  v.literal("open_question"),
-);
-
-const proposalStatusValidator = v.union(
-  v.literal("pending"),
-  v.literal("approved"),
-  v.literal("rejected"),
-  v.literal("stale"),
-);
-
-const actorValidator = v.object({
-  type: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
-  userId: v.optional(v.id("users")),
-  agentConnectionId: v.optional(v.id("agent_connections")),
-  label: v.string(),
-  client: v.optional(v.string()),
-  userName: v.optional(v.string()),
-});
-
-const proposalValidator = v.object({
-  id: v.id("context_proposals"),
-  workspaceId: v.id("workspaces"),
-  field: fieldValidator,
-  proposedValue: v.string(),
-  rationale: v.string(),
-  sourceFileIds: v.array(v.id("files")),
-  status: proposalStatusValidator,
-  createdBy: actorValidator,
-  createdAt: v.number(),
-  decidedBy: v.union(actorValidator, v.null()),
-  decidedAt: v.union(v.number(), v.null()),
-});
+import { nameKey } from "./lib/names";
+import {
+  checkSourceFiles,
+  listProposals,
+  proposeContextChangeCore,
+  ownershipText,
+  requireOwnerMember,
+  toProposal,
+} from "./lib/ops";
+import {
+  contextFieldValidator as fieldValidator,
+  proposalStatusValidator,
+  proposalValidator,
+} from "./lib/validators";
 
 export const proposeContextChange = mutation({
   args: {
@@ -55,48 +30,23 @@ export const proposeContextChange = mutation({
     proposedValue: v.string(),
     rationale: v.string(),
     sourceFileIds: v.array(v.id("files")),
+    /** Required for ownership (proposedValue is then the area); else omitted. */
+    ownerUserId: v.optional(v.id("users")),
   },
   returns: v.id("context_proposals"),
   handler: async (ctx, args) => {
     const { user } = await requireMembership(ctx, args.workspaceId);
-    const actor = humanActor(user);
-    const context = await ctx.db
-      .query("structured_context")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
-      .unique();
-    if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
-    const currentField =
-      args.field === "goal"
-        ? (context.goal?.text ?? null)
-        : args.field === "scope"
-          ? (context.scope?.text ?? null)
-          : undefined;
-    for (const fileId of args.sourceFileIds) {
-      const file = await ctx.db.get(fileId);
-      if (!file || file.workspaceId !== args.workspaceId)
-        throw new ConvexError({ code: "INVALID_SOURCE_FILE" });
-    }
-    const now = Date.now();
-    const proposalId = await ctx.db.insert("context_proposals", {
+    const sourceFileIds = await checkSourceFiles(
+      ctx,
+      args.workspaceId,
+      args.sourceFileIds,
+    );
+    const proposal = await proposeContextChangeCore(ctx, {
       ...args,
-      contextRevision: context.revision,
-      ...(currentField !== undefined ? { baseValue: currentField } : {}),
-      status: "pending",
-      createdBy: actor,
-      createdAt: now,
-      updatedBy: actor,
-      updatedAt: now,
-      revision: 1,
+      sourceFileIds,
+      actor: humanActor(user),
     });
-    await recordWorkspaceEvent(ctx, {
-      workspaceId: args.workspaceId,
-      kind: "context.proposed",
-      entityType: "context_proposal",
-      entityId: proposalId,
-      summary: `Proposed a change to ${args.field.replaceAll("_", " ")}`,
-      actor,
-    });
-    return proposalId;
+    return proposal._id;
   },
 });
 
@@ -108,34 +58,13 @@ export const getApprovals = query({
   returns: v.array(proposalValidator),
   handler: async (ctx, args) => {
     await requireMembership(ctx, args.workspaceId);
-    const proposals = args.status
-      ? await ctx.db
-          .query("context_proposals")
-          .withIndex("by_workspace_and_status", (q) =>
-            q.eq("workspaceId", args.workspaceId).eq("status", args.status!),
-          )
-          .order("desc")
-          .take(100)
-      : await ctx.db
-          .query("context_proposals")
-          .withIndex("by_workspace_and_created", (q) =>
-            q.eq("workspaceId", args.workspaceId),
-          )
-          .order("desc")
-          .take(100);
-    return proposals.map((proposal) => ({
-      id: proposal._id,
-      workspaceId: proposal.workspaceId,
-      field: proposal.field,
-      proposedValue: proposal.proposedValue,
-      rationale: proposal.rationale,
-      sourceFileIds: proposal.sourceFileIds,
-      status: proposal.status,
-      createdBy: proposal.createdBy,
-      createdAt: proposal.createdAt,
-      decidedBy: proposal.decidedBy ?? null,
-      decidedAt: proposal.decidedAt ?? null,
-    }));
+    const proposals = await listProposals(
+      ctx,
+      args.workspaceId,
+      args.status,
+      100,
+    );
+    return proposals.map(toProposal);
   },
 });
 
@@ -146,9 +75,12 @@ export const decideContextProposal = mutation({
   },
   returns: v.null(),
   handler: async (ctx, { proposalId, decision }) => {
+    // Human-only, whichever way the decision goes: agent-bound identities
+    // are rejected here, not just left out of the MCP tool list. Checked
+    // before the load so callers can't probe which proposal ids exist.
+    await requireHumanSession(ctx);
     const proposal = await ctx.db.get(proposalId);
     if (!proposal) throw new ConvexError({ code: "PROPOSAL_NOT_FOUND" });
-    if (decision === "approved") await requireHumanSession(ctx);
     const { user, membership } = await requireMembership(
       ctx,
       proposal.workspaceId,
@@ -229,18 +161,7 @@ export const decideContextProposal = mutation({
 
 async function applyApprovedProposal(
   ctx: MutationCtx,
-  proposal: {
-    workspaceId: Id<"workspaces">;
-    field:
-      | "goal"
-      | "scope"
-      | "constraint"
-      | "decision"
-      | "ownership"
-      | "open_question";
-    proposedValue: string;
-    sourceFileIds: Id<"files">[];
-  },
+  proposal: Doc<"context_proposals">,
   actor: ReturnType<typeof humanActor>,
   now: number,
 ) {
@@ -279,12 +200,35 @@ async function applyApprovedProposal(
         decisions: [...context.decisions, value],
       });
       break;
-    case "ownership":
+    case "ownership": {
+      // Re-checked on approval: the owner may have left since the proposal.
+      // Legacy free-text proposals have no owner to check and can't be approved.
+      if (!proposal.ownerUserId || !proposal.ownerArea)
+        throw new ConvexError({ code: "INVALID_INPUT", field: "ownerUserId" });
+      const owner = await requireOwnerMember(
+        ctx,
+        proposal.workspaceId,
+        proposal.ownerUserId,
+      );
+      // One owner per area: approval replaces the owner of an equal area.
+      const area = nameKey(proposal.ownerArea);
       await ctx.db.patch(context._id, {
         ...next,
-        ownership: [...context.ownership, value],
+        ownership: [
+          ...context.ownership.filter(
+            (entry) =>
+              entry.ownerArea === undefined || nameKey(entry.ownerArea) !== area,
+          ),
+          {
+            ...value,
+            text: ownershipText(proposal.ownerArea, owner),
+            ownerUserId: owner._id,
+            ownerArea: proposal.ownerArea,
+          },
+        ],
       });
       break;
+    }
     case "open_question":
       await ctx.db.patch(context._id, {
         ...next,
