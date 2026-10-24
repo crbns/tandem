@@ -585,6 +585,86 @@ describe("sync cursor", () => {
   });
 });
 
+describe("sync published work", () => {
+  it("returns full findings since a teammate's cursor and isolates tenants", async () => {
+    const { t, alex, sam, jordan, workspaceId, otherWorkspaceId } = await setup();
+    const publisher = await alex.mutation(api.agentConnections.createAgentConnection, {
+      workspaceId, client: "claude",
+    });
+    const reader = await sam.mutation(api.agentConnections.createAgentConnection, {
+      workspaceId, client: "chatgpt",
+    });
+    const outsider = await jordan.mutation(api.agentConnections.createAgentConnection, {
+      workspaceId: otherWorkspaceId, client: "claude",
+    });
+    const file = await t.mutation(api.mcp.createDocument, {
+      token: publisher.token, name: "latency.md", mimeType: "text/markdown", content: "p95",
+    });
+    const publish = (token: string, title: string, fileIds: Id<"files">[] = []) =>
+      t.mutation(api.mcp.publishWork, {
+        token, kind: "finding", title, summary: "Full result: p95 is 120ms; cache misses dominate.", fileIds,
+      });
+    const old = await publish(publisher.token, "Before cursor");
+    const before = await t.mutation(api.mcp.syncWorkspace, { token: reader.token });
+    expect(before.recentWork).toEqual([old]);
+    expect(before.workTruncated).toBe(false);
+    await publish(outsider.token, "Private finding");
+    const work = await publish(publisher.token, "Latency", [file.id]);
+    const after = await t.mutation(api.mcp.syncWorkspace, {
+      token: reader.token, sinceSeq: before.cursorSeq,
+    });
+    expect(after.recentWork).toEqual([work]);
+    expect(after.recentWork[0]).toMatchObject({
+      kind: "finding", title: "Latency", fileIds: [file.id],
+      summary: "Full result: p95 is 120ms; cache misses dominate.",
+      createdBy: { type: "agent", agentConnectionId: publisher.connectionId },
+      createdAt: expect.any(Number),
+    });
+    expect(after.workTruncated).toBe(false);
+    const empty = await t.mutation(api.mcp.syncWorkspace, {
+      token: reader.token, sinceSeq: after.cursorSeq,
+    });
+    expect(empty.recentWork).toEqual([]);
+    expect(empty.workTruncated).toBe(false);
+    const snapshot = await t.mutation(api.mcp.syncWorkspace, { token: reader.token });
+    expect(snapshot.recentWork).toEqual([work, old]);
+    const other = await t.mutation(api.mcp.syncWorkspace, { token: outsider.token });
+    expect(other.recentWork.map((w) => w.title)).toEqual(["Private finding"]);
+    expect(await errorData(t.mutation(api.mcp.syncWorkspace, {
+      token: outsider.token, workspaceId,
+    }))).toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("caps snapshots and incremental work at the newest 20 independently of event pages", async () => {
+    const { t, sam, workspaceId } = await setup();
+    const { token } = await sam.mutation(api.agentConnections.createAgentConnection, {
+      workspaceId, client: "claude",
+    });
+    const before = await t.mutation(api.mcp.syncWorkspace, { token });
+    expect(before.recentWork).toEqual([]);
+    expect(before.workTruncated).toBe(false);
+    const published = [];
+    for (let i = 0; i < 55; i++) {
+      published.push(await t.mutation(api.mcp.publishWork, {
+        token, kind: i % 2 ? "finding" : "deliverable", title: `Work ${i}`, summary: `Full summary ${i}`, fileIds: [],
+      }));
+      if (i === 19) {
+        const exact = await t.mutation(api.mcp.syncWorkspace, { token });
+        expect(exact.recentWork).toHaveLength(20);
+        expect(exact.workTruncated).toBe(false);
+      }
+    }
+    const expected = published.slice(-20).reverse();
+    const snapshot = await t.mutation(api.mcp.syncWorkspace, { token });
+    expect(snapshot.recentWork).toEqual(expected);
+    expect(snapshot.workTruncated).toBe(true);
+    const incremental = await t.mutation(api.mcp.syncWorkspace, { token, sinceSeq: before.cursorSeq });
+    expect(incremental.eventsTruncated).toBe(true);
+    expect(incremental.recentWork).toEqual(expected);
+    expect(incremental.workTruncated).toBe(true);
+  });
+});
+
 describe("ownership proposals (review M1)", () => {
   it("requires the proposed owner to be a current member, on propose and approve", async () => {
     const { t, alex, sam, samId, alexId, jordanId, workspaceId } = await setup();

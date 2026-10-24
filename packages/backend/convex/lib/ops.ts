@@ -502,6 +502,7 @@ export function truncate(text: string, max: number): string {
 }
 
 export const SYNC_LIMIT = 50;
+const SYNC_WORK_LIMIT = 20;
 
 export function toEvent(event: Doc<"workspace_events">) {
   return {
@@ -584,6 +585,35 @@ export async function syncCore(
     changedFiles.sort((a, b) => b.updatedAt - a.updatedAt);
     filesTruncated = false;
   }
+  let work: Doc<"published_work">[];
+  if (sinceSeq === undefined) {
+    work = await ctx.db
+      .query("published_work")
+      .withIndex("by_workspace_and_created", (q) =>
+        q.eq("workspaceId", workspaceId),
+      )
+      .order("desc")
+      .take(SYNC_WORK_LIMIT + 1);
+  } else {
+    // Use event sequence numbers, not timestamps: writes can share a millisecond.
+    // Work is independently capped, even when the event stream spans pages.
+    const publications = await ctx.db
+      .query("workspace_events")
+      .withIndex("by_workspace_and_kind_and_seq", (q) =>
+        q.eq("workspaceId", workspaceId)
+          .eq("kind", "work.published")
+          .gt("seq", sinceSeq)
+          .lte("seq", headSeq),
+      )
+      .order("desc")
+      .take(SYNC_WORK_LIMIT + 1);
+    work = [];
+    for (const event of publications) {
+      const id = ctx.db.normalizeId("published_work", event.entityId);
+      const row = id ? await ctx.db.get(id) : null;
+      if (row && row.workspaceId === workspaceId) work.push(row);
+    }
+  }
   const pending = await listProposals(ctx, workspaceId, "pending", SYNC_LIMIT);
   return {
     workspace: { id: workspace._id, name: workspace.name },
@@ -597,6 +627,8 @@ export async function syncCore(
     })),
     changedFiles: changedFiles.map(toFileMetadata),
     filesTruncated,
+    recentWork: work.slice(0, SYNC_WORK_LIMIT).map(toPublishedWork),
+    workTruncated: work.length > SYNC_WORK_LIMIT,
     events: events.map(toEvent),
     eventsTruncated,
     headSeq,

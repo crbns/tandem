@@ -54,6 +54,11 @@ type McpSync = {
   workspace: { id: string };
   context: { goal: string };
   pending_proposals: { id: string }[];
+  recent_work: {
+    kind: string; title: string; summary: string; file_ids: string[];
+    published_by: Attribution; created_at: string;
+  }[];
+  work_truncated: boolean;
   events: McpEvent[];
   events_truncated: boolean;
   cursor: string;
@@ -83,6 +88,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
   let agent: Agent;
   let fileId: string;
   let cursorBeforeProposal: string;
+  let teammateConnectionId: string;
   let proposalId: string;
 
   beforeAll(async () => {
@@ -330,6 +336,32 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     evidence.step7 = { proposalId, eventsSinceCursor: sync.events.map((e) => `${e.seq}:${e.type}:${e.actor.actor_type}`) };
   });
 
+  it("7a. A publishes a finding and B's next cursor sync receives the full summary and files", async () => {
+    const connection = await b.dashboard.createAgentConnection(workspaceId, {
+      client: "chatgpt", displayName: "Blake's ChatGPT",
+    });
+    teammateConnectionId = connection.connectionId;
+    const teammate = await Agent.connect(mcpUrl, connection.token);
+    try {
+      const before = await teammate.ok<McpSync>("sync_workspace");
+      const summary = `Full finding (${run}): use expected_version when updating proposal.md; stale writes must reread and reconcile.`;
+      const { published } = await agent.ok<{ published: McpSync["recent_work"][number] }>("publish_work", {
+        kind: "finding", title: "Version conflict findings", summary, file_ids: [fileId],
+      });
+      const after = await teammate.ok<McpSync>("sync_workspace", { since: before.cursor });
+      expect(after.recent_work).toEqual([published]);
+      expect(after.recent_work[0]).toMatchObject({
+        kind: "finding", title: "Version conflict findings", summary, file_ids: [fileId],
+        published_by: { actor_type: "agent", agent_connection_id: connectionId },
+        created_at: expect.any(String),
+      });
+      expect(after.work_truncated).toBe(false);
+      expect((await teammate.ok<McpSync>("sync_workspace", { since: after.cursor })).recent_work).toEqual([]);
+    } finally {
+      await teammate.close();
+    }
+  });
+
   it("7b. a goal proposal based on an older goal goes stale instead of overwriting the newer one", async () => {
     const propose = async (value: string) =>
       (
@@ -444,7 +476,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     });
     expect(mine).not.toHaveProperty("revokedAt");
     // B (a member) sees only their own connections.
-    expect(await b.dashboard.listAgentConnections(workspaceId)).toEqual([]);
+    expect((await b.dashboard.listAgentConnections(workspaceId)).map((x) => x.id)).toEqual([teammateConnectionId]);
 
     const info = await agent.ok<Record<string, unknown>>("get_workspace_info");
     expect(JSON.stringify(info)).not.toMatch(/online/i);

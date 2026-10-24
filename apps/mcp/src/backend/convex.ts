@@ -119,6 +119,17 @@ interface ConvexEvent {
   createdAt: number;
 }
 
+interface ConvexPublishedWork {
+  id: string;
+  workspaceId: string;
+  kind: PublishedWork["kind"];
+  title: string;
+  summary: string;
+  fileIds: string[];
+  createdBy: ConvexActor;
+  createdAt: number;
+}
+
 type Token = { token: string };
 type WorkspaceArg = { workspaceId?: string };
 type Mutation<Args, Ret> = FunctionReference<"mutation", "public", Token & Args, Ret>;
@@ -181,6 +192,8 @@ const fn = {
       pendingProposals: Pick<ConvexProposal, "id" | "field" | "rationale" | "createdBy" | "createdAt">[];
       changedFiles: ConvexFile[];
       filesTruncated: boolean;
+      recentWork: ConvexPublishedWork[];
+      workTruncated: boolean;
       events: ConvexEvent[];
       eventsTruncated: boolean;
       headSeq: number;
@@ -208,16 +221,7 @@ const fn = {
       summary: string;
       fileIds: string[];
     },
-    {
-      id: string;
-      workspaceId: string;
-      kind: PublishedWork["kind"];
-      title: string;
-      summary: string;
-      fileIds: string[];
-      createdBy: ConvexActor;
-      createdAt: number;
-    }
+    ConvexPublishedWork
   >,
 };
 
@@ -370,6 +374,8 @@ export class ConvexBackend implements TandemBackend {
       })),
       changed_files: r.changedFiles.map(toFile),
       files_truncated: r.filesTruncated,
+      recent_work: r.recentWork.map(toPublishedWork),
+      work_truncated: r.workTruncated,
       events: r.events.map((e) => toEvent(r.workspace.id, e)),
       events_truncated: r.eventsTruncated,
       cursor: encodeCursor(r.workspace.id, r.cursorSeq),
@@ -406,16 +412,7 @@ export class ConvexBackend implements TandemBackend {
       summary: input.summary,
       fileIds: input.file_ids ?? [],
     });
-    return {
-      id: w.id,
-      workspace_id: w.workspaceId,
-      kind: w.kind,
-      title: w.title,
-      summary: w.summary,
-      file_ids: w.fileIds,
-      published_by: toAttribution(w.createdBy),
-      created_at: isoRequired(w.createdAt),
-    };
+    return toPublishedWork(w);
   }
 
   async decideProposal(): Promise<ContextProposal> {
@@ -700,4 +697,17 @@ function stripUndefined<T extends object>(value: T): T {
   return Object.fromEntries(
     Object.entries(value).filter(([, v]) => v !== undefined),
   ) as T;
+}
+
+function toPublishedWork(w: ConvexPublishedWork): PublishedWork {
+  return {
+    id: w.id,
+    workspace_id: w.workspaceId,
+    kind: w.kind,
+    title: w.title,
+    summary: w.summary,
+    file_ids: w.fileIds,
+    published_by: toAttribution(w.createdBy),
+    created_at: isoRequired(w.createdAt),
+  };
 }

@@ -7,6 +7,7 @@ import { getFunctionName } from "convex/server";
 import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ConvexTokenResolver, credentialHeader, withDevAnon } from "../src/auth.js";
+import { encodeCursor } from "../src/backend/cursor.js";
 import { ConvexBackend } from "../src/backend/convex.js";
 import { createApp } from "../src/server.js";
 
@@ -122,6 +123,20 @@ describe("Convex-backed server", () => {
         },
         contextRevision: 4,
       }),
+      "mcp:syncWorkspace": () => ({
+        workspace: { id: "ws1", name: "Demo" },
+        context: {
+          goal: null, scope: null, constraints: [], decisions: [], ownership: [], openQuestions: [],
+          revision: 1, updatedAt: FILE.updatedAt, updatedBy: FILE.updatedBy,
+        },
+        pendingProposals: [], changedFiles: [], filesTruncated: false,
+        recentWork: [{
+          id: "work1", workspaceId: "ws1", kind: "finding", title: "Latency",
+          summary: "Full finding: p95 is 120ms; cache misses dominate.", fileIds: [FILE.id],
+          createdBy: FILE.updatedBy, createdAt: FILE.updatedAt,
+        }],
+        workTruncated: true, events: [], eventsTruncated: false, headSeq: 8, cursorSeq: 8,
+      }),
       "mcp:touchConnection": () => null,
       "mcp:listWorkspaces": () => [
         { id: "ws1", name: "Demo", role: "owner", memberCount: 2, isDefault: true },
@@ -226,6 +241,29 @@ describe("Convex-backed server", () => {
     expect(read?.args).toEqual({ token: TOKEN, fileId: "file1" });
     // A successful call records presence itself: no separate touch.
     expect(fake.calls.some((c) => c.name === "mcp:touchConnection")).toBe(false);
+  });
+
+  it("maps sync recent_work, attribution, file references and work_truncated", async () => {
+    const client = await connect({ Authorization: `Bearer ${TOKEN}` });
+    const result = await call(client, "sync_workspace", { since: encodeCursor("ws1", 7) });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      recent_work: [{
+        id: "work1", workspace_id: "ws1", kind: "finding", title: "Latency",
+        summary: "Full finding: p95 is 120ms; cache misses dominate.", file_ids: ["file1"],
+        published_by: {
+          actor_type: "agent", user_id: "user1", client: "claude",
+          agent_connection_id: "conn1", label: "Sam's Claude",
+        },
+        created_at: "2026-10-24T00:00:00.000Z",
+      }],
+      work_truncated: true,
+      cursor: encodeCursor("ws1", 8),
+    });
+    expect(fake.calls.find((c) => c.name === "mcp:syncWorkspace")?.args).toEqual({
+      token: TOKEN, workspaceId: undefined, sinceSeq: 7, cursorWorkspaceId: "ws1",
+    });
+    await client.close();
   });
 
   it("get_workspace_info lists the connection's workspace members as snake_case", async () => {
