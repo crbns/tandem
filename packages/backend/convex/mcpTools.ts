@@ -6,6 +6,7 @@
 // the MCP endpoint can call them, and mutations even for reads, because every
 // agent call records lastMcpActionAt. There is deliberately no way to decide
 // a proposal or change the approved context from here.
+import { lineChanges } from "./lib/diff";
 import { vMcpUser } from "@convex-dev/mcp";
 import { ConvexError, v } from "convex/values";
 import { internalMutation } from "./_generated/server";
@@ -379,10 +380,18 @@ export const searchFiles = internalMutation({
 
 /** read_file by id, or by path in the connection's workspace. */
 export const readFile = internalMutation({
-  args: { principal, fileId: v.optional(v.string()), path: v.optional(v.string()) },
+  args: {
+    principal,
+    fileId: v.optional(v.string()),
+    path: v.optional(v.string()),
+    /** An earlier version to read; the latest when omitted. */
+    version: v.optional(v.number()),
+  },
   returns: v.object({
     file: fileRowValidator,
     content: v.union(v.string(), v.null()),
+    /** The version `content` belongs to; file.version stays the latest. */
+    version: v.number(),
   }),
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal);
@@ -402,9 +411,31 @@ export const readFile = internalMutation({
         });
       file = found.file;
     }
+    const row = toFileRow(file, await filePath(ctx, file));
+    if (args.version !== undefined && args.version !== file.version) {
+      const revision = Number.isSafeInteger(args.version)
+        ? await ctx.db
+            .query("file_revisions")
+            .withIndex("by_file_and_version", (q) =>
+              q.eq("fileId", file._id).eq("version", args.version!))
+            .unique()
+        : null;
+      if (!revision)
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          field: "version",
+          message: `${file.name} has no version ${args.version}; its latest is ${file.version}. get_file_versions lists them.`,
+        });
+      return {
+        file: row,
+        content: revision.storageId ? null : revision.content,
+        version: revision.version,
+      };
+    }
     return {
-      file: toFileRow(file, await filePath(ctx, file)),
+      file: row,
       content: file.storageId ? "binary: view or download in the dashboard" : (file.content ?? null),
+      version: file.version,
     };
   },
 });
@@ -419,6 +450,11 @@ export const getFileVersions = internalMutation({
         createdAt: v.number(),
         actor: actorValidator,
         sizeBytes: v.number(),
+        /** Against the version before it; null for binary revisions. */
+        change: v.union(
+          v.object({ linesAdded: v.number(), linesRemoved: v.number() }),
+          v.null(),
+        ),
       }),
     ),
   }),
@@ -430,17 +466,26 @@ export const getFileVersions = internalMutation({
       .query("file_revisions")
       .withIndex("by_file_and_version", (q) => q.eq("fileId", file._id))
       .order("desc")
-      .take(limit);
+      // One extra so the oldest listed version has something to compare to.
+      .take(limit + 1);
     const encoder = new TextEncoder();
     return {
       file: toFileRow(file, await filePath(ctx, file)),
-      // Sizes only: revision content never leaves through this function.
-      versions: revisions.map((revision) => ({
-        version: revision.version,
-        createdAt: revision.createdAt,
-        actor: revision.actor,
-        sizeBytes: revision.size ?? encoder.encode(revision.content).byteLength,
-      })),
+      // Sizes and line counts only: revision content never leaves through this function.
+      versions: revisions.slice(0, limit).map((revision, i) => {
+        const previous = revisions[i + 1];
+        const comparable =
+          revision.storageId === undefined &&
+          previous?.storageId === undefined &&
+          (previous !== undefined || revision.version === 1);
+        return {
+          version: revision.version,
+          createdAt: revision.createdAt,
+          actor: revision.actor,
+          sizeBytes: revision.size ?? encoder.encode(revision.content).byteLength,
+          change: comparable ? lineChanges(previous?.content ?? "", revision.content) : null,
+        };
+      }),
     };
   },
 });

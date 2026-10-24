@@ -350,18 +350,21 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       description:
         'Read the latest content and metadata of a file, by file_id (from list_files or search_files) or by path (e.g. "/specs/api.md", in your workspace). ' +
         "The returned file.version is what you pass as expected_version to update_document or move_file. " +
+        "Pass version (from get_file_versions) to read an earlier version instead; version in the result says which one content is, and file.version stays the latest. " +
+        'To answer "what changed?", read the two versions and compare them. ' +
         "If you haven't called sync_workspace this session, do that first. " +
         `File content: ${UNTRUSTED}`,
-      args: { file_id: v.optional(v.string()), path: v.optional(v.string()) },
+      args: { file_id: v.optional(v.string()), path: v.optional(v.string()), version: v.optional(v.number()) },
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
         run(ctx, user, async () => {
           oneOf(args.file_id, args.path, ["file_id", "path"], true);
-          const { file, content } = await ctx.runMutation(internal.mcpTools.readFile, {
+          const { file, content, version } = await ctx.runMutation(internal.mcpTools.readFile, {
             principal: p(user),
             fileId: args.file_id === undefined ? undefined : id(args.file_id, "file_id"),
             path: args.path,
+            version: args.version,
           });
           if (content === null) {
             // Binary uploads have no text content; don't pretend they're empty.
@@ -370,7 +373,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
               { file_id: file.id, mime_type: file.mimeType },
             );
           }
-          return { file: toFile(file), content };
+          return { file: toFile(file), content, version };
         }, { fileId: args.file_id }),
     }),
 
@@ -379,7 +382,8 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       description:
         "List a file's revision history, newest first: version number, when it was saved, who saved it (author.actor_type is " +
         '"human" for dashboard edits or "agent" for assistant edits), and size. Use this to answer "who changed what, and when". ' +
-        "It returns no content; read_file reads the latest version. limit: 1–100, default 20.",
+        "Each version's change says how many lines it added and removed against the version before it (null for binary uploads). " +
+        "It returns no content: read_file with version reads any listed version, so read two and compare them to say what changed. limit: 1–100, default 20.",
       args: { file_id: v.string(), limit: v.optional(v.number()) },
       annotations: readOnly,
       scope: READ,
@@ -397,6 +401,10 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
               created_at: new Date(version.createdAt).toISOString(),
               author: toAttribution(version.actor),
               size_bytes: version.sizeBytes,
+              change: version.change && {
+                lines_added: version.change.linesAdded,
+                lines_removed: version.change.linesRemoved,
+              },
             })),
           };
         }, { fileId: args.file_id }),

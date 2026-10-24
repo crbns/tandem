@@ -3280,3 +3280,38 @@ describe("sync brief and server instructions", () => {
     expect(inactive.truncated).toBe(false);
   });
 });
+
+describe("file history for 'what changed?'", () => {
+  it("read_file reads an older version by number and keeps file.version at the latest", async () => {
+    const { t, sam, workspaceId } = await setup();
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const created = (await callTool(t, apiKey, "create_document", { name: "plan.md", content: "a\nb\n" })).structuredContent;
+    await callTool(t, apiKey, "update_document", { file_id: created.id, content: "a\nc\nd\n", expected_version: 1 });
+
+    const old = await callTool(t, apiKey, "read_file", { file_id: created.id, version: 1 });
+    expect(old.isError).toBeUndefined();
+    expect(old.structuredContent).toMatchObject({ content: "a\nb\n", version: 1, file: { version: 2 } });
+    const latest = await callTool(t, apiKey, "read_file", { file_id: created.id });
+    expect(latest.structuredContent).toMatchObject({ content: "a\nc\nd\n", version: 2 });
+
+    const missing = await callTool(t, apiKey, "read_file", { file_id: created.id, version: 9 });
+    expect(missing.isError).toBe(true);
+    expect(missing.structuredContent.error.code).toBe("INVALID_INPUT");
+  });
+
+  it("get_file_versions says how many lines each version added and removed", async () => {
+    const { t, sam, workspaceId } = await setup();
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const created = (await callTool(t, apiKey, "create_document", { name: "plan.md", content: "a\nb\n" })).structuredContent;
+    await callTool(t, apiKey, "update_document", { file_id: created.id, content: "a\nc\nd\n", expected_version: 1 });
+
+    const all = (await callTool(t, apiKey, "get_file_versions", { file_id: created.id })).structuredContent;
+    expect(all.versions.map((v: any) => [v.version, v.change])).toEqual([
+      [2, { lines_added: 2, lines_removed: 1 }],
+      [1, { lines_added: 2, lines_removed: 0 }],
+    ]);
+    // The oldest listed version still compares against the one before it.
+    const newest = (await callTool(t, apiKey, "get_file_versions", { file_id: created.id, limit: 1 })).structuredContent;
+    expect(newest.versions[0].change).toEqual({ lines_added: 2, lines_removed: 1 });
+  });
+});
