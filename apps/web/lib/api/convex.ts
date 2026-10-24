@@ -139,6 +139,20 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
           }),
         );
       }),
+    getRevision: (fileId, version) =>
+      call(async () => {
+        const revision = await convex.query(api.files.getFileRevision, {
+          fileId: fileId as Id<"files">,
+          version,
+        });
+        if (!revision) return null;
+        return {
+          ...toActor(revision.actor),
+          version: revision.version,
+          createdAt: revision.createdAt,
+          content: revision.content,
+        } satisfies Revision;
+      }),
     getContext: (workspaceId) =>
       call(async () => {
         const context = await convex.query(api.workspaces.getWorkspaceContext, {

@@ -28,8 +28,10 @@ export interface TandemApi {
     fileId: string,
     update: FileUpdate,
   ): Promise<{ version: number }>;
-  /** Newest first. */
+  /** Newest first. Content may be omitted; fetch it with `getRevision`. */
   listRevisions(fileId: string): Promise<Revision[]>;
+  /** One revision with its content, or null when that version doesn't exist. */
+  getRevision(fileId: string, version: number): Promise<Revision | null>;
   /** The approved project context, or null when nothing has been approved yet. */
   getContext(workspaceId: string): Promise<ProjectContext | null>;
 }

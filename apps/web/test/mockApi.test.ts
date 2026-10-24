@@ -88,6 +88,13 @@ describe("mock TandemApi", () => {
     expect((await api.listRevisions(id))[0]!.content).toBe("two");
   });
 
+  it("reads a single revision's content, or null for an unknown version", async () => {
+    const { id } = await api.createFile(MOCK_WORKSPACE_ID, { name: "a.md", mimeType: "text/markdown", content: "one" });
+    await api.updateFileContent(id, { expectedVersion: 1, content: "two" });
+    expect((await api.getRevision(id, 1))?.content).toBe("one");
+    expect(await api.getRevision(id, 3)).toBeNull();
+  });
+
   it("returns FILE_NOT_FOUND for an unknown file", async () => {
     expect((await expectApiError(api.readFile("nope"))).code).toBe("FILE_NOT_FOUND");
   });

@@ -259,6 +259,14 @@ export function createMockApi({
         .reverse();
     },
 
+    async getRevision(fileId, version) {
+      await delay();
+      const revision = getFile(fileId).revisions.find(
+        (r) => r.version === version,
+      );
+      return revision ? { ...revision } : null;
+    },
+
     async getContext(workspaceId) {
       await delay();
       if (!workspaces.some((w) => w.id === workspaceId))
