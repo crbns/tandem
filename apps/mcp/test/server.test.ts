@@ -930,6 +930,7 @@ describe("context tools", () => {
       source_ids: ["file_brief", "file_brief"],
     });
     expect(proposal).toEqual({
+      base_context_version: before.context_version,
       id: expect.stringMatching(/^prop_/),
       workspace_id: "ws_demo",
       field: "goal",
@@ -1064,6 +1065,7 @@ describe("context tools", () => {
       proposed_value: "Demo on Claude first, ChatGPT second.",
       source_ids: ["file_brief"],
     });
+    await backend.decideProposal(alexHuman, decision.id, "approve");
     const owner = await propose(alex, {
       field: "ownership",
       proposed_value: { area: "mcp SERVER ", owner_user_id: "user_sam" },
@@ -1072,7 +1074,6 @@ describe("context tools", () => {
       field: "scope",
       proposed_value: "Everything.",
     });
-    await backend.decideProposal(alexHuman, decision.id, "approve");
     await backend.decideProposal(alexHuman, owner.id, "approve");
     await backend.decideProposal(
       alexHuman,
@@ -1101,6 +1102,83 @@ describe("context tools", () => {
     });
     await alex.close();
   });
+
+  it("rejects stale approvals without changing context and allows stale rejection", async () => {
+    const alex = await connect("alex-token", url);
+    const first = await propose(alex, {
+      field: "goal",
+      proposed_value: "First approved goal.",
+    });
+    const second = await propose(alex, {
+      field: "goal",
+      proposed_value: "Stale goal.",
+    });
+    expect(first).toMatchObject({ base_context_version: 1 });
+    expect(second).toMatchObject({ base_context_version: 1 });
+    await backend.decideProposal(alexHuman, first.id, "approve");
+    const before = await sync(alex);
+    expect(before.context_version).toBe(2);
+    expect(before.context.goal).toBe("First approved goal.");
+    await expect(
+      backend.decideProposal(alexHuman, second.id, "approve"),
+    ).rejects.toMatchObject({
+      code: "VERSION_CONFLICT",
+      details: {
+        proposal_id: second.id,
+        base_context_version: 1,
+        context_version: 2,
+      },
+    });
+    const after = await sync(alex, { since: before.cursor });
+    expect(after.context).toEqual(before.context);
+    expect(after.context_version).toBe(2);
+    expect(after.events).toEqual([]);
+    const pending = await call(alex, "get_approvals", {});
+    expect(pending.structuredContent).toMatchObject({
+      proposals: [
+        { id: second.id, status: "pending", base_context_version: 1 },
+      ],
+    });
+    expect(
+      await backend.decideProposal(alexHuman, second.id, "reject"),
+    ).toMatchObject({ status: "rejected" });
+    const rejected = await sync(alex, { since: after.cursor });
+    expect(rejected.context).toEqual(before.context);
+    expect(rejected.context_version).toBe(2);
+    expect(rejected.events).toEqual([
+      expect.objectContaining({
+        type: "context.rejected",
+        subject_id: second.id,
+      }),
+    ]);
+    await alex.close();
+  });
+
+  it.each(["user_alex", "user_taylor"])(
+    "direct context changes by %s invalidate pending proposals",
+    async (user_id) => {
+      const alex = await connect("alex-token", url);
+      const proposal = await propose(alex, {
+        field: "goal",
+        proposed_value: "Old proposal.",
+      });
+      const human = { ...alexHuman, user_id };
+      const direct = await backend.applyContextChange(human, {
+        field: "goal",
+        value: "Direct human goal.",
+      });
+      expect(direct.context_version).toBe(2);
+      await expect(
+        backend.decideProposal(human, proposal.id, "approve"),
+      ).rejects.toMatchObject({
+        code: "VERSION_CONFLICT",
+        details: { base_context_version: 1, context_version: 2 },
+      });
+      expect((await sync(alex)).context.goal).toBe("Direct human goal.");
+      await backend.decideProposal(human, proposal.id, "reject");
+      await alex.close();
+    },
+  );
 
   it("get_workspace_info reports the admin role", async () => {
     const admin = await connect("taylor-token", url);

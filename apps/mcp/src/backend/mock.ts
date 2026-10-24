@@ -407,6 +407,7 @@ export class MockBackend implements TandemBackend {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
     this.checkValue(workspaceId, input.field, input.proposed_value);
     const proposal: ContextProposal = {
+      base_context_version: this.workspaces.get(workspaceId)!.context_version,
       id: `prop_${randomUUID()}`,
       workspace_id: workspaceId,
       field: input.field,
@@ -501,6 +502,20 @@ export class MockBackend implements TandemBackend {
     }
     const now = new Date().toISOString();
     if (decision === "approve") {
+      const currentVersion = this.workspaces.get(
+        proposal.workspace_id,
+      )!.context_version;
+      if (proposal.base_context_version !== currentVersion) {
+        throw new TandemError(
+          "VERSION_CONFLICT",
+          "The approved context changed since this proposal was created. Sync the workspace and propose a reconciled change for human approval.",
+          {
+            proposal_id: proposalId,
+            base_context_version: proposal.base_context_version,
+            context_version: currentVersion,
+          },
+        );
+      }
       this.applyToContext(
         proposal.workspace_id,
         proposal.field,

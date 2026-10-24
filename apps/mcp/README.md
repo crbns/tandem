@@ -15,7 +15,7 @@ Approving or rejecting proposals is not an MCP tool: humans do it in the dashboa
 Documented as the `TandemBackend` contract in `src/backend/types.ts`:
 
 - **StructuredContext** per workspace, versioned by `context_version`: goal, scope, constraints, approved decisions, ownership, open questions. Only a human owner or admin can change it.
-- **ContextProposal**: a pending change to one field (`goal`, `scope`, `constraints`, `decisions`, `ownership`) with rationale, source file ids, and who proposed and decided it.
+- **ContextProposal**: a pending change to one field (`goal`, `scope`, `constraints`, `decisions`, `ownership`) with rationale, source file ids, `base_context_version`, and who proposed and decided it. Approval requires that base version to match the current `context_version`, otherwise it fails with `VERSION_CONFLICT` without changing the context or proposal; stale proposals can still be rejected. Direct human context changes also increment `context_version` and invalidate pending approvals.
 - **PublishedWork**: a deliverable or finding with title, summary, and file ids.
 - **WorkspaceEvent**: per-workspace monotonic `seq` for file, context, and publish changes. Summaries are short metadata, never document content. The sync cursor is base64url JSON of the workspace id and last seq.
 - **AgentConnection**: per user and client, `last_synced_at` and `last_action_at`. Presence is these timestamps, never "online".

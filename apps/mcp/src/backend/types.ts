@@ -172,6 +172,8 @@ export type ProposedValue = string | string[] | Ownership;
 export type ProposalStatus = "pending" | "approved" | "rejected";
 
 export interface ContextProposal {
+  /** Context version this proposal was based on; stale proposals cannot be approved. */
+  base_context_version: number;
   id: string;
   workspace_id: string;
   field: ContextField;
@@ -347,7 +349,9 @@ export interface TandemBackend {
    * Human decision on a proposal; not exposed over MCP. Agents get FORBIDDEN;
    * an unknown or other-tenant proposal gets INVALID_INPUT; a member without owner/admin role gets
    * FORBIDDEN; an already decided proposal gets INVALID_INPUT. Approving applies
-   * proposed_value (context_version + 1). Either way it sets decided_by and
+   * proposed_value (context_version + 1), or throws VERSION_CONFLICT with the
+   * current context_version if base_context_version is stale. Rejection is
+   * allowed even when stale. Either way it sets decided_by and
    * decided_at and appends context.approved or context.rejected.
    */
   decideProposal(
