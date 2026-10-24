@@ -135,8 +135,10 @@ export default defineSchema({
     parentId: v.optional(v.id("folders")),
     name: v.string(),
     // Collision key for NAME_EXISTS (lib/names.ts). Optional only for rows
-    // created before uniqueness was enforced.
+    // created before uniqueness was enforced, or soft-deleted files.
     nameKey: v.optional(v.string()),
+    deletedAt: v.optional(v.number()),
+    deletedBy: v.optional(actor),
     mimeType: v.string(),
     content: v.optional(v.string()),
     storageId: v.optional(v.id("_storage")),
@@ -147,6 +149,8 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
   })
+    .index("by_workspace_and_deleted_at_and_updated_at", ["workspaceId", "deletedAt", "updatedAt"])
+    .index("by_workspace_and_deleted_at_and_parent", ["workspaceId", "deletedAt", "parentId"])
     .index("by_workspace_and_parent", ["workspaceId", "parentId"])
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_updated_at", ["workspaceId", "updatedAt"])
@@ -157,7 +161,7 @@ export default defineSchema({
     ])
     .searchIndex("search_name", {
       searchField: "name",
-      filterFields: ["workspaceId", "parentId"],
+      filterFields: ["workspaceId", "parentId", "deletedAt"],
     }),
 
   file_revisions: defineTable({

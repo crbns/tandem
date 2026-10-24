@@ -7,6 +7,7 @@ import { displayId } from "@/lib/files";
 import { formatAbsolute, formatRelative } from "@/lib/time";
 import { useNow } from "@/lib/useNow";
 import { ActorBadge } from "@/components/common/ActorBadge";
+import { FileActions } from "./FileActions";
 import { CustodyStrip } from "@/components/files/CustodyStrip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -23,6 +24,7 @@ function Header() {
         <TableHead className="hidden sm:table-cell">Custody</TableHead>
         <TableHead className="hidden md:table-cell">Last held by</TableHead>
         <TableHead className="text-right">Updated</TableHead>
+        <TableHead>Actions</TableHead>
       </TableRow>
     </TableHeader>
   );
@@ -33,13 +35,14 @@ interface FileTableProps {
   files: FileSummary[];
   selectedId?: string;
   onSelect?: (fileId: string) => void;
+  onChanged?: () => void;
 }
 
 /**
  * The file register. Selecting a row (click or focus) shows its custody record;
  * the name link, a double click, or Enter opens the file.
  */
-export function FileTable({ workspaceId, files, selectedId, onSelect }: FileTableProps) {
+export function FileTable({ workspaceId, files, selectedId, onSelect, onChanged }: FileTableProps) {
   const router = useRouter();
   const now = useNow();
 
@@ -89,6 +92,7 @@ export function FileTable({ workspaceId, files, selectedId, onSelect }: FileTabl
               <TableCell className="text-right text-muted-foreground" title={formatAbsolute(file.updatedAt)}>
                 {formatRelative(file.updatedAt, now)}
               </TableCell>
+              <TableCell><FileActions file={file} onChanged={onChanged} /></TableCell>
             </TableRow>
           );
         })}
@@ -118,6 +122,9 @@ export function FileTableSkeleton({ rows = 3 }: { rows?: number }) {
             </TableCell>
             <TableCell>
               <Skeleton className="ml-auto h-4 w-16" />
+            </TableCell>
+            <TableCell>
+              <Skeleton className="h-8 w-32" />
             </TableCell>
           </TableRow>
         ))}

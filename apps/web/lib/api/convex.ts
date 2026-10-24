@@ -200,6 +200,13 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
       );
       return { id: file.id, version: file.version };
     },
+    renameFile: async (fileId, name, expectedVersion) => {
+      const file = await call(() => convex.mutation(api.files.renameFile, { fileId: fileId as Id<"files">, name, expectedVersion }));
+      return { version: file.version };
+    },
+    deleteFile: async (fileId, expectedVersion) => {
+      await call(() => convex.mutation(api.files.deleteFile, { fileId: fileId as Id<"files">, expectedVersion }));
+    },
     readFile: (fileId) =>
       call(async () => {
         const result = await convex.query(api.files.readFile, {

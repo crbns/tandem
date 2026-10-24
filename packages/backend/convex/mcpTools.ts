@@ -196,22 +196,22 @@ export const listFiles = internalMutation({
       rows = await ctx.db
         .query("files")
         .withSearchIndex("search_name", (q) => {
-          const search = q.search("name", needle).eq("workspaceId", workspaceId);
+          const search = q.search("name", needle).eq("workspaceId", workspaceId).eq("deletedAt", undefined);
           return folderId ? search.eq("parentId", folderId) : search;
         })
         .take(LIST_LIMIT + 1);
     } else if (folderId) {
       rows = await ctx.db
         .query("files")
-        .withIndex("by_workspace_and_parent", (q) =>
-          q.eq("workspaceId", workspaceId).eq("parentId", folderId),
+        .withIndex("by_workspace_and_deleted_at_and_parent", (q) =>
+          q.eq("workspaceId", workspaceId).eq("deletedAt", undefined).eq("parentId", folderId),
         )
         .take(LIST_LIMIT + 1);
     } else {
       rows = await ctx.db
         .query("files")
-        .withIndex("by_workspace_and_updated_at", (q) =>
-          q.eq("workspaceId", workspaceId),
+        .withIndex("by_workspace_and_deleted_at_and_updated_at", (q) =>
+          q.eq("workspaceId", workspaceId).eq("deletedAt", undefined),
         )
         .order("desc")
         .take(LIST_LIMIT + 1);

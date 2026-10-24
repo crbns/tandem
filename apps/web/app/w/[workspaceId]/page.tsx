@@ -112,6 +112,7 @@ export default function FilesPage() {
           workspaceId={workspaceId}
           files={resource.data}
           query={query}
+          onChanged={reload}
           onClear={() => setQuery("")}
           selectedId={selectedId}
           onSelect={setSelectedId}
@@ -126,11 +127,12 @@ interface RegisterProps {
   files: FileSummary[];
   query: string;
   onClear: () => void;
+  onChanged: () => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
 }
 
-function Register({ workspaceId, files, query, onClear, selectedId, onSelect }: RegisterProps) {
+function Register({ workspaceId, files, query, onClear, selectedId, onSelect, onChanged }: RegisterProps) {
   const visible = filterAndSortFiles(files, query);
   // Default to the most recently changed file so the record panel is never empty.
   const selected = visible.find((f) => f.id === selectedId) ?? visible[0];
@@ -149,7 +151,7 @@ function Register({ workspaceId, files, query, onClear, selectedId, onSelect }: 
   return (
     <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
       <div className="overflow-hidden rounded-md border bg-card">
-        <FileTable workspaceId={workspaceId} files={visible} selectedId={selected.id} onSelect={onSelect} />
+        <FileTable onChanged={onChanged} workspaceId={workspaceId} files={visible} selectedId={selected.id} onSelect={onSelect} />
       </div>
       {/* The record panel needs room beside a readable register: wide screens only. */}
       <div className="hidden xl:block">

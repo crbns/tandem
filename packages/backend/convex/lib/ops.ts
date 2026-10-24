@@ -35,7 +35,7 @@ export async function getFileInWorkspace(
 ): Promise<Doc<"files">> {
   const id = ctx.db.normalizeId("files", fileId);
   const file = id ? await ctx.db.get(id) : null;
-  if (!file || file.workspaceId !== workspaceId)
+  if (!file || file.deletedAt !== undefined || file.workspaceId !== workspaceId)
     throw new ConvexError({ code: "FILE_NOT_FOUND", fileId });
   return file;
 }
@@ -52,7 +52,7 @@ export async function checkSourceFiles(
   for (const raw of unique) {
     const id = ctx.db.normalizeId("files", raw);
     const file = id ? await ctx.db.get(id) : null;
-    if (!file || file.workspaceId !== workspaceId)
+    if (!file || file.deletedAt !== undefined || file.workspaceId !== workspaceId)
       throw new ConvexError({ code: "INVALID_SOURCE_FILE", fileId: raw });
     result.push(file._id);
   }
@@ -148,6 +148,7 @@ export async function updateDocumentCore(
   },
 ): Promise<Doc<"files">> {
   const { file, actor, expectedVersion } = args;
+  if (file.deletedAt !== undefined) throw new ConvexError({ code: "FILE_NOT_FOUND" });
   if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
     throw new ConvexError({
       code: "INVALID_INPUT",
@@ -194,6 +195,112 @@ export async function updateDocumentCore(
   const updated = await ctx.db.get(file._id);
   if (!updated) throw new ConvexError({ code: "FILE_NOT_FOUND" });
   return updated;
+}
+
+/** Any workspace member may rename or delete; entry points authorize membership. */
+export async function renameFileCore(
+  ctx: MutationCtx,
+  args: {
+    file: Doc<"files">;
+    name: string;
+    expectedVersion: number;
+    actor: Actor;
+  },
+) {
+  const { file, actor, expectedVersion } = args;
+  checkFileVersion(file, expectedVersion);
+  const name = storedName(args.name);
+  const key = nameKey(name);
+  if (!key || name.length > MAX_NAME_LENGTH)
+    throw new ConvexError({ code: "INVALID_NAME" });
+  const existing = await ctx.db
+    .query("files")
+    .withIndex("by_workspace_and_parent_and_name_key", (q) =>
+      q
+        .eq("workspaceId", file.workspaceId)
+        .eq("parentId", file.parentId)
+        .eq("nameKey", key),
+    )
+    .first();
+  if (existing && existing._id !== file._id)
+    throw new ConvexError({
+      code: "NAME_EXISTS",
+      fileId: existing._id,
+      name: existing.name,
+      currentVersion: existing.version,
+    });
+  const now = Date.now();
+  const version = file.version + 1;
+  await ctx.db.patch(file._id, {
+    name,
+    nameKey: key,
+    version,
+    revision: file.revision + 1,
+    updatedAt: now,
+    updatedBy: actor,
+  });
+  if (file.content !== undefined)
+    await ctx.db.insert("file_revisions", {
+      workspaceId: file.workspaceId,
+      fileId: file._id,
+      version,
+      content: file.content,
+      actor,
+      createdAt: now,
+    });
+  await recordWorkspaceEvent(ctx, {
+    workspaceId: file.workspaceId,
+    kind: "file.renamed",
+    entityType: "file",
+    entityId: file._id,
+    summary: `Renamed ${file.name} to ${name}`,
+    actor,
+  });
+  return (await ctx.db.get(file._id))!;
+}
+
+export async function deleteFileCore(
+  ctx: MutationCtx,
+  args: {
+    file: Doc<"files">;
+    expectedVersion: number;
+    actor: Actor;
+  },
+) {
+  const { file, actor, expectedVersion } = args;
+  checkFileVersion(file, expectedVersion);
+  const now = Date.now();
+  // Release the collision key while preserving the file and all content revisions.
+  await ctx.db.patch(file._id, {
+    deletedAt: now,
+    deletedBy: actor,
+    nameKey: undefined,
+    revision: file.revision + 1,
+    updatedAt: now,
+    updatedBy: actor,
+  });
+  // This event is the tombstone returned by sync_workspace.events.
+  await recordWorkspaceEvent(ctx, {
+    workspaceId: file.workspaceId,
+    kind: "file.deleted",
+    entityType: "file",
+    entityId: file._id,
+    summary: `Deleted ${file.name}`,
+    actor,
+  });
+}
+
+function checkFileVersion(file: Doc<"files">, expectedVersion: number) {
+  if (file.deletedAt !== undefined)
+    throw new ConvexError({ code: "FILE_NOT_FOUND" });
+  if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
+    throw new ConvexError({ code: "INVALID_INPUT" });
+  if (file.version !== expectedVersion)
+    throw new ConvexError({
+      code: "VERSION_CONFLICT",
+      currentVersion: file.version,
+      expectedVersion,
+    });
 }
 
 const MAX_OWNER_AREA_LENGTH = 200;
@@ -546,15 +653,15 @@ export async function searchFilesCore(
     throw new ConvexError({ code: "INVALID_INPUT" });
   const recent = await ctx.db
     .query("files")
-    .withIndex("by_workspace_and_updated_at", (q) =>
-      q.eq("workspaceId", workspaceId),
+    .withIndex("by_workspace_and_deleted_at_and_updated_at", (q) =>
+      q.eq("workspaceId", workspaceId).eq("deletedAt", undefined),
     )
     .order("desc")
     .take(SEARCH_SCAN_LIMIT);
   const byName = await ctx.db
     .query("files")
     .withSearchIndex("search_name", (q) =>
-      q.search("name", query.trim()).eq("workspaceId", workspaceId),
+      q.search("name", query.trim()).eq("workspaceId", workspaceId).eq("deletedAt", undefined),
     )
     .take(limit);
   const seen = new Set<Id<"files">>();
@@ -655,8 +762,8 @@ export async function syncCore(
     events = latest.slice(0, SYNC_LIMIT).reverse();
     const files = await ctx.db
       .query("files")
-      .withIndex("by_workspace_and_updated_at", (q) =>
-        q.eq("workspaceId", workspaceId),
+      .withIndex("by_workspace_and_deleted_at_and_updated_at", (q) =>
+        q.eq("workspaceId", workspaceId).eq("deletedAt", undefined),
       )
       .order("desc")
       .take(SYNC_LIMIT + 1);
@@ -683,7 +790,7 @@ export async function syncCore(
     for (const raw of fileIds) {
       const id = ctx.db.normalizeId("files", raw);
       const file = id ? await ctx.db.get(id) : null;
-      if (file && file.workspaceId === workspaceId) changedFiles.push(file);
+      if (file && file.deletedAt === undefined && file.workspaceId === workspaceId) changedFiles.push(file);
     }
     changedFiles.sort((a, b) => b.updatedAt - a.updatedAt);
     filesTruncated = false;

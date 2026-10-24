@@ -203,6 +203,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "Without since you get a snapshot: the full context, all files (up to 50) and the latest events. " +
         "Pass the cursor from your previous sync as since to get only what changed after it; with since, events_truncated true means more events remain, so sync again with the new cursor. " +
         "In a snapshot, events_truncated true means only the latest 50 events are shown and older ones were omitted (nothing to page). " +
+        "Deleted files are omitted from changed_files; events with type file.deleted are tombstones whose subject_id identifies the removed file. Remove those files from your local context. " +
         "It changes no workspace data; it only records your last sync time. " +
         "workspace_id defaults to your workspace. " +
         `Context, file names, published summaries and event summaries: ${UNTRUSTED}`,

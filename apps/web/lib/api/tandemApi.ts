@@ -39,6 +39,8 @@ export interface TandemApi {
     workspaceId: string,
     input: CreateFileInput,
   ): Promise<{ id: string; version: number }>;
+  renameFile(fileId: string, name: string, expectedVersion: number): Promise<{ version: number }>;
+  deleteFile(fileId: string, expectedVersion: number): Promise<void>;
   readFile(fileId: string): Promise<FileDetail>;
   /** Rejects with VERSION_CONFLICT when `expectedVersion` isn't the head. */
   updateFileContent(

@@ -9,6 +9,7 @@ import { useResource } from "@/lib/api/useResource";
 import { belongsToWorkspace, isTextMimeType } from "@/lib/files";
 import { formatAbsolute } from "@/lib/time";
 import { FileEditor } from "@/components/editor/FileEditor";
+import { FileActions } from "@/components/files/FileActions";
 import { FileHeader } from "@/components/files/FileHeader";
 import { ActorBadge } from "@/components/common/ActorBadge";
 import { ErrorState } from "@/components/common/ErrorState";
@@ -48,6 +49,7 @@ export default function FilePage() {
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4">
       <FileHeader workspaceId={workspaceId} fileId={file.id} name={file.name} mimeType={file.mimeType} />
+      <FileActions file={file} onChanged={reload} redirectAfterDelete />
       {isTextMimeType(file.mimeType) && file.content !== null ? (
         // Keyed by id so a different file always starts a fresh save machine.
         <FileEditor key={file.id} file={file} historyHref={`${fileHref}/history`} />

@@ -1,3 +1,4 @@
+import { MAX_NAME_LENGTH, nameKey, storedName } from "@repo/backend/convex/lib/names.js";
 import { TandemApiError } from "./errors";
 
 const MOCK_MCP_URL = "https://mock-deployment.convex.site/mcp";
@@ -35,6 +36,8 @@ interface MockOptions {
 }
 
 interface StoredFile {
+  deletedAt?: number;
+  deletedBy?: Actor;
   summary: FileSummary;
   content: string;
   revisions: Revision[]; // oldest first; append-only
@@ -276,8 +279,21 @@ export function createMockApi({
 
   const getFile = (fileId: string): StoredFile => {
     const file = files.get(fileId);
-    if (!file) throw new TandemApiError("FILE_NOT_FOUND");
+    if (!file || file.deletedAt !== undefined) throw new TandemApiError("FILE_NOT_FOUND");
     return file;
+  };
+
+  const validateName = (workspaceId: string, parentId: string | null, raw: string, exceptId?: string) => {
+    const name = storedName(raw);
+    const key = nameKey(name);
+    if (!key || name.length > MAX_NAME_LENGTH) throw new TandemApiError("INVALID_INPUT");
+    if ([...files.values()].some(f => f.deletedAt === undefined && f.summary.id !== exceptId && f.summary.workspaceId === workspaceId && f.summary.parentId === parentId && nameKey(f.summary.name) === key))
+      throw new TandemApiError("NAME_EXISTS");
+    return name;
+  };
+  const checkVersion = (file: StoredFile, expectedVersion: number) => {
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new TandemApiError("INVALID_INPUT");
+    if (file.summary.version !== expectedVersion) throw new TandemApiError("VERSION_CONFLICT", { currentVersion: file.summary.version });
   };
 
   const commit = (file: StoredFile, content: string, actor: Actor) => {
@@ -373,7 +389,7 @@ export function createMockApi({
       if (!workspaces.some((w) => w.id === workspaceId))
         throw new TandemApiError("FORBIDDEN");
       return [...files.values()]
-        .filter((f) => f.summary.workspaceId === workspaceId)
+        .filter((f) => f.deletedAt === undefined && f.summary.workspaceId === workspaceId)
         .map((f) => ({
           ...cloneSummary(f.summary),
           custody: f.revisions.map((r) => r.actorType),
@@ -384,6 +400,7 @@ export function createMockApi({
       await delay();
       if (!workspaces.some((w) => w.id === workspaceId))
         throw new TandemApiError("FORBIDDEN");
+      name = validateName(workspaceId, null, name);
       const id = `file_new_${nextId++}`;
       const actor = getActor();
       const now = Date.now();
@@ -403,6 +420,25 @@ export function createMockApi({
       });
       notify(workspaceId);
       return { id, version: 1 };
+    },
+
+    async renameFile(fileId, name, expectedVersion) {
+      await delay();
+      const file = getFile(fileId);
+      requireMember(file.summary.workspaceId);
+      checkVersion(file, expectedVersion);
+      file.summary.name = validateName(file.summary.workspaceId, file.summary.parentId, name, fileId);
+      return { version: commit(file, file.content, getActor()) };
+    },
+
+    async deleteFile(fileId, expectedVersion) {
+      await delay();
+      const file = getFile(fileId);
+      requireMember(file.summary.workspaceId);
+      checkVersion(file, expectedVersion);
+      file.deletedAt = file.summary.updatedAt = Date.now();
+      file.deletedBy = file.summary.updatedBy = { ...getActor() };
+      notify(file.summary.workspaceId);
     },
 
     async readFile(fileId) {
