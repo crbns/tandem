@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -13,6 +13,8 @@ const actorValidator = v.object({
   userId: v.optional(v.id("users")),
   agentConnectionId: v.optional(v.id("agent_connections")),
   label: v.string(),
+  client: v.optional(v.string()),
+  userName: v.optional(v.string()),
 });
 
 const fileValidator = v.object({
@@ -45,7 +47,7 @@ async function getAuthorizedFile(
 ) {
   const user = await requireUser(ctx);
   const file = await ctx.db.get(fileId);
-  if (!file) throw new Error("FILE_NOT_FOUND");
+  if (!file) throw new ConvexError({ code: "FILE_NOT_FOUND" });
   const membership = await ctx.db
     .query("workspace_members")
     .withIndex("by_workspace_and_user", (q) =>
@@ -53,7 +55,7 @@ async function getAuthorizedFile(
     )
     .unique();
   // Keep another tenant's file indistinguishable from a missing file.
-  if (!membership) throw new Error("FILE_NOT_FOUND");
+  if (!membership) throw new ConvexError({ code: "FILE_NOT_FOUND" });
   return file;
 }
 
@@ -72,7 +74,7 @@ export const listFiles = query({
         .query("workspace_members")
         .withIndex("by_user_and_workspace", (q) => q.eq("userId", user._id))
         .first();
-      if (!membership) throw new Error("FORBIDDEN");
+      if (!membership) throw new ConvexError({ code: "FORBIDDEN" });
       workspaceId = membership.workspaceId;
     }
     await requireMembership(ctx, workspaceId);
@@ -125,16 +127,16 @@ export const createDocument = mutation({
         .query("workspace_members")
         .withIndex("by_user_and_workspace", (q) => q.eq("userId", user._id))
         .first();
-      if (!membership) throw new Error("FORBIDDEN");
+      if (!membership) throw new ConvexError({ code: "FORBIDDEN" });
       workspaceId = membership.workspaceId;
     }
     await requireMembership(ctx, workspaceId);
     if (args.parentId) {
       const folder = await ctx.db.get(args.parentId);
       if (!folder || folder.workspaceId !== workspaceId)
-        throw new Error("INVALID_PARENT_FOLDER");
+        throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
     }
-    if (!args.name.trim()) throw new Error("INVALID_NAME");
+    if (!args.name.trim()) throw new ConvexError({ code: "INVALID_NAME" });
     const now = Date.now();
     const actor = humanActor(user);
     const fileId = await ctx.db.insert("files", {
@@ -167,7 +169,7 @@ export const createDocument = mutation({
       actor,
     });
     const file = await ctx.db.get(fileId);
-    if (!file) throw new Error("FILE_NOT_FOUND");
+    if (!file) throw new ConvexError({ code: "FILE_NOT_FOUND" });
     return toMetadata(file);
   },
 });
@@ -182,9 +184,12 @@ export const updateDocument = mutation({
   handler: async (ctx, args) => {
     const file = await getAuthorizedFile(ctx, args.fileId);
     if (file.version !== args.expectedVersion) {
-      throw new Error(
-        `VERSION_CONFLICT: current version is ${file.version}; expected ${args.expectedVersion}`,
-      );
+      throw new ConvexError({
+        code: "VERSION_CONFLICT",
+        currentVersion: file.version,
+        currentContent: file.content ?? null,
+        updatedBy: file.updatedBy,
+      });
     }
     const user = await requireUser(ctx);
     const actor = humanActor(user);
@@ -214,7 +219,7 @@ export const updateDocument = mutation({
       actor,
     });
     const updated = await ctx.db.get(file._id);
-    if (!updated) throw new Error("FILE_NOT_FOUND");
+    if (!updated) throw new ConvexError({ code: "FILE_NOT_FOUND" });
     return toMetadata(updated);
   },
 });

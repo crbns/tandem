@@ -1,24 +1,25 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { ConvexError } from "convex/values";
 
 type ReadCtx = QueryCtx | MutationCtx;
 
 export async function requireUser(ctx: ReadCtx): Promise<Doc<"users">> {
   const userId = await getAuthUserId(ctx);
-  if (!userId) throw new Error("UNAUTHENTICATED");
+  if (!userId) throw new ConvexError({ code: "UNAUTHENTICATED" });
   const user = await ctx.db.get(userId as Id<"users">);
-  if (!user) throw new Error("UNAUTHENTICATED");
+  if (!user) throw new ConvexError({ code: "UNAUTHENTICATED" });
   return user;
 }
 
 export async function ensureUser(ctx: MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
-  if (!identity) throw new Error("UNAUTHENTICATED");
+  if (!identity) throw new ConvexError({ code: "UNAUTHENTICATED" });
   const userId = await getAuthUserId(ctx);
-  if (!userId) throw new Error("UNAUTHENTICATED");
+  if (!userId) throw new ConvexError({ code: "UNAUTHENTICATED" });
   const existing = await ctx.db.get(userId as Id<"users">);
-  if (!existing) throw new Error("UNAUTHENTICATED");
+  if (!existing) throw new ConvexError({ code: "UNAUTHENTICATED" });
   const now = Date.now();
   const label = identity.name ?? identity.email ?? "Workspace member";
   await ctx.db.patch(existing._id, {
@@ -47,15 +48,17 @@ export async function requireMembership(
       q.eq("workspaceId", workspaceId).eq("userId", user._id),
     )
     .unique();
-  if (!membership) throw new Error("FORBIDDEN");
+  if (!membership) throw new ConvexError({ code: "FORBIDDEN" });
   return { user, membership };
 }
 
 export function humanActor(user: Doc<"users">) {
+  const userName = user.name ?? user.email ?? "Workspace member";
   return {
     type: "human" as const,
     userId: user._id,
-    label: user.name ?? user.email ?? "Workspace member",
+    label: userName,
+    userName,
   };
 }
 

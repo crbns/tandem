@@ -1,6 +1,6 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc } from "./_generated/dataModel";
 import {
   ensureUser,
   humanActor,
@@ -8,6 +8,22 @@ import {
   requireMembership,
   requireUser,
 } from "./lib/auth";
+
+const actorValidator = v.object({
+  type: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
+  userId: v.optional(v.id("users")),
+  agentConnectionId: v.optional(v.id("agent_connections")),
+  label: v.string(),
+  client: v.optional(v.string()),
+  userName: v.optional(v.string()),
+});
+
+const contextEntryValidator = v.object({
+  text: v.string(),
+  sourceFileIds: v.array(v.id("files")),
+  updatedAt: v.number(),
+  updatedBy: actorValidator,
+});
 
 export const initializeUser = mutation({
   args: {},
@@ -20,10 +36,10 @@ export const createWorkspace = mutation({
   returns: v.id("workspaces"),
   handler: async (ctx, { name }) => {
     const userId = await ensureUser(ctx);
-    if (!name.trim()) throw new Error("INVALID_NAME");
+    if (!name.trim()) throw new ConvexError({ code: "INVALID_NAME" });
     const now = Date.now();
     const user = await ctx.db.get(userId);
-    if (!user) throw new Error("USER_NOT_INITIALIZED");
+    if (!user) throw new ConvexError({ code: "USER_NOT_INITIALIZED" });
     const actor = humanActor(user);
     const workspaceId = await ctx.db.insert("workspaces", {
       name: name.trim(),
@@ -109,11 +125,11 @@ export const createFolder = mutation({
   returns: v.id("folders"),
   handler: async (ctx, args) => {
     const { user } = await requireMembership(ctx, args.workspaceId);
-    if (!args.name.trim()) throw new Error("INVALID_NAME");
+    if (!args.name.trim()) throw new ConvexError({ code: "INVALID_NAME" });
     if (args.parentId) {
       const parent = await ctx.db.get(args.parentId);
       if (!parent || parent.workspaceId !== args.workspaceId)
-        throw new Error("INVALID_PARENT_FOLDER");
+        throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
     }
     const now = Date.now();
     const actor = humanActor(user);
@@ -148,15 +164,16 @@ export const addWorkspaceMember = mutation({
   handler: async (ctx, args) => {
     const { user, membership } = await requireMembership(ctx, args.workspaceId);
     if (membership.role !== "owner" && membership.role !== "admin")
-      throw new Error("FORBIDDEN");
+      throw new ConvexError({ code: "FORBIDDEN" });
     const email = args.email.trim().toLocaleLowerCase();
-    if (!email) throw new Error("INVALID_EMAIL");
+    if (!email) throw new ConvexError({ code: "INVALID_EMAIL" });
     const invitee = await ctx.db
       .query("users")
       .withIndex("email", (q) => q.eq("email", email))
       .unique();
-    if (!invitee) throw new Error("USER_NOT_REGISTERED");
-    if (!invitee.emailVerificationTime) throw new Error("USER_EMAIL_NOT_VERIFIED");
+    if (!invitee) throw new ConvexError({ code: "USER_NOT_REGISTERED" });
+    if (!invitee.emailVerificationTime)
+      throw new ConvexError({ code: "USER_EMAIL_NOT_VERIFIED" });
     const existing = await ctx.db
       .query("workspace_members")
       .withIndex("by_workspace_and_user", (q) =>
@@ -218,7 +235,7 @@ export const getWorkspaceInfo = query({
   handler: async (ctx, { workspaceId }) => {
     const { membership } = await requireMembership(ctx, workspaceId);
     const workspace = await ctx.db.get(workspaceId);
-    if (!workspace) throw new Error("WORKSPACE_NOT_FOUND");
+    if (!workspace) throw new ConvexError({ code: "WORKSPACE_NOT_FOUND" });
     const memberships = await ctx.db
       .query("workspace_members")
       .withIndex("by_workspace_and_user", (q) =>
@@ -265,48 +282,24 @@ export const getWorkspaceContext = query({
   returns: v.union(
     v.object({
       goal: v.union(
-        v.object({
-          text: v.string(),
-          sourceFileIds: v.array(v.id("files")),
-          updatedAt: v.number(),
-        }),
+        contextEntryValidator,
         v.null(),
       ),
       scope: v.union(
-        v.object({
-          text: v.string(),
-          sourceFileIds: v.array(v.id("files")),
-          updatedAt: v.number(),
-        }),
+        contextEntryValidator,
         v.null(),
       ),
       constraints: v.array(
-        v.object({
-          text: v.string(),
-          sourceFileIds: v.array(v.id("files")),
-          updatedAt: v.number(),
-        }),
+        contextEntryValidator,
       ),
       decisions: v.array(
-        v.object({
-          text: v.string(),
-          sourceFileIds: v.array(v.id("files")),
-          updatedAt: v.number(),
-        }),
+        contextEntryValidator,
       ),
       ownership: v.array(
-        v.object({
-          text: v.string(),
-          sourceFileIds: v.array(v.id("files")),
-          updatedAt: v.number(),
-        }),
+        contextEntryValidator,
       ),
       openQuestions: v.array(
-        v.object({
-          text: v.string(),
-          sourceFileIds: v.array(v.id("files")),
-          updatedAt: v.number(),
-        }),
+        contextEntryValidator,
       ),
       revision: v.number(),
       updatedAt: v.number(),
@@ -320,29 +313,24 @@ export const getWorkspaceContext = query({
       .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
       .unique();
     if (!context) return null;
-    const compact = (
-      value:
-        | { text: string; sourceFileIds: Id<"files">[]; updatedAt: number }
-        | undefined,
-    ) =>
+    type ContextEntry = NonNullable<Doc<"structured_context">["goal"]>;
+    const compact = (value: ContextEntry | undefined) =>
       value
         ? {
             text: value.text,
             sourceFileIds: value.sourceFileIds,
             updatedAt: value.updatedAt,
+            updatedBy: value.updatedBy,
           }
         : null;
     const compactList = (
-      values: {
-        text: string;
-        sourceFileIds: Id<"files">[];
-        updatedAt: number;
-      }[],
+      values: ContextEntry[],
     ) =>
-      values.map(({ text, sourceFileIds, updatedAt }) => ({
+      values.map(({ text, sourceFileIds, updatedAt, updatedBy }) => ({
         text,
         sourceFileIds,
         updatedAt,
+        updatedBy,
       }));
     return {
       goal: compact(context.goal),

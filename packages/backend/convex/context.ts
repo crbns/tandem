@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
@@ -23,6 +23,15 @@ const proposalStatusValidator = v.union(
   v.literal("rejected"),
 );
 
+const actorValidator = v.object({
+  type: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
+  userId: v.optional(v.id("users")),
+  agentConnectionId: v.optional(v.id("agent_connections")),
+  label: v.string(),
+  client: v.optional(v.string()),
+  userName: v.optional(v.string()),
+});
+
 const proposalValidator = v.object({
   id: v.id("context_proposals"),
   workspaceId: v.id("workspaces"),
@@ -31,9 +40,9 @@ const proposalValidator = v.object({
   rationale: v.string(),
   sourceFileIds: v.array(v.id("files")),
   status: proposalStatusValidator,
-  createdBy: v.string(),
+  createdBy: actorValidator,
   createdAt: v.number(),
-  decidedBy: v.union(v.string(), v.null()),
+  decidedBy: v.union(actorValidator, v.null()),
   decidedAt: v.union(v.number(), v.null()),
 });
 
@@ -49,14 +58,20 @@ export const proposeContextChange = mutation({
   handler: async (ctx, args) => {
     const { user } = await requireMembership(ctx, args.workspaceId);
     const actor = humanActor(user);
+    const context = await ctx.db
+      .query("structured_context")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+      .unique();
+    if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
     for (const fileId of args.sourceFileIds) {
       const file = await ctx.db.get(fileId);
       if (!file || file.workspaceId !== args.workspaceId)
-        throw new Error("INVALID_SOURCE_FILE");
+        throw new ConvexError({ code: "INVALID_SOURCE_FILE" });
     }
     const now = Date.now();
     const proposalId = await ctx.db.insert("context_proposals", {
       ...args,
+      contextRevision: context.revision,
       status: "pending",
       createdBy: actor,
       createdAt: now,
@@ -107,9 +122,9 @@ export const getApprovals = query({
       rationale: proposal.rationale,
       sourceFileIds: proposal.sourceFileIds,
       status: proposal.status,
-      createdBy: proposal.createdBy.label,
+      createdBy: proposal.createdBy,
       createdAt: proposal.createdAt,
-      decidedBy: proposal.decidedBy?.label ?? null,
+      decidedBy: proposal.decidedBy ?? null,
       decidedAt: proposal.decidedAt ?? null,
     }));
   },
@@ -123,15 +138,34 @@ export const decideContextProposal = mutation({
   returns: v.null(),
   handler: async (ctx, { proposalId, decision }) => {
     const proposal = await ctx.db.get(proposalId);
-    if (!proposal) throw new Error("PROPOSAL_NOT_FOUND");
+    if (!proposal) throw new ConvexError({ code: "PROPOSAL_NOT_FOUND" });
     const { user, membership } = await requireMembership(
       ctx,
       proposal.workspaceId,
     );
     if (membership.role !== "owner" && membership.role !== "admin")
-      throw new Error("FORBIDDEN");
+      throw new ConvexError({ code: "FORBIDDEN" });
     if (proposal.status !== "pending")
-      throw new Error("PROPOSAL_ALREADY_DECIDED");
+      throw new ConvexError({ code: "PROPOSAL_ALREADY_DECIDED" });
+    if (decision === "approved") {
+      const context = await ctx.db
+        .query("structured_context")
+        .withIndex("by_workspace", (q) =>
+          q.eq("workspaceId", proposal.workspaceId),
+        )
+        .unique();
+      if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
+      if (
+        proposal.contextRevision === undefined ||
+        context.revision !== proposal.contextRevision
+      ) {
+        throw new ConvexError({
+          code: "VERSION_CONFLICT",
+          expectedRevision: proposal.contextRevision ?? null,
+          currentRevision: context.revision,
+        });
+      }
+    }
     const actor = humanActor(user);
     const now = Date.now();
     await ctx.db.patch(proposalId, {
@@ -184,7 +218,7 @@ async function applyApprovedProposal(
     .query("structured_context")
     .withIndex("by_workspace", (q) => q.eq("workspaceId", proposal.workspaceId))
     .unique();
-  if (!context) throw new Error("CONTEXT_NOT_INITIALIZED");
+  if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
   const value = {
     text: proposal.proposedValue,
     sourceFileIds: proposal.sourceFileIds,
