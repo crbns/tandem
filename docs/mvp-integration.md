@@ -4,31 +4,31 @@ This document describes the integration boundary between the dashboard, MCP serv
 
 ## What is connected today
 
-| Surface | Current implementation | Shared data? |
-| --- | --- | --- |
-| Dashboard (`apps/web`) | Convex Auth and generated Convex functions | Yes, uses the deployment in `apps/web/.env.local` |
-| MCP (`apps/mcp`) | Stateless Streamable HTTP, static development bearer tokens, `MockBackend` | No, mock state is process-local and resets on restart |
-| Backend (`packages/backend/convex`) | Workspace membership, files, revisions, workspace context, proposals, approvals | Dashboard functions are authenticated; MCP has no Convex adapter or OAuth bridge yet |
+| Surface                             | Current implementation                                                                                 | Shared data?                                                                         |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Dashboard (`apps/web`)              | Existing session/provider and `TandemApi` layers, backed by Convex Auth and generated Convex functions | Yes, uses `NEXT_PUBLIC_CONVEX_URL`                                                   |
+| MCP (`apps/mcp`)                    | Stateless Streamable HTTP, static development bearer tokens, `MockBackend`                             | No, mock state is process-local and resets on restart                                |
+| Backend (`packages/backend/convex`) | Workspace membership, files, revisions, workspace context, proposals, approvals                        | Dashboard functions are authenticated; MCP has no Convex adapter or OAuth bridge yet |
 
-The dashboard's current test flow covers account sign-up/sign-in, workspace creation and listing, text-document create/read/update, optimistic version checks, and revision history. It does not yet show the approved goal or approval controls. The existing MCP server exposes only `list_files`, `read_file`, `create_document`, and `update_document`.
+The dashboard supports sign-in, workspace selection and first-workspace creation, file listing and creation, text editing with optimistic version checks, revision history, and the approved goal. It uses bounded one-shot Convex calls through `TandemApi`; file lists refresh on window focus. It does not yet expose context proposal approvals. The existing MCP server exposes only `list_files`, `read_file`, `create_document`, and `update_document`.
 
 ## Shared data and naming
 
 Convex is the source of truth. Use the backend functions under `packages/backend/convex`; don't add a second database or let the mock become the integration target.
 
-| Operation | Convex function | Notes |
-| --- | --- | --- |
-| List workspaces | `api.workspaces.listWorkspaces` | Authenticated member scope; bounded to 100 |
-| Workspace details/events | `api.workspaces.getWorkspaceInfo` | Requires workspace membership |
-| Approved project context | `api.workspaces.getWorkspaceContext` | Requires workspace membership |
-| List/search file names | `api.files.listFiles` | `query` is a case-insensitive filename substring, not full-text search |
-| Read latest file | `api.files.readFile` | Returns metadata plus nullable text content |
-| Create text document | `api.files.createDocument` | Creates file version 1 and a workspace event atomically |
-| Update text document | `api.files.updateDocument` | Requires `expectedVersion`; stale writes throw `VERSION_CONFLICT` |
-| File history | `api.files.getFileVersions` | Bounded by `limit` (maximum 100) |
-| Propose context change | `api.context.proposeContextChange` | Goal, scope, decisions, constraints, ownership, or open question; approval is separate |
-| Read proposals/approvals | `api.context.getApprovals` | Returns proposals, optionally filtered by status |
-| Approve/reject proposal | `api.context.decideContextProposal` | Human-only workflow; check backend role enforcement before exposing in UI |
+| Operation                | Convex function                      | Notes                                                                                  |
+| ------------------------ | ------------------------------------ | -------------------------------------------------------------------------------------- |
+| List workspaces          | `api.workspaces.listWorkspaces`      | Authenticated member scope; bounded to 100                                             |
+| Workspace details/events | `api.workspaces.getWorkspaceInfo`    | Requires workspace membership                                                          |
+| Approved project context | `api.workspaces.getWorkspaceContext` | Requires workspace membership                                                          |
+| List/search file names   | `api.files.listFiles`                | `query` is a case-insensitive filename substring, not full-text search                 |
+| Read latest file         | `api.files.readFile`                 | Returns metadata plus nullable text content                                            |
+| Create text document     | `api.files.createDocument`           | Creates file version 1 and a workspace event atomically                                |
+| Update text document     | `api.files.updateDocument`           | Requires `expectedVersion`; stale writes throw `VERSION_CONFLICT`                      |
+| File history             | `api.files.getFileVersions`          | Bounded by `limit` (maximum 100)                                                       |
+| Propose context change   | `api.context.proposeContextChange`   | Goal, scope, decisions, constraints, ownership, or open question; approval is separate |
+| Read proposals/approvals | `api.context.getApprovals`           | Returns proposals, optionally filtered by status                                       |
+| Approve/reject proposal  | `api.context.decideContextProposal`  | Human-only workflow; check backend role enforcement before exposing in UI              |
 
 Convex uses camelCase fields and table IDs. The MCP tool contract currently uses snake_case (`workspace_id`, `file_id`, `expected_version`, `updated_at`, `updated_by`). Keep that translation in the MCP backend adapter; don't change public tool argument names independently. A version conflict must surface as MCP error code `VERSION_CONFLICT`, preserving the current and expected versions so the assistant can reread and reconcile.
 
@@ -43,7 +43,7 @@ Convex uses camelCase fields and table IDs. The MCP tool contract currently uses
 
 ## Integration sequence
 
-1. Keep the frontend using generated Convex APIs and the MCP tool schemas stable while the OAuth and Convex-agent authorization contract is agreed.
+1. Keep the dashboard's `TandemApi` boundary and MCP tool schemas stable while the OAuth and Convex-agent authorization contract is agreed.
 2. Add the agent authorization path in Convex and review tenant-boundary checks.
 3. Implement and select the Convex MCP backend only after it can forward a verified user/agent identity accepted by Convex.
 4. Add the remaining tool schemas and map each to the shared Convex functions/events.

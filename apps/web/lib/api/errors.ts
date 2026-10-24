@@ -39,24 +39,38 @@ export class TandemApiError extends Error {
 }
 
 function isApiErrorCode(value: unknown): value is ApiErrorCode {
-  return typeof value === "string" && (API_ERROR_CODES as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (API_ERROR_CODES as readonly string[]).includes(value)
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function asActor(value: unknown): Actor | undefined {
   const v = asRecord(value);
   if (!v) return undefined;
-  // Canonical camelCase, or MCP's snake_case Attribution { actor_type, user_id, client }.
-  const actorType = v.actorType ?? v.actor_type;
+  // Frontend/MCP attribution, or the Convex backend's { type, label, userId }.
+  const actorType = v.actorType ?? v.actor_type ?? v.type;
   const userId = v.userId ?? v.user_id;
-  if ((actorType !== "human" && actorType !== "agent") || typeof userId !== "string") return undefined;
+  if (
+    (actorType !== "human" && actorType !== "agent") ||
+    typeof userId !== "string"
+  )
+    return undefined;
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
-  const userName = str(v.userName ?? v.user_name);
+  const label = str(v.label);
+  const userName =
+    str(v.userName ?? v.user_name) ??
+    (actorType === "human" ? label : undefined);
   const agentClient = str(v.agentClient ?? v.client);
-  const agentName = str(v.agentName ?? v.agent_name);
+  const agentName =
+    str(v.agentName ?? v.agent_name) ??
+    (actorType === "agent" ? label : undefined);
   return {
     actorType,
     userId,
@@ -71,15 +85,30 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
   if (isApiErrorCode(data)) return new TandemApiError(data);
 
   const record = asRecord(data);
-  const code = record && isApiErrorCode(record.code) ? record.code : "UNKNOWN";
+  const backendCode =
+    record && typeof record.code === "string" ? record.code : undefined;
+  const code =
+    backendCode && isApiErrorCode(backendCode)
+      ? backendCode
+      : backendCode === "INVALID_NAME" ||
+          backendCode === "INVALID_PARENT_FOLDER" ||
+          backendCode === "INVALID_EMAIL"
+        ? "INVALID_INPUT"
+        : backendCode === "USER_NOT_INITIALIZED"
+          ? "UNAUTHENTICATED"
+          : backendCode === "WORKSPACE_NOT_FOUND"
+            ? "FORBIDDEN"
+            : "UNKNOWN";
   const details: ApiErrorDetails = {};
   if (record) {
     // Canonical keys are camelCase (CONTRACT_NOTES); snake_case is accepted so a
     // backend that reuses MCP's versionConflict() helper still reports who saved.
     const currentVersion = record.currentVersion ?? record.current_version;
     const currentContent = record.currentContent ?? record.current_content;
-    if (typeof currentVersion === "number") details.currentVersion = currentVersion;
-    if (typeof currentContent === "string") details.currentContent = currentContent;
+    if (typeof currentVersion === "number")
+      details.currentVersion = currentVersion;
+    if (typeof currentContent === "string")
+      details.currentContent = currentContent;
     const updatedBy = asActor(record.updatedBy ?? record.updated_by);
     if (updatedBy) details.updatedBy = updatedBy;
   }
@@ -102,7 +131,8 @@ function classify(err: unknown): TandemApiError {
   if (err instanceof ConvexError) return fromConvexError(err);
   if (err instanceof Error) {
     for (const [pattern, code] of MESSAGE_PATTERNS) {
-      if (pattern.test(err.message)) return new TandemApiError(code, { cause: err.message });
+      if (pattern.test(err.message))
+        return new TandemApiError(code, { cause: err.message });
     }
     return new TandemApiError("UNKNOWN", { cause: err.message });
   }
@@ -116,7 +146,10 @@ export function normalizeError(err: unknown): TandemApiError {
   // debugging (e.g. a backend contract mismatch mid-demo). Logged once, here,
   // at the point of normalization; never includes file content.
   if (normalized.code === "UNKNOWN") {
-    console.error("[tandem] unexpected backend error:", normalized.details.cause);
+    console.error(
+      "[tandem] unexpected backend error:",
+      normalized.details.cause,
+    );
   }
   return normalized;
 }
