@@ -1,9 +1,8 @@
 import type { ConvexReactClient } from "convex/react";
-import { api } from "../../../../packages/backend/convex/_generated/api";
-import type {
-  Doc,
-  Id,
-} from "../../../../packages/backend/convex/_generated/dataModel";
+// Through the workspace package, not a relative path, so `turbo prune web`
+// keeps packages/backend in the Docker build context.
+import { api } from "@repo/backend/convex/_generated/api.js";
+import type { Doc, Id } from "@repo/backend/convex/_generated/dataModel.js";
 import { normalizeError, TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
 import type {
