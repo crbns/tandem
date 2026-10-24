@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConvexReactClient } from "convex/react";
 import { getFunctionName } from "convex/server";
+import { ConvexError } from "convex/values";
 import { createConvexApi } from "@/lib/api/convex";
 import { createMockApi, MOCK_WORKSPACE_ID } from "@/lib/api/mock";
 
 const actor = { actorType: "human" as const, userId: "human", userName: "Alex" };
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe("binary file adapter", () => {
   it("posts the blob before finalizing an optimistic replacement", async () => {
@@ -23,6 +27,30 @@ describe("binary file adapter", () => {
     expect(await api.uploadFile("ws", file, { fileId: "file", expectedVersion: 2 })).toEqual({ id: "file", version: 3 });
     expect(request).toHaveBeenCalledWith("https://upload.example", { method: "POST", headers: { "Content-Type": "application/pdf" }, body: file });
     expect(mutation).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for a successful slow upload and finalization without reporting a timeout", async () => {
+    vi.useFakeTimers();
+    const mutation = vi.fn(async (reference) => {
+      if (getFunctionName(reference) === "files:generateUploadUrl") return "https://upload.example";
+      await new Promise((resolve) => setTimeout(resolve, 16_000));
+      return { id: "file", version: 1 };
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 16_000));
+      return new Response(JSON.stringify({ storageId: "stored" }));
+    }));
+    const api = createConvexApi({ mutation } as unknown as ConvexReactClient);
+    const settled = vi.fn();
+    const result = api.uploadFile("ws", new File(["pdf"], "slow.pdf", { type: "application/pdf" }));
+    void result.then(settled, settled);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(mutation).toHaveBeenCalledTimes(2);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(result).resolves.toEqual({ id: "file", version: 1 });
   });
 
   it("does not finalize a failed upload", async () => {
@@ -61,6 +89,35 @@ describe("binary file adapter", () => {
 });
 
 describe("mock binary history", () => {
+  it.each(["image/svg+xml", "text/plain", "video/mp4"])("rejects unsupported upload MIME %s without creating a file", async (type) => {
+    const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
+    const before = await api.listFiles(MOCK_WORKSPACE_ID);
+    await expect(api.uploadFile(MOCK_WORKSPACE_ID, new File(["data"], "unsupported", { type }))).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(await api.listFiles(MOCK_WORKSPACE_ID)).toEqual(before);
+  });
+
+  it.each([0, 25 * 1024 * 1024 + 1])("rejects upload size %s without creating a file", async (size) => {
+    const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
+    const before = await api.listFiles(MOCK_WORKSPACE_ID);
+    await expect(api.uploadFile(MOCK_WORKSPACE_ID, new File([new Uint8Array(size)], "large.pdf", { type: "application/pdf" }))).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(await api.listFiles(MOCK_WORKSPACE_ID)).toEqual(before);
+  });
+
+  it("rejects text saves on binaries with the Convex error and preserves the head bytes and history", async () => {
+    const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
+    const created = await api.uploadFile(MOCK_WORKSPACE_ID, new File(["pdf"], "design.pdf", { type: "application/pdf" }));
+    const mutation = vi.fn().mockRejectedValue(new ConvexError({ code: "BINARY_FILE" }));
+    const convexApi = createConvexApi({ mutation } as unknown as ConvexReactClient);
+    for (const expectedVersion of [1, 99]) {
+      const update = { expectedVersion, content: "text" };
+      await expect(api.updateFileContent(created.id, update)).rejects.toMatchObject({ code: "BINARY_FILE" });
+      await expect(convexApi.updateFileContent(created.id, update)).rejects.toMatchObject({ code: "BINARY_FILE" });
+    }
+    expect(await api.readFile(created.id)).toMatchObject({ content: null, version: 1 });
+    expect((await api.listRevisions(created.id)).map((revision) => revision.version)).toEqual([1]);
+    expect(await (await api.getFileBlob(created.id)).text()).toBe("pdf");
+  });
+
   it("retains original bytes and name after replacement and rejects stale versions", async () => {
     const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
     const created = await api.uploadFile(MOCK_WORKSPACE_ID, new File(["original"], "design.pdf", { type: "application/pdf" }));

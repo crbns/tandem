@@ -1,4 +1,5 @@
 import { TandemApiError } from "./errors";
+import { BINARY_MIME_TYPES, MAX_UPLOAD_BYTES } from "@repo/backend/convex/lib/binaries.js";
 
 const MOCK_MCP_URL = "https://mock-deployment.convex.site/mcp";
 import type { TandemApi } from "./tandemApi";
@@ -409,7 +410,7 @@ export function createMockApi({
     async uploadFile(workspaceId, blob, options) {
       await delay();
       requireMember(workspaceId);
-      if (blob.size < 1 || blob.size > 25 * 1024 * 1024) throw new TandemApiError("INVALID_INPUT");
+      if (blob.size < 1 || blob.size > MAX_UPLOAD_BYTES || !BINARY_MIME_TYPES.has(blob.type || "application/octet-stream")) throw new TandemApiError("INVALID_INPUT");
       const actor = getActor();
       const now = Date.now();
       const existing = options ? getFile(options.fileId) : undefined;
@@ -452,6 +453,7 @@ export function createMockApi({
     async updateFileContent(fileId, { expectedVersion, content }) {
       await delay();
       const file = getFile(fileId);
+      if (file.content === null) throw new TandemApiError("BINARY_FILE");
       if (expectedVersion !== file.summary.version) {
         throw new TandemApiError("VERSION_CONFLICT", {
           currentVersion: file.summary.version,

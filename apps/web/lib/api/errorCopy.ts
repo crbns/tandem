@@ -58,6 +58,10 @@ export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: stri
     title: "This request expired",
     description: "Connection requests last ten minutes and can be answered once. Start connecting again from your assistant.",
   },
+  BINARY_FILE: {
+    title: "Upload a new version",
+    description: "This file needs a binary upload. Upload a replacement in the dashboard.",
+  },
   INVALID_INPUT: {
     title: "That didn't work",
     description: "Something about the request isn't valid. Check the name and type, then try again.",

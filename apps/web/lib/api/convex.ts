@@ -201,17 +201,22 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
       );
       return { id: file.id, version: file.version };
     },
-    uploadFile: (workspaceId, file, options) => call(async () => {
-      const uploadUrl = await convex.mutation(api.files.generateUploadUrl, { workspaceId: workspaceId as Id<"workspaces"> });
-      const response = await fetch(uploadUrl, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
-      if (!response.ok) throw new TandemApiError("NETWORK");
-      const { storageId } = await response.json() as { storageId: Id<"_storage"> };
-      const uploaded = await convex.mutation(api.files.finalizeUpload, {
-        workspaceId: workspaceId as Id<"workspaces">, storageId, name: file.name,
-        ...(options ? { fileId: options.fileId as Id<"files">, expectedVersion: options.expectedVersion } : {}),
-      });
-      return { id: uploaded.id, version: uploaded.version };
-    }),
+    uploadFile: async (workspaceId, file, options) => {
+      // Wait for the final outcome: a deadline cannot cancel a queued finalize.
+      try {
+        const uploadUrl = await convex.mutation(api.files.generateUploadUrl, { workspaceId: workspaceId as Id<"workspaces"> });
+        const response = await fetch(uploadUrl, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+        if (!response.ok) throw new TandemApiError("NETWORK");
+        const { storageId } = await response.json() as { storageId: Id<"_storage"> };
+        const uploaded = await convex.mutation(api.files.finalizeUpload, {
+          workspaceId: workspaceId as Id<"workspaces">, storageId, name: file.name,
+          ...(options ? { fileId: options.fileId as Id<"files">, expectedVersion: options.expectedVersion } : {}),
+        });
+        return { id: uploaded.id, version: uploaded.version };
+      } catch (err) {
+        throw normalizeError(err);
+      }
+    },
     getFileBlob: (fileId, version) => call(async () => {
       const token = getToken();
       if (!token) throw new TandemApiError("UNAUTHENTICATED");
