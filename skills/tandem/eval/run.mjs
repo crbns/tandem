@@ -104,6 +104,13 @@ const DISALLOWED_TOOLS = [
   "ReportFindings",
 ];
 const USAGE = `Usage: node skills/tandem/eval/run.mjs [options]
+  --mcp-url <url>       external Streamable HTTP endpoint (TANDEM_MCP_URL);
+                        skips mock build/start; uses persistent server state
+  --mcp-key <key>       Bearer API key (TANDEM_MCP_KEY); prefer env to argv
+  --mcp-teammate-key <key> optional second actor (TANDEM_MCP_TEAMMATE_KEY)
+  --brief-id <id>       external brief for conflict injection (TANDEM_BRIEF_ID);
+                        conflict/realistic trials replace its content!
+                        External runs require --concurrency 1 and a disposable workspace.
   --model <name>        Claude model alias or id (default: sonnet)
   --reps <n>            repetitions per prompt per condition (default: 2)
   --max-turns <n>       claude --max-turns (default: 6)
@@ -190,6 +197,11 @@ async function main() {
     if (!CONDITIONS.includes(c)) throw usageError(`Unknown condition ${c}`);
   }
 
+  if (opts.mcp_url && prompts.some((p) => p.conflict) && !opts.brief_id)
+    throw usageError(
+      "External conflict trials require --brief-id (a disposable document)",
+    );
+
   // Refuse up front, before spending anything, rather than overwrite results.
   const startedAt = new Date();
   const date = localDate(startedAt);
@@ -203,7 +215,7 @@ async function main() {
       );
   }
 
-  if (opts.build) {
+  if (opts.build && !opts.mcp_url) {
     console.log("Building apps/mcp ...");
     const b = spawnSync("pnpm", ["--filter", "mcp", "build"], {
       cwd: REPO_ROOT,
@@ -211,7 +223,7 @@ async function main() {
     });
     if (b.status !== 0) throw new Error("apps/mcp build failed");
   }
-  if (!existsSync(SERVER_ENTRY))
+  if (!opts.mcp_url && !existsSync(SERVER_ENTRY))
     throw new Error(`${SERVER_ENTRY} missing; build apps/mcp first`);
 
   const cliVersion = spawnSync("claude", ["--version"], {
@@ -282,47 +294,59 @@ async function main() {
   const summary = summarize(trials, prompts, conditions);
   const conflictSummary = summarizeConflict(trials, prompts, conditions);
   const isolation = summarizeIsolation(trials);
-  const results = {
-    date,
-    stem,
-    started_at: startedAt.toISOString(),
-    finished_at: new Date().toISOString(),
-    client: "claude-code",
-    cli_version: cliVersion,
-    model_requested: opts.model,
-    models_reported: [...new Set(trials.map((t) => t.model).filter(Boolean))],
-    settings: {
-      env: opts.env,
-      reps: opts.reps,
-      max_turns: opts.max_turns,
-      timeout_sec: opts.timeout,
-      concurrency: opts.concurrency,
-      conditions,
-      claude_flags: claudeFlags("<mcp-config>", opts).filter(
-        (f) => !f.startsWith("<"),
-      ),
-      server:
-        "apps/mcp mock backend, fresh process per trial, api-key auth as user_alex",
-      brief_seed:
-        opts.env === "realistic"
-          ? "brief.md saved as v2 (fixtures TANDEM_BRIEF) by user_sam before every trial"
-          : "brief.md saved as v2 (fixtures TANDEM_BRIEF) by user_sam before conflict trials only; other trials use the server's v1 seed",
-      ...(opts.env === "realistic" && {
-        local_tree: Object.keys(LOCAL_TREE),
-        distractor_servers: DISTRACTORS,
-        stale_markers: STALE_MARKERS,
-        tandem_markers: TANDEM_MARKERS,
-      }),
-      ...(prompts.some((p) => p.conflict) && {
-        teammate_marker: TEAMMATE_MARKER,
-      }),
+  const results = redactSecrets(
+    {
+      date,
+      stem,
+      started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      client: "claude-code",
+      cli_version: cliVersion,
+      model_requested: opts.model,
+      models_reported: [...new Set(trials.map((t) => t.model).filter(Boolean))],
+      settings: {
+        env: opts.env,
+        reps: opts.reps,
+        max_turns: opts.max_turns,
+        timeout_sec: opts.timeout,
+        concurrency: opts.concurrency,
+        conditions,
+        claude_flags: claudeFlags("<mcp-config>", opts).filter(
+          (f) => !f.startsWith("<"),
+        ),
+        server: opts.mcp_url
+          ? `External Convex-backed endpoint ${opts.mcp_url}, Bearer API key; persistent state, serial trials`
+          : "apps/mcp mock backend, fresh process per trial, api-key auth as user_alex",
+        ...(opts.mcp_url && {
+          mcp_url: opts.mcp_url,
+          brief_id: opts.brief_id,
+          teammate_actor: opts.mcp_teammate_key
+            ? "separate API key"
+            : "same API key as agent",
+        }),
+        brief_seed: opts.mcp_url
+          ? "External seed retained except conflict trials, which replace the supplied brief with fixtures TANDEM_BRIEF before injecting an edit"
+          : opts.env === "realistic"
+            ? "brief.md saved as v2 (fixtures TANDEM_BRIEF) by user_sam before every trial"
+            : "brief.md saved as v2 (fixtures TANDEM_BRIEF) by user_sam before conflict trials only; other trials use the server's v1 seed",
+        ...(opts.env === "realistic" && {
+          local_tree: Object.keys(LOCAL_TREE),
+          distractor_servers: DISTRACTORS,
+          stale_markers: STALE_MARKERS,
+          tandem_markers: TANDEM_MARKERS,
+        }),
+        ...(prompts.some((p) => p.conflict) && {
+          teammate_marker: TEAMMATE_MARKER,
+        }),
+      },
+      prompts,
+      isolation,
+      summary,
+      conflict_summary: conflictSummary,
+      trials,
     },
-    prompts,
-    isolation,
-    summary,
-    conflict_summary: conflictSummary,
-    trials,
-  };
+    [opts.mcp_key, opts.mcp_teammate_key],
+  );
 
   mkdirSync(opts.out, { recursive: true });
   writeFileSync(jsonPath, JSON.stringify(results, null, 2) + "\n");
@@ -357,11 +381,7 @@ async function runTrial({ prompt, condition, rep }, slot) {
   }
   // Config lives outside the project dir so the model can't stumble on it.
   const mcpServers = {
-    tandem: {
-      type: "http",
-      url: `http://localhost:${slot.tandem}/mcp`,
-      headers: { "api-key": DEV_TOKEN },
-    },
+    tandem: mcpConnection(opts, slot.tandem),
   };
   if (realistic) {
     for (const kind of Object.keys(DISTRACTORS))
@@ -371,7 +391,7 @@ async function runTrial({ prompt, condition, rep }, slot) {
       };
   }
   const mcpConfig = join(root, "mcp.json");
-  writeFileSync(mcpConfig, JSON.stringify({ mcpServers }));
+  writeFileSync(mcpConfig, JSON.stringify({ mcpServers }), { mode: 0o600 });
 
   const servers = [];
   let run;
@@ -380,7 +400,7 @@ async function runTrial({ prompt, condition, rep }, slot) {
   let seedError = null;
   const started = Date.now();
   try {
-    servers.push(await startServer(slot.tandem));
+    if (!opts.mcp_url) servers.push(await startServer(slot.tandem));
     if (realistic) {
       for (const kind of Object.keys(DISTRACTORS))
         servers.push(await startStub(kind, slot[kind]));
@@ -397,8 +417,8 @@ async function runTrial({ prompt, condition, rep }, slot) {
     if (injector) {
       await injector.settled();
       try {
-        head = await rpc(slot.tandem, DEV_TOKEN, "read_file", {
-          file_id: BRIEF_ID,
+        head = await rpc(slot.tandem, opts.mcp_key ?? DEV_TOKEN, "read_file", {
+          file_id: opts?.brief_id ?? BRIEF_ID,
         });
       } catch (err) {
         head = { error: err.message };
@@ -690,7 +710,9 @@ export function analyze(
           non_tandem_mcp_tools: (init.tools ?? []).filter(
             (t) => t.startsWith("mcp__") && !t.startsWith("mcp__tandem__"),
           ),
-          builtin_tools: (init.tools ?? []).filter((t) => !t.startsWith("mcp__")),
+          builtin_tools: (init.tools ?? []).filter(
+            (t) => !t.startsWith("mcp__"),
+          ),
           tandem_tool_count: (init.tools ?? []).filter((t) =>
             t.startsWith("mcp__tandem__"),
           ).length,
@@ -790,11 +812,16 @@ function conflictInjector(port) {
         throw new Error(`unparseable read_file result: ${text.slice(0, 120)}`);
       state.read_version = version;
       const content = `${read.content.replace(/\n*$/, "")}\n\n${TEAMMATE_MARKER}\n`;
-      const meta = await rpc(port, SAM_TOKEN, "update_document", {
-        file_id: BRIEF_ID,
-        content,
-        expected_version: version,
-      });
+      const meta = await rpc(
+        port,
+        opts?.mcp_teammate_key ?? opts?.mcp_key ?? SAM_TOKEN,
+        "update_document",
+        {
+          file_id: opts?.brief_id ?? BRIEF_ID,
+          content,
+          expected_version: version,
+        },
+      );
       Object.assign(state, {
         injected: true,
         latency_ms: Date.now() - t0,
@@ -819,7 +846,10 @@ function conflictInjector(port) {
           continue;
         }
         if (b.name === "mcp__tandem__update_document") wroteFirst = true;
-        if (b.name === "mcp__tandem__read_file" && b.input?.file_id === BRIEF_ID)
+        if (
+          b.name === "mcp__tandem__read_file" &&
+          b.input?.file_id === (opts?.brief_id ?? BRIEF_ID)
+        )
           reads.add(b.id);
       }
     } else if (e.type === "user" && !fired) {
@@ -941,7 +971,10 @@ function summarizeIsolation(trials) {
   const skillSets = { WITH_SKILL: new Set(), NO_SKILL: new Set() };
   const realistic = opts.env === "realistic";
   // Servers and their tools that are expected in this env, not leaks.
-  const expectedServers = ["tandem", ...(realistic ? Object.keys(DISTRACTORS) : [])];
+  const expectedServers = [
+    "tandem",
+    ...(realistic ? Object.keys(DISTRACTORS) : []),
+  ];
   const expectedTools = new Set(
     realistic
       ? Object.entries(DISTRACTORS).flatMap(([k, tools]) =>
@@ -976,7 +1009,9 @@ function summarizeIsolation(trials) {
       if (expectedTools.has(tool)) distractorListed.add(tool);
       else leaks.push(`${where}: extra MCP tool ${tool}`);
     }
-    if ([...expectedTools].every((x) => t.init.non_tandem_mcp_tools.includes(x)))
+    if (
+      [...expectedTools].every((x) => t.init.non_tandem_mcp_tools.includes(x))
+    )
       distractorListedAll++;
     else
       leaks.push(
@@ -1012,7 +1047,11 @@ function summarizeIsolation(trials) {
     ...(realistic && {
       distractor_tools_listed: [...distractorListed],
       trials_listing_all_distractor_tools: `${distractorListedAll}/${withInit}`,
-      allowed_builtins: ["Skill", "ToolSearch", "Read(./**) (also governs Glob, Grep)"],
+      allowed_builtins: [
+        "Skill",
+        "ToolSearch",
+        "Read(./**) (also governs Glob, Grep)",
+      ],
       local_tool_errors: localErrors,
     }),
     builtin_tools_seen: [...builtins],
@@ -1040,9 +1079,7 @@ function summarizeIsolation(trials) {
 // summary costs pre-rounded to 4 places, which double-rounds (0.1750064 ->
 // 0.175 -> "0.17"), so the renderer doesn't use them.
 function costCell(trials, match) {
-  const sum = trials
-    .filter(match)
-    .reduce((a, t) => a + (t.cost_usd ?? 0), 0);
+  const sum = trials.filter(match).reduce((a, t) => a + (t.cost_usd ?? 0), 0);
   return `$${sum.toFixed(2)}`;
 }
 
@@ -1135,7 +1172,9 @@ function renderConflictTable(rows, trials) {
             .map((k) => fmt(k, r.n))
             .join(" | ")} | ${Object.entries(r.outcomes)
             .map(([o, k]) => `${o} ×${k}`)
-            .join(", ")} | ${r.inject_latency_ms_median ?? "-"}/${r.inject_latency_ms_max ?? "-"} ms | ${costCell(
+            .join(
+              ", ",
+            )} | ${r.inject_latency_ms_median ?? "-"}/${r.inject_latency_ms_max ?? "-"} ms | ${costCell(
             trials,
             (t) =>
               t.prompt_id === r.prompt_id &&
@@ -1159,7 +1198,7 @@ function renderConflictSection(r) {
     .join("\n");
   return `## VERSION_CONFLICT recovery
 
-Prompts marked \`"conflict": true\`. Right after the agent's first successful \`read_file\` of \`file_brief\`, the harness (as \`user_sam\`, over its own JSON-RPC call) saves the read content plus the line \`${TEAMMATE_MARKER}\` with \`expected_version\` = the version just read. The agent's next \`update_document\` with the old version then gets \`VERSION_CONFLICT\`. The final head is read back over JSON-RPC at trial end.
+Prompts marked \`"conflict": true\`. Right after the agent's first successful \`read_file\` of the trial's brief, the harness (using ${r.settings.teammate_actor ?? "\`user_sam\`"}, over its own JSON-RPC call) saves the read content plus the line \`${TEAMMATE_MARKER}\` with \`expected_version\` = the version just read. The agent's next \`update_document\` with the old version then gets \`VERSION_CONFLICT\`. The final head is read back over JSON-RPC at trial end.
 
 - **Recovered** = final head contains the teammate marker and differs from the teammate's version (the agent's change landed on top). **Clobbered** = final head lacks the marker. **Looped** = more than one \`update_document\` after the first conflict. **Asked user** = the final answer has a question about the conflict, merge, or teammate edit (regex heuristic; questions are listed below for audit).
 - Outcomes: \`recovered\`; \`landed_without_conflict\` (re-read before writing, so no conflict, marker kept); \`conflict_asked_user\` / \`conflict_unresolved\` (conflict, nothing landed, marker kept); \`no_write\` / \`no_write_asked\`; \`clobbered\`; \`no_inject:<reason>\` (\`never_read\`, \`write_before_read\`, \`inject_failed\`).
@@ -1199,7 +1238,7 @@ function renderMarkdown(r) {
   const answers = r.trials
     .map(
       (t) =>
-        `**\`${t.prompt_id}\` ${t.condition} rep${t.rep}:** ${t.result_text.replace(/\s+/g, " ").slice(0, 300) || "(empty)"}`,
+        `**\`${t.prompt_id}\` ${t.condition} rep${t.rep}:** ${t.result_text.replace(/\s+/g, " ").slice(0, 300).trimEnd() || "(empty)"}`,
     )
     .join("\n\n");
   const iso = r.isolation;
@@ -1305,17 +1344,20 @@ async function startHttpChild(args, env, healthUrl) {
     await new Promise((r) => setTimeout(r, 100));
   }
   await stopChild(child);
-  throw new Error(`MCP server did not become healthy at ${healthUrl}: ${stderr}`);
+  throw new Error(
+    `MCP server did not become healthy at ${healthUrl}: ${stderr}`,
+  );
 }
 
 // One stateless tools/call against a trial's Tandem server, outside the agent.
 async function rpc(port, token, name, args) {
-  const res = await fetch(`http://localhost:${port}/mcp`, {
+  const connection = mcpConnection(opts, port, token);
+  const res = await fetch(connection.url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
-      "api-key": token,
+      ...connection.headers,
     },
     body: JSON.stringify({
       jsonrpc: "2.0",
@@ -1324,7 +1366,8 @@ async function rpc(port, token, name, args) {
       params: { name, arguments: args },
     }),
   });
-  const body = await res.json();
+  if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+  const body = parseRpcResponse(await res.text());
   const r = body.result;
   if (!r) throw new Error(`${name}: ${JSON.stringify(body.error ?? body)}`);
   if (r.isError) throw new Error(`${name}: ${textOf(r.content)}`);
@@ -1333,14 +1376,24 @@ async function rpc(port, token, name, args) {
 
 // Saves the richer brief as v2 by user_sam, so there's an intro to edit.
 async function seedBrief(port) {
-  const { file } = await rpc(port, SAM_TOKEN, "read_file", {
-    file_id: BRIEF_ID,
-  });
-  await rpc(port, SAM_TOKEN, "update_document", {
-    file_id: BRIEF_ID,
-    content: TANDEM_BRIEF,
-    expected_version: file.version,
-  });
+  const { file } = await rpc(
+    port,
+    opts?.mcp_teammate_key ?? opts?.mcp_key ?? SAM_TOKEN,
+    "read_file",
+    {
+      file_id: opts?.brief_id ?? BRIEF_ID,
+    },
+  );
+  await rpc(
+    port,
+    opts?.mcp_teammate_key ?? opts?.mcp_key ?? SAM_TOKEN,
+    "update_document",
+    {
+      file_id: opts?.brief_id ?? BRIEF_ID,
+      content: TANDEM_BRIEF,
+      expected_version: file.version,
+    },
+  );
 }
 
 // Children run detached (own process group) so a signal to the harness alone
@@ -1454,8 +1507,12 @@ function localDate(d) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv, env = process.env) {
   const o = {
+    mcp_url: env.TANDEM_MCP_URL ?? null,
+    mcp_key: env.TANDEM_MCP_KEY ?? null,
+    mcp_teammate_key: env.TANDEM_MCP_TEAMMATE_KEY ?? null,
+    brief_id: env.TANDEM_BRIEF_ID ?? null,
     model: "sonnet",
     reps: 2,
     max_turns: 6,
@@ -1481,6 +1538,18 @@ function parseArgs(argv) {
       return v;
     };
     switch (a) {
+      case "--mcp-url":
+        o.mcp_url = val();
+        break;
+      case "--mcp-key":
+        o.mcp_key = val();
+        break;
+      case "--mcp-teammate-key":
+        o.mcp_teammate_key = val();
+        break;
+      case "--brief-id":
+        o.brief_id = val();
+        break;
       case "--model":
         o.model = val();
         break;
@@ -1536,7 +1605,72 @@ function parseArgs(argv) {
         throw usageError(`Unknown option ${a}`);
     }
   }
+  if (o.mcp_url) {
+    let url;
+    try {
+      url = new URL(o.mcp_url);
+    } catch {
+      throw usageError("--mcp-url must be an HTTP(S) URL");
+    }
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    )
+      throw usageError(
+        "--mcp-url must be HTTP(S), without embedded credentials, query, or fragment",
+      );
+    if (!o.mcp_key)
+      throw usageError("--mcp-url requires --mcp-key or TANDEM_MCP_KEY");
+    if (o.concurrency !== 1)
+      throw usageError("External server state is shared; use --concurrency 1");
+    if (o.env === "realistic")
+      throw usageError(
+        "External mode currently supports --env bare only (mock marker fixtures differ)",
+      );
+  } else if (o.mcp_key || o.mcp_teammate_key || o.brief_id) {
+    throw usageError("External credentials and --brief-id require --mcp-url");
+  }
   return o;
+}
+
+export function redactSecrets(value, secrets) {
+  let json = JSON.stringify(value);
+  for (const secret of secrets.filter(Boolean))
+    json = json.replaceAll(JSON.stringify(secret).slice(1, -1), "[REDACTED]");
+  return JSON.parse(json);
+}
+
+export function mcpConnection(o, port, token = o?.mcp_key ?? DEV_TOKEN) {
+  return {
+    type: "http",
+    url: o?.mcp_url ?? `http://localhost:${port}/mcp`,
+    headers: o?.mcp_url
+      ? { Authorization: `Bearer ${token}` }
+      : { "api-key": token },
+  };
+}
+
+export function parseRpcResponse(text) {
+  // Streamable HTTP permits JSON or SSE, including multi-line data fields.
+  try {
+    return JSON.parse(text);
+  } catch {
+    /* SSE below */
+  }
+  for (const event of text.replaceAll("\r\n", "\n").split("\n\n")) {
+    const data = event
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!data) continue;
+    const body = JSON.parse(data);
+    if (body.result || body.error) return body;
+  }
+  throw new Error("No JSON-RPC result in MCP response");
 }
 
 function posInt(flag, v) {

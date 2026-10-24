@@ -39,6 +39,12 @@
       "expected": "read_file, update_document hits VERSION_CONFLICT (teammate edit injected), re-read, merge keeping the teammate's line, retry once"
     },
     {
+      "id": "p7-create-document",
+      "kind": "project",
+      "text": "Read our project brief, then create a new shared document named client-check.md containing a three-bullet summary of it. You have my permission to save this document for the team.",
+      "expected": "read_file, then successful create_document; a duplicate name on later persistent-server repetitions may require a new name"
+    },
+    {
       "id": "c1-capital",
       "kind": "control",
       "text": "What's the capital of Australia?",
