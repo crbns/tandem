@@ -8,7 +8,7 @@ import { normalizeError, useTandemApi, type ContextProposal, type TandemApiError
 import { DECIDE_ERROR_COPY, ERROR_COPY } from "@/lib/api/errorCopy";
 import { useResource } from "@/lib/api/useResource";
 import { useWorkspaceRefresh, useWorkspaceRole } from "@/lib/api/useWorkspace";
-import { canDecideProposals, FIELD_LABELS } from "@/lib/proposals";
+import { canDecideProposals, FIELD_LABELS, scopeReference } from "@/lib/proposals";
 import { ContextApprovalSetting } from "@/components/approvals/ContextApprovalSetting";
 import { DecidedProposal, ProposalCard, type Decision } from "@/components/approvals/ProposalCard";
 import { ErrorState } from "@/components/common/ErrorState";
@@ -31,7 +31,7 @@ export default function ApprovalsPage() {
   const load = useCallback(async () => {
     const [proposals, context] = await Promise.all([
       api.listProposals(workspaceId),
-      // Only used to show what a goal/scope change would replace.
+      // Shows what a goal/scope change would replace, and the scope other changes must fit.
       api.getContext(workspaceId).catch(() => null),
     ]);
     return { proposals, context };
@@ -130,6 +130,7 @@ export default function ApprovalsPage() {
                   key={proposal.id}
                   proposal={proposal}
                   current={currentFor(proposal)}
+                  approvedScope={scopeReference(proposal.field, context?.scope)}
                   canDecide={canDecide}
                   deciding={deciding?.id === proposal.id ? deciding.decision : null}
                   busy={deciding !== null}

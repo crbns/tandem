@@ -23,6 +23,8 @@ interface ProposalCardProps {
   proposal: ContextProposal;
   /** The approved value it would replace (goal and scope only); "" when unset. */
   current?: string;
+  /** The approved scope, to check a decision, constraint or owner against. */
+  approvedScope?: string;
   /** Owner/admin: show Approve and Reject. Members get the record only. */
   canDecide: boolean;
   /** The decision in flight for this card, if any. */
@@ -33,7 +35,7 @@ interface ProposalCardProps {
 }
 
 /** One pending proposal: what would change, who proposed it and why. */
-export function ProposalCard({ proposal, current, canDecide, deciding, busy, onDecide }: ProposalCardProps) {
+export function ProposalCard({ proposal, current, approvedScope, canDecide, deciding, busy, onDecide }: ProposalCardProps) {
   const now = useNow();
   const label = FIELD_LABELS[proposal.field];
   const headingId = `proposal-${proposal.id}`;
@@ -56,6 +58,12 @@ export function ProposalCard({ proposal, current, canDecide, deciding, busy, onD
           <>
             <dt className="label-caps pt-0.5 text-muted-foreground">Replaces</dt>
             <dd className={cn(!current && "text-muted-foreground")}>{current || `No ${label.toLowerCase()} approved yet`}</dd>
+          </>
+        )}
+        {approvedScope !== undefined && (
+          <>
+            <dt className="label-caps pt-0.5 text-muted-foreground">Approved scope</dt>
+            <dd className="text-muted-foreground">{approvedScope}</dd>
           </>
         )}
         {proposal.supersedes && (<>

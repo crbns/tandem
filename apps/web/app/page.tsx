@@ -37,7 +37,7 @@ function WorkspaceRedirect() {
     setCreateError(null);
     try {
       const workspaceId = await api.createWorkspace(workspaceName);
-      router.replace(`/w/${workspaceId}`);
+      router.replace(`/w/${workspaceId}/overview`);
     } catch (error) {
       const { code } = normalizeError(error);
       setCreateError(ERROR_COPY[code].description);
@@ -47,7 +47,8 @@ function WorkspaceRedirect() {
 
   useEffect(() => {
     if (resource.status === "ready" && resource.data)
-      router.replace(`/w/${resource.data}`);
+      // Overview first: assistants, files and approved context on one screen.
+      router.replace(`/w/${resource.data}/overview`);
   }, [resource, router]);
 
   if (resource.status === "error") {

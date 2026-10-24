@@ -108,6 +108,8 @@ export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>)
       if (openPath.current === href) continue;
       toast(arrivalMessage(arrival), {
         id: `arrival-${id}-${arrival.file.version}`,
+        // As long as the row stays marked, so it's still up when people look.
+        duration: ARRIVAL_MS,
         action: { label: "Open", onClick: () => router.push(href) },
       });
     }
