@@ -680,7 +680,53 @@ describe("sync published work", () => {
     ).toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("caps snapshots and incremental work at the newest 20 independently of event pages", async () => {
+  it("delivers work exactly once while draining event pages without gaps", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    const publisher = await alex.mutation(api.agentConnections.createAgentConnection, {
+      workspaceId, client: "claude",
+    });
+    const reader = await sam.mutation(api.agentConnections.createAgentConnection, {
+      workspaceId, client: "chatgpt",
+    });
+    const file = await t.mutation(api.mcp.createDocument, {
+      token: publisher.token, name: "backlog.md", mimeType: "text/markdown", content: "",
+    });
+    const before = await t.mutation(api.mcp.syncWorkspace, { token: reader.token });
+    for (let version = 1; version <= 50; version++) {
+      await t.mutation(api.mcp.updateDocument, {
+        token: publisher.token, fileId: file.id, expectedVersion: version, content: `Update ${version}`,
+      });
+    }
+    const published = await t.mutation(api.mcp.publishWork, {
+      token: publisher.token, kind: "finding", title: "After the backlog",
+      summary: "Full finding after 50 updates", fileIds: [file.id],
+    });
+    const first = await t.mutation(api.mcp.syncWorkspace, {
+      token: reader.token, sinceSeq: before.cursorSeq,
+    });
+    expect(first.events).toHaveLength(50);
+    expect(first.eventsTruncated).toBe(true);
+    expect(first.cursorSeq).toBe(before.cursorSeq + 50);
+    expect(first.recentWork).toEqual([]);
+    expect(first.workTruncated).toBe(false);
+    const second = await t.mutation(api.mcp.syncWorkspace, {
+      token: reader.token, sinceSeq: first.cursorSeq,
+    });
+    expect(second.eventsTruncated).toBe(false);
+    expect(second.recentWork).toEqual([published]);
+    expect(second.workTruncated).toBe(false);
+    expect([...first.events, ...second.events].map((e) => e.seq)).toEqual(
+      Array.from({ length: 51 }, (_, i) => before.cursorSeq + i + 1),
+    );
+    expect([...first.recentWork, ...second.recentWork]).toEqual([published]);
+    const empty = await t.mutation(api.mcp.syncWorkspace, {
+      token: reader.token, sinceSeq: second.cursorSeq,
+    });
+    expect(empty.events).toEqual([]);
+    expect(empty.recentWork).toEqual([]);
+  });
+
+  it("caps snapshots and each incremental event page at the newest 20", async () => {
     const { t, sam, workspaceId } = await setup();
     const { token } = await sam.mutation(
       api.agentConnections.createAgentConnection,
@@ -718,8 +764,14 @@ describe("sync published work", () => {
       sinceSeq: before.cursorSeq,
     });
     expect(incremental.eventsTruncated).toBe(true);
-    expect(incremental.recentWork).toEqual(expected);
+    expect(incremental.recentWork).toEqual(published.slice(30, 50).reverse());
     expect(incremental.workTruncated).toBe(true);
+    const continuation = await t.mutation(api.mcp.syncWorkspace, {
+      token, sinceSeq: incremental.cursorSeq,
+    });
+    expect(continuation.recentWork).toEqual(published.slice(50).reverse());
+    expect(continuation.eventsTruncated).toBe(false);
+    expect(continuation.workTruncated).toBe(false);
   });
 });
 

@@ -47,7 +47,7 @@ export function createMcpServer(
         "Get the workspace context (approved goal, scope, decisions and ownership; working constraints and open questions), " +
         "List entries retain stable IDs and resolved/superseded history: use active entries as current context. " +
         "summaries of pending proposals, changed files, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. Safe to call at the start of project work and again before a significant write. " +
-        "Read recent_work before starting; it contains the newest 20 publications, or the newest 20 since your cursor. work_truncated means older matching work was omitted, independently of event pagination. " +
+        "Read recent_work before starting; a snapshot contains the newest 20 publications. With since, it contains the newest 20 publications within this event page; later work arrives when you continue syncing. work_truncated means older matching work within that page (or snapshot) was omitted. " +
         "Without since you get a snapshot: the full context, all files (up to 50) and the latest events. " +
         "Pass the cursor from your previous sync as since to get only what changed after it; with since, events_truncated true means more events remain, so sync again with the new cursor. " +
         "In a snapshot, events_truncated true means only the latest 50 events are shown and older ones were omitted (nothing to page). " +

@@ -699,7 +699,7 @@ export async function syncCore(
       .take(SYNC_WORK_LIMIT + 1);
   } else {
     // Use event sequence numbers, not timestamps: writes can share a millisecond.
-    // Work is independently capped, even when the event stream spans pages.
+    // Only return work acknowledged by this page, so continuation syncs do not repeat it.
     const publications = await ctx.db
       .query("workspace_events")
       .withIndex("by_workspace_and_kind_and_seq", (q) =>
@@ -707,7 +707,7 @@ export async function syncCore(
           .eq("workspaceId", workspaceId)
           .eq("kind", "work.published")
           .gt("seq", sinceSeq)
-          .lte("seq", headSeq),
+          .lte("seq", cursorSeq),
       )
       .order("desc")
       .take(SYNC_WORK_LIMIT + 1);

@@ -298,7 +298,7 @@ export interface SyncResult {
   /** Newest updated_at first, at most 50. */
   changed_files: FileMetadata[];
   files_truncated: boolean;
-  /** Newest first, at most 20; independent of event pagination. */
+  /** Newest first, at most 20; with since, restricted to this event page. */
   recent_work: PublishedWork[];
   /** Older matching work was omitted; this is not a work pagination cursor. */
   work_truncated: boolean;

@@ -946,6 +946,45 @@ describe("context tools", () => {
     await Promise.all([alex.close(), jordan.close()]);
   });
 
+  it("delivers work exactly once while draining event pages without gaps", async () => {
+    const alex = await connect("alex-token", url);
+    const sam = await connect("sam-token", url);
+    try {
+      const before = await sync(sam);
+      for (let version = 1; version <= 50; version++) {
+        const updated = await call(alex, "update_document", {
+          file_id: "file_brief", expected_version: version, content: `Update ${version}`,
+        });
+        expect(updated.isError).toBeFalsy();
+      }
+      const result = await call(alex, "publish_work", {
+        kind: "finding", title: "After the backlog", summary: "Full finding after 50 updates",
+        file_ids: ["file_brief"],
+      });
+      expect(result.isError).toBeFalsy();
+      const published = (result.structuredContent as { published: unknown }).published;
+      const first = await sync(sam, { since: before.cursor });
+      expect(first.events).toHaveLength(50);
+      expect(first.events_truncated).toBe(true);
+      expect(first.recent_work).toEqual([]);
+      expect(first.work_truncated).toBe(false);
+      const second = await sync(sam, { since: first.cursor });
+      expect(second.events_truncated).toBe(false);
+      expect(second.recent_work).toEqual([published]);
+      expect(second.work_truncated).toBe(false);
+      const startSeq = before.events.at(-1)!.seq;
+      expect([...first.events, ...second.events].map((e) => e.seq)).toEqual(
+        Array.from({ length: 51 }, (_, i) => startSeq + i + 1),
+      );
+      expect([...first.recent_work, ...second.recent_work]).toEqual([published]);
+      const empty = await sync(sam, { since: second.cursor });
+      expect(empty.events).toEqual([]);
+      expect(empty.recent_work).toEqual([]);
+    } finally {
+      await Promise.all([alex.close(), sam.close()]);
+    }
+  });
+
   it("sync includes teammates' published work with bounded snapshot and cursor parity", async () => {
     const alex = await connect("alex-token", url);
     const sam = await connect("sam-token", url);

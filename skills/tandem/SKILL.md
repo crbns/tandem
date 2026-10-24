@@ -45,7 +45,10 @@ not.
   `events`, `recent_work` (published findings and deliverables), and a `cursor`.
   Read `recent_work` before starting project work, then orient before answering
   or writing. It includes full summaries, file references, and attribution;
-  `work_truncated` means older work beyond the newest 20 was omitted.
+  a snapshot includes the newest 20 publications. With `since`, work is limited
+  to the event page acknowledged by the returned cursor; continue syncing to
+  receive later work. `work_truncated` means older work beyond the newest 20
+  in that page (or snapshot) was omitted.
 - Keep the `cursor`. Later in the same conversation, re-sync with
   `since: <cursor>` to get only what changed since: new events and the files
   they touched (the context is always returned in full). Each sync returns a new
