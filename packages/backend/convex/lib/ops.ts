@@ -148,6 +148,7 @@ export async function updateDocumentCore(
   },
 ): Promise<Doc<"files">> {
   const { file, actor, expectedVersion } = args;
+  if (file.storageId) throw new ConvexError({ code: "BINARY_FILE", message: "Upload a new binary revision in the dashboard" });
   if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
     throw new ConvexError({
       code: "INVALID_INPUT",

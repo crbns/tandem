@@ -92,7 +92,7 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
   const backendCode = record && typeof record.code === "string" ? record.code : undefined;
   const code = backendCode && isApiErrorCode(backendCode)
     ? backendCode
-    : backendCode === "INVALID_NAME" || backendCode === "INVALID_PARENT_FOLDER" || backendCode === "INVALID_EMAIL" || backendCode === "USER_NOT_REGISTERED"
+    : backendCode === "INVALID_UPLOAD_SIZE" || backendCode === "UNSUPPORTED_MIME_TYPE" || backendCode === "NOT_BINARY_FILE" || backendCode === "UPLOAD_ALREADY_FINALIZED" || backendCode === "UPLOAD_NOT_FOUND" || backendCode === "INVALID_NAME" || backendCode === "INVALID_PARENT_FOLDER" || backendCode === "INVALID_EMAIL" || backendCode === "USER_NOT_REGISTERED"
       ? "INVALID_INPUT"
       : backendCode === "USER_NOT_INITIALIZED"
         ? "UNAUTHENTICATED"

@@ -36,7 +36,8 @@ interface MockOptions {
 
 interface StoredFile {
   summary: FileSummary;
-  content: string;
+  content: string | null;
+  blobs?: Map<number, Blob>;
   revisions: Revision[]; // oldest first; append-only
 }
 
@@ -405,6 +406,38 @@ export function createMockApi({
       return { id, version: 1 };
     },
 
+    async uploadFile(workspaceId, blob, options) {
+      await delay();
+      requireMember(workspaceId);
+      if (blob.size < 1 || blob.size > 25 * 1024 * 1024) throw new TandemApiError("INVALID_INPUT");
+      const actor = getActor();
+      const now = Date.now();
+      const existing = options ? getFile(options.fileId) : undefined;
+      if (existing && existing.summary.workspaceId !== workspaceId) throw new TandemApiError("FORBIDDEN");
+      if (existing && existing.summary.version !== options!.expectedVersion) throw new TandemApiError("VERSION_CONFLICT");
+      if (existing && existing.content !== null) throw new TandemApiError("INVALID_INPUT");
+      if (!existing && [...files.values()].some((file) => file !== existing && file.summary.workspaceId === workspaceId && file.summary.name.toLowerCase() === blob.name.toLowerCase())) throw new TandemApiError("NAME_EXISTS");
+      const id = existing?.summary.id ?? `file_new_${nextId++}`;
+      const version = (existing?.summary.version ?? 0) + 1;
+      const stored: StoredFile = existing ?? { content: null, revisions: [], summary: { id, workspaceId, parentId: null, name: blob.name, mimeType: blob.type || "application/octet-stream", version, updatedAt: now, updatedBy: actor } };
+      stored.summary = { ...stored.summary, name: existing?.summary.name ?? blob.name, mimeType: blob.type || "application/octet-stream", version, updatedAt: now, updatedBy: actor };
+      stored.blobs ??= new Map();
+      stored.blobs.set(version, blob);
+      stored.revisions.push({ ...actor, version, createdAt: now });
+      files.set(id, stored);
+      notify(workspaceId);
+      return { id, version };
+    },
+
+    async getFileBlob(fileId, version) {
+      await delay();
+      const file = getFile(fileId);
+      requireMember(file.summary.workspaceId);
+      const blob = file.blobs?.get(version ?? file.summary.version);
+      if (!blob) throw new TandemApiError("FILE_NOT_FOUND");
+      return blob.slice(0, blob.size, blob.type);
+    },
+
     async readFile(fileId) {
       await delay();
       const file = getFile(fileId);
@@ -422,7 +455,7 @@ export function createMockApi({
       if (expectedVersion !== file.summary.version) {
         throw new TandemApiError("VERSION_CONFLICT", {
           currentVersion: file.summary.version,
-          currentContent: file.content,
+          currentContent: file.content ?? undefined,
           updatedBy: { ...file.summary.updatedBy },
         });
       }

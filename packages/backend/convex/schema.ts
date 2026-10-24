@@ -165,6 +165,9 @@ export default defineSchema({
     fileId: v.id("files"),
     version: v.number(),
     content: v.string(),
+    storageId: v.optional(v.id("_storage")),
+    mimeType: v.optional(v.string()),
+    size: v.optional(v.number()),
     actor,
     createdAt: v.number(),
   })

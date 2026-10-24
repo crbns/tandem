@@ -39,6 +39,8 @@ export interface TandemApi {
     workspaceId: string,
     input: CreateFileInput,
   ): Promise<{ id: string; version: number }>;
+  uploadFile(workspaceId: string, file: File, options?: { fileId: string; expectedVersion: number }): Promise<{ id: string; version: number }>;
+  getFileBlob(fileId: string, version?: number): Promise<Blob>;
   readFile(fileId: string): Promise<FileDetail>;
   /** Rejects with VERSION_CONFLICT when `expectedVersion` isn't the head. */
   updateFileContent(

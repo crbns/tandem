@@ -1,3 +1,4 @@
+import { CONVEX_SITE_URL } from "../config";
 import type { ConvexReactClient } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 // Through the workspace package, not a relative path, so `turbo prune web`
@@ -149,7 +150,7 @@ export async function call<T>(
  * One-shot query/mutation calls, plus one reactive subscription
  * (`watchWorkspace`) that only signals "something changed, refetch".
  */
-export function createConvexApi(convex: ConvexReactClient): TandemApi {
+export function createConvexApi(convex: ConvexReactClient, getToken: () => string | null | undefined = () => null): TandemApi {
   return {
     listWorkspaces: () =>
       call(async () => {
@@ -200,6 +201,31 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
       );
       return { id: file.id, version: file.version };
     },
+    uploadFile: (workspaceId, file, options) => call(async () => {
+      const uploadUrl = await convex.mutation(api.files.generateUploadUrl, { workspaceId: workspaceId as Id<"workspaces"> });
+      const response = await fetch(uploadUrl, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+      if (!response.ok) throw new TandemApiError("NETWORK");
+      const { storageId } = await response.json() as { storageId: Id<"_storage"> };
+      const uploaded = await convex.mutation(api.files.finalizeUpload, {
+        workspaceId: workspaceId as Id<"workspaces">, storageId, name: file.name,
+        ...(options ? { fileId: options.fileId as Id<"files">, expectedVersion: options.expectedVersion } : {}),
+      });
+      return { id: uploaded.id, version: uploaded.version };
+    }),
+    getFileBlob: (fileId, version) => call(async () => {
+      const token = getToken();
+      if (!token) throw new TandemApiError("UNAUTHENTICATED");
+      const site = new URL(CONVEX_SITE_URL || convex.url);
+      if (!CONVEX_SITE_URL) {
+        if (site.hostname.endsWith(".convex.cloud")) site.hostname = site.hostname.replace(/\.convex\.cloud$/, ".convex.site");
+        else if ((site.hostname === "127.0.0.1" || site.hostname === "localhost") && site.port) site.port = String(Number(site.port) + 1);
+      }
+      const url = new URL(`/files/${encodeURIComponent(fileId)}/content`, site);
+      if (version !== undefined) url.searchParams.set("version", String(version));
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new TandemApiError(response.status === 401 ? "UNAUTHENTICATED" : response.status === 403 ? "FORBIDDEN" : response.status === 404 ? "FILE_NOT_FOUND" : "NETWORK");
+      return response.blob();
+    }),
     readFile: (fileId) =>
       call(async () => {
         const result = await convex.query(api.files.readFile, {

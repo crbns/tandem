@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ConvexReactClient, useConvex, useConvexAuth } from "convex/react";
 import { ConvexAuthNextjsProvider } from "@convex-dev/auth/nextjs";
-import { useAuthActions } from "@convex-dev/auth/react";
+import { useAuthToken, useAuthActions } from "@convex-dev/auth/react";
 import { CONVEX_URL } from "@/lib/config";
 import {
   SessionContext,
@@ -85,7 +85,8 @@ function ConvexSessionBridge({ children }: { children: ReactNode }) {
 
 function ConvexApiProvider({ children }: { children: ReactNode }) {
   const convex = useConvex();
-  const api = useMemo(() => createConvexApi(convex), [convex]);
+  const token = useAuthToken();
+  const api = useMemo(() => createConvexApi(convex, () => token), [convex, token]);
   return <TandemApiContext.Provider value={api}>{children}</TandemApiContext.Provider>;
 }
 
