@@ -146,6 +146,15 @@ describe("seed:rebuildDemoWorkspace", () => {
       ["research/interview-notes.md", 2, "Blake"],
       ["research/support-tickets.md", 1, "Casey"],
     ]);
+    // interview-notes v1 is dated a day before v2, so "when did it change?" reads true.
+    const [v2, v1] = await t.run(async (ctx) => {
+      const notes = (await ctx.db.query("files")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", demo.workspaceId)).collect())
+        .find((f) => f.name === "interview-notes.md")!;
+      return ctx.db.query("file_revisions")
+        .withIndex("by_file_and_version", (q) => q.eq("fileId", notes._id)).order("desc").collect();
+    });
+    expect(v2!.createdAt - v1!.createdAt).toBeGreaterThan(24 * 60 * 60 * 1000);
     // proposal.md is created live in the demo.
     expect(files.some(([name]) => String(name).includes("proposal"))).toBe(false);
 
@@ -211,6 +220,7 @@ describe("seed:rebuildDemoWorkspace", () => {
     const old: Id<"workspaces"> = first.workspaceId;
     const leftovers = await t.run(async (ctx) => [
       ...(await ctx.db.query("files").withIndex("by_workspace", (q) => q.eq("workspaceId", old)).collect()),
+      ...(await ctx.db.query("folders").withIndex("by_workspace", (q) => q.eq("workspaceId", old)).collect()),
       ...(await ctx.db.query("file_revisions").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", old)).collect()),
       ...(await ctx.db.query("context_proposals").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", old)).collect()),
       ...(await ctx.db.query("approvals").withIndex("by_workspace_and_decided", (q) => q.eq("workspaceId", old)).collect()),

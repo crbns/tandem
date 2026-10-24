@@ -106,12 +106,19 @@
     box-shadow: inset 3px 0 0 var(--agent);
   }
 }
+/* Reduced motion holds the mark still. It stays an animation so it outranks
+   the selected row's bg-accent, as the fading version does. */
+@keyframes arrival-hold {
+  from,
+  to {
+    background-color: var(--agent-tint);
+    box-shadow: inset 3px 0 0 var(--agent);
+  }
+}
 @utility animate-arrival {
   animation: arrival 8s ease-out forwards;
   @media (prefers-reduced-motion: reduce) {
-    animation: none;
-    background-color: var(--agent-tint);
-    box-shadow: inset 3px 0 0 var(--agent);
+    animation: arrival-hold 8s step-end forwards;
   }
 }
 

@@ -98,13 +98,15 @@ export function FileTable({ workspaceId, folders = [], files, selectedId, onSele
         {files.map((file) => {
           const href = fileHref(workspaceId, file.id);
           const selected = file.id === selectedId;
-          const arrived = arrivedFiles.has(file.id);
+          const arrivedVersion = arrivedFiles.get(file.id);
+          const arrived = arrivedVersion !== undefined;
           return (
             <TableRow
-              key={file.id}
+              // Keyed on the version so a re-save remounts the row and replays the arrival.
+              key={`${file.id}@${file.version}`}
               tabIndex={0}
               aria-selected={selected}
-              data-arrived={arrived || undefined}
+              data-arrived={arrivedVersion}
               className={cn(
                 "cursor-pointer outline-none focus-visible:bg-accent",
                 selected && "bg-accent",

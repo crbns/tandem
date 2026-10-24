@@ -27,8 +27,8 @@ The content lives in `packages/backend/convex/seed.ts` (`DEMO_BRIEF`, `DEMO_GOAL
 
 1. It checks the inputs (password length, token format, tokens that are duplicated or used outside the demo). If any check fails, it stops before changing anything.
 2. It creates the three users. For users that already exist, it sets their password and deletes their sessions and refresh tokens. A dashboard sign-in token issued before the reset keeps working until it expires (at most an hour).
-3. It deletes the seeded demo workspace and everything in it (files, revisions, proposals, approvals, events, connections, invites, stored blobs). The seeded workspace carries a `demoSeed` marker, so a workspace Alex creates with the same name is not touched.
-4. It builds the workspace again as described above, in one transaction.
+3. It deletes the seeded demo workspace and everything in it (folders, files, revisions, proposals, approvals, tasks, events, connections, invites, stored blobs). The seeded workspace carries a `demoSeed` marker, so a workspace Alex creates with the same name is not touched.
+4. It builds the workspace again as described above, in one transaction. Everything it creates carries the reset's timestamp, so the activity feed reads "just now", except `research/interview-notes.md` v1, which is dated a day earlier so its history shows a real gap between versions.
 
 Nothing else is touched. Other workspaces, including any the demo users created themselves, survive a reset. Running it repeatedly always ends in the same state.
 

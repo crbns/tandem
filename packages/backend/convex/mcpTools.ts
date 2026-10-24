@@ -428,7 +428,8 @@ export const readFile = internalMutation({
         });
       return {
         file: row,
-        content: revision.storageId ? null : revision.content,
+        // Same placeholder as the head, so walking a binary's versions never errors.
+        content: revision.storageId ? "binary: view or download in the dashboard" : revision.content,
         version: revision.version,
       };
     }

@@ -1,9 +1,9 @@
 import { actorLabel } from "./actors";
 import type { FileSummary } from "./api/types";
 
-/** A file an assistant created or saved since the dashboard last looked. */
+/** A file an assistant created, saved, or renamed/moved since the dashboard last looked. */
 export interface Arrival {
-  kind: "created" | "updated";
+  kind: "created" | "updated" | "moved";
   file: FileSummary;
 }
 
@@ -17,19 +17,26 @@ export const ARRIVAL_MS = 8000;
  */
 export function detectArrivals(previous: FileSummary[] | null, next: FileSummary[]): Arrival[] {
   if (previous === null) return [];
-  const seen = new Map(previous.map((f) => [f.id, f.version]));
+  const seen = new Map(previous.map((f) => [f.id, f]));
   const arrivals: Arrival[] = [];
   for (const file of next) {
     if (file.updatedBy.actorType !== "agent") continue;
     const before = seen.get(file.id);
     if (before === undefined) arrivals.push({ kind: "created", file });
-    else if (file.version > before) arrivals.push({ kind: "updated", file });
+    else if (file.version > before.version)
+      // A rename or move bumps the version too; content edits never change these.
+      arrivals.push({
+        kind: file.name !== before.name || file.parentId !== before.parentId ? "moved" : "updated",
+        file,
+      });
   }
   return arrivals;
 }
 
-/** "Alex via Claude created proposal.md", "Alex via Claude saved brief.md v3". */
+/** "Alex via Claude created proposal.md", "… saved brief.md v3", "… moved notes.md". */
 export function arrivalMessage({ kind, file }: Arrival): string {
   const who = actorLabel(file.updatedBy);
-  return kind === "created" ? `${who} created ${file.name}` : `${who} saved ${file.name} v${file.version}`;
+  if (kind === "created") return `${who} created ${file.name}`;
+  if (kind === "moved") return `${who} moved ${file.name}`;
+  return `${who} saved ${file.name} v${file.version}`;
 }

@@ -263,6 +263,10 @@ describe("binary uploads", () => {
     });
     expect(result.file.mimeType).toBe("application/pdf");
     expect(result.content).toBe("binary: view or download in the dashboard");
+    // An older binary revision reads the same way as the head, not as an error.
+    await owner.mutation(api.files.renameFile, { fileId: file.id, name: "report-v2.pdf", expectedVersion: 1 });
+    const older = await t.mutation(internal.mcpTools.readFile, { principal, fileId: file.id, version: 1 });
+    expect(older).toMatchObject({ version: 1, content: "binary: view or download in the dashboard" });
     const versions = await t.mutation(internal.mcpTools.getFileVersions, {
       principal,
       fileId: file.id,

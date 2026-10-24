@@ -44,26 +44,40 @@ export function useWorkspaceRefresh(workspaceId: string, reload: () => void) {
   }, [reload]);
 }
 
-/** Ids of files an assistant just created or saved; the file table marks their rows. */
-export const ArrivalsContext = createContext<ReadonlySet<string>>(new Set());
+/**
+ * Files an assistant just created, saved or moved, by id, with the version
+ * that arrived; the file table marks their rows.
+ */
+export const ArrivalsContext = createContext<ReadonlyMap<string, number>>(new Map());
 
-export function useArrivedFiles(): ReadonlySet<string> {
+export function useArrivedFiles(): ReadonlyMap<string, number> {
   return useContext(ArrivalsContext);
 }
 
 /**
  * Watches the workspace's file list for agent writes. Each one gets a toast
  * ("Alex via Claude created proposal.md", with Open) and stays in the
- * returned set for ARRIVAL_MS so its row can be marked. No toast for the
+ * returned map for ARRIVAL_MS so its row can be marked. No toast for the
  * file already open: its editor reports the newer version itself.
  */
-export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>): ReadonlySet<string> {
+export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>): ReadonlyMap<string, number> {
   const router = useRouter();
   const pathname = usePathname();
   const openPath = useRef(pathname);
   openPath.current = pathname;
   const previous = useRef<{ workspaceId: string; files: FileSummary[] } | null>(null);
-  const [arrived, setArrived] = useState<ReadonlySet<string>>(new Set());
+  const [arrived, setArrived] = useState<ReadonlyMap<string, number>>(new Map());
+  // One timer per file: a second save within ARRIVAL_MS restarts its mark
+  // instead of the first save's timer clearing it early.
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      pending.forEach(clearTimeout);
+      pending.clear();
+    };
+  }, []);
 
   useEffect(() => {
     if (files.status !== "ready") return;
@@ -71,20 +85,32 @@ export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>)
     previous.current = { workspaceId, files: files.data };
     const arrivals = detectArrivals(before, files.data);
     if (arrivals.length === 0) return;
-    const ids = arrivals.map((a) => a.file.id);
-    setArrived((current) => new Set([...current, ...ids]));
+    setArrived((current) => {
+      const next = new Map(current);
+      for (const { file } of arrivals) next.set(file.id, file.version);
+      return next;
+    });
     for (const arrival of arrivals) {
-      const href = `/w/${workspaceId}/files/${arrival.file.id}`;
+      const { id } = arrival.file;
+      clearTimeout(timers.current.get(id));
+      timers.current.set(
+        id,
+        setTimeout(() => {
+          timers.current.delete(id);
+          setArrived((current) => {
+            const next = new Map(current);
+            next.delete(id);
+            return next;
+          });
+        }, ARRIVAL_MS),
+      );
+      const href = `/w/${workspaceId}/files/${id}`;
       if (openPath.current === href) continue;
       toast(arrivalMessage(arrival), {
-        id: `arrival-${arrival.file.id}-${arrival.file.version}`,
+        id: `arrival-${id}-${arrival.file.version}`,
         action: { label: "Open", onClick: () => router.push(href) },
       });
     }
-    // Each batch clears itself; a later save of the same file re-adds it.
-    setTimeout(() => {
-      setArrived((current) => new Set([...current].filter((id) => !ids.includes(id))));
-    }, ARRIVAL_MS);
   }, [files, workspaceId, router]);
 
   return arrived;

@@ -23,6 +23,19 @@ describe("detectArrivals", () => {
     ]);
   });
 
+  it("reports a rename or move as moved, not saved, since content didn't change", () => {
+    const before = [file("a", 1, blake, "proposal.md"), file("b", 1, blake, "notes.md")];
+    const after = [
+      { ...file("a", 2, alexsClaude, "proposal.md"), parentId: "folder_specs" },
+      file("b", 2, alexsClaude, "meeting-notes.md"),
+    ];
+    expect(detectArrivals(before, after).map((a) => [a.file.id, a.kind])).toEqual([
+      ["a", "moved"],
+      ["b", "moved"],
+    ]);
+    expect(arrivalMessage(detectArrivals(before, after)[1]!)).toBe("Alex via Claude moved meeting-notes.md");
+  });
+
   it("ignores human saves (the person saw their own edit) and unchanged files", () => {
     const before = [file("a", 1, alexsClaude)];
     const after = [file("a", 1, alexsClaude), file("c", 1, blake)];

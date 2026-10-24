@@ -491,6 +491,7 @@ async function seedStory(
     workspaceId, parentId: research.folder._id, name: "interview-notes.md",
     mimeType: "text/markdown", content: DEMO_INTERVIEW_NOTES_V1, actor: blake,
   });
+  await backdateFirstVersion(ctx, notes, 26 * 60 * 60 * 1000);
   await updateDocumentCore(ctx, {
     file: notes, content: DEMO_INTERVIEW_NOTES_V2, expectedVersion: 1, actor: blake,
   });
@@ -536,6 +537,29 @@ async function seedStory(
     rationale: "Support tickets cluster around guides customers can't find.",
     sourceFileIds: [tickets._id], actor: agentActor(caseyConnection, user("casey")),
   });
+}
+
+/**
+ * One mutation shares one clock, so every seeded record would read "just now".
+ * Moves a file's v1 (its revision, creation event and createdAt) `ms` into the
+ * past so "what changed, and when?" has a believable answer on stage.
+ */
+async function backdateFirstVersion(ctx: MutationCtx, file: Doc<"files">, ms: number) {
+  const at = file.createdAt - ms;
+  const revision = await ctx.db
+    .query("file_revisions")
+    .withIndex("by_file_and_version", (q) => q.eq("fileId", file._id).eq("version", 1))
+    .unique();
+  if (revision) await ctx.db.patch(revision._id, { createdAt: at });
+  const events = await ctx.db
+    .query("workspace_events")
+    .withIndex("by_workspace_and_seq", (q) => q.eq("workspaceId", file.workspaceId))
+    .order("desc")
+    .take(5);
+  for (const event of events)
+    if (event.entityId === file._id && event.kind === "file.created")
+      await ctx.db.patch(event._id, { createdAt: at });
+  await ctx.db.patch(file._id, { createdAt: at });
 }
 
 async function upsertPasswordUser(
