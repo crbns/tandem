@@ -25,11 +25,13 @@ interface RevisionViewerProps {
   revision: Revision;
   /** The version before this one, if any (for "Changes in this version"). */
   previous: Revision | undefined;
+  /** The current version, i.e. the newest revision. */
+  head: { version: number; content: string };
   file: FileDetail;
 }
 
-function RevisionViewer({ revision, previous, file }: RevisionViewerProps) {
-  const isHead = revision.version === file.version;
+function RevisionViewer({ revision, previous, head, file }: RevisionViewerProps) {
+  const isHead = revision.version === head.version;
   const markdown = isMarkdown(file.mimeType);
   const canShowChanges = previous?.content !== undefined;
   const [view, setView] = useState<View>(canShowChanges ? "changes" : markdown ? "rendered" : "raw");
@@ -86,7 +88,7 @@ function RevisionViewer({ revision, previous, file }: RevisionViewerProps) {
       {view === "compare" && (
         <DiffView
           left={{ title: `Version ${revision.version}`, content: revision.content }}
-          right={{ title: `Version ${file.version} (current)`, content: file.content ?? "" }}
+          right={{ title: `Version ${head.version} (current)`, content: head.content }}
         />
       )}
       <p className="text-xs text-muted-foreground">
@@ -129,9 +131,16 @@ export default function HistoryPage() {
   }
 
   const [file, revisions] = resource.data;
+  // The file and its revisions are separate reads, so an edit landing between
+  // them can leave `file` a version behind. The list is newest first: trust it.
+  const newest = revisions[0];
+  const head = {
+    version: newest?.version ?? file.version,
+    content: newest && newest.version !== file.version ? (newest.content ?? "") : (file.content ?? ""),
+  };
   const currentIndex = Math.max(
     0,
-    revisions.findIndex((r) => r.version === (selected ?? file.version)),
+    revisions.findIndex((r) => r.version === (selected ?? head.version)),
   );
   const current = revisions[currentIndex];
   const previous = revisions[currentIndex + 1]; // newest first
@@ -160,11 +169,11 @@ export default function HistoryPage() {
         <div className="grid gap-6 xl:grid-cols-[17rem_minmax(0,1fr)]">
           <RevisionList
             revisions={revisions}
-            headVersion={file.version}
+            headVersion={head.version}
             selected={current.version}
             onSelect={setSelected}
           />
-          <RevisionViewer key={current.version} revision={current} previous={previous} file={file} />
+          <RevisionViewer key={current.version} revision={current} previous={previous} head={head} file={file} />
         </div>
       )}
     </div>

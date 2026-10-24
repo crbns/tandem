@@ -58,6 +58,29 @@ export function draftToStash(state: SaveState): { draft: string; baseVersion: nu
   return { draft: state.draft, baseVersion: state.baseVersion };
 }
 
+/**
+ * Start from a stashed draft (lost session, navigation). If the file moved on
+ * since the draft's base, open straight into the conflict so the user sees the
+ * newer version now, instead of a stale version label and a surprise conflict
+ * on the next save.
+ */
+export function restoreSaveState(
+  head: Theirs,
+  stash: { draft: string; baseVersion: number } | null,
+): SaveState {
+  const fresh = initSaveState(head.content, head.version);
+  if (!stash || stash.draft === head.content) return fresh;
+  if (stash.baseVersion !== head.version) {
+    return {
+      ...fresh,
+      baseVersion: stash.baseVersion,
+      draft: stash.draft,
+      phase: { kind: "conflict", mine: stash.draft, theirs: head },
+    };
+  }
+  return { ...fresh, draft: stash.draft, phase: { kind: "dirty" } };
+}
+
 export function canSave(state: SaveState): boolean {
   return (
     state.phase.kind === "dirty" || (state.phase.kind === "error" && state.draft !== state.base)

@@ -1,6 +1,6 @@
 import type { ConvexReactClient } from "convex/react";
 import { makeFunctionReference } from "convex/server";
-import { normalizeError } from "./errors";
+import { normalizeError, TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
 import type { FileDetail, FileSummary, Revision, Workspace } from "./types";
 
@@ -28,11 +28,23 @@ const fns = {
   listRevisions: makeFunctionReference<"query", { fileId: string }, Revision[]>("revisions:list"),
 };
 
-async function call<T>(run: () => Promise<T>): Promise<T> {
+// The Convex client never rejects while disconnected: queries wait for the
+// socket and mutations queue until it's back. Without a deadline, "Saving…" and
+// page loads would hang on flaky Wi-Fi. A timed-out mutation may still land
+// later; the next save then conflicts instead of overwriting (see errorCopy).
+export const CALL_TIMEOUT_MS = 15_000;
+
+export async function call<T>(run: () => Promise<T>, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new TandemApiError("NETWORK", { cause: "timed out" })), timeoutMs);
+  });
   try {
-    return await run();
+    return await Promise.race([run(), deadline]);
   } catch (err) {
     throw normalizeError(err);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

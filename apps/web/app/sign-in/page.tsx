@@ -9,6 +9,7 @@ import { MOCK_USERS } from "@/lib/auth/mockUsers";
 import { safeNext } from "@/lib/safeNext";
 import { endSignOut } from "@/lib/auth/signOutIntent";
 import { TandemMark } from "@/components/common/TandemMark";
+import { clearOtherUsersDraftStashes, draftOwnerKey } from "@/lib/editor/draftStash";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -37,6 +38,9 @@ function SignInForm() {
     setError(null);
     try {
       await session.signIn(email, password);
+      // Keep this person's stashed drafts (a lost session), drop anyone else's.
+      const owner = draftOwnerKey(email);
+      if (owner) clearOtherUsersDraftStashes(owner);
     } catch (err) {
       setError(
         err instanceof InvalidCredentialsError

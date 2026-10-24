@@ -23,9 +23,18 @@ export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: stri
     title: "You've been signed out",
     description: "Sign in again to continue. Your unsaved text is kept.",
   },
+  APPROVAL_REQUIRED: {
+    title: "Needs approval",
+    description: "This change needs a workspace member's approval before it applies.",
+  },
+  INVALID_INPUT: {
+    title: "That didn't work",
+    description: "Something about the request isn't valid. Check the name and type, then try again.",
+  },
   NETWORK: {
     title: "Can't reach Tandem",
-    description: "Check your connection and try again. Nothing was lost.",
+    description:
+      "Check your connection and try again. Nothing was lost. A save that was in progress may still go through once you're back online.",
   },
   NOT_IMPLEMENTED: {
     title: "Not available yet",
