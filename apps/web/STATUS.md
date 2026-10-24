@@ -48,3 +48,28 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | `brief.md` history: v1 agent, v2 human, labeled correctly | PASS | "Agent · Claude" / "Human · Alex"; head marked Current |
 | A Phase 4 save appears with the signed-in human as author | PASS | proposal.md v2/v4 "Human · Demo Human" between Claude's v1/v3/v5 |
 | View prior version read-only (rendered/raw) + compare with current | PASS | no restore in P0 |
+
+## Gate 6: live Convex integration
+
+All `PENDING (backend)`. The Convex deployment has no functions, auth config, or seeded users yet, so there's nothing to integrate with. When Person 2 lands them, Person 3 needs: the dev `NEXT_PUBLIC_CONVEX_URL`, the default workspace ID, and a seeded test login (in `apps/web/.env.local` only).
+
+| Check | Status | Notes |
+|---|---|---|
+| Claude-created file appears in the dashboard (after refresh/focus) | PENDING (backend) | refresh + focus refetch verified in mock |
+| Human save → v2; Claude rereads v2 | PENDING (backend) | needs Person 1's MCP + Person 2's functions |
+| Stale write from a second tab → ConflictPanel; Convex keeps newer | PENDING (backend) | same flow verified in mock via Simulate agent edit |
+| History attributes agent vs human | PENDING (backend) | verified in mock |
+| Signed-out `/w/*` redirects (real-mode proxy) | PASS | production standalone server: `/w/ws_demo` → 307 `/sign-in?next=%2Fw%2Fws_demo` |
+| Outsider gets the FORBIDDEN UI | PENDING (backend) | copy + ErrorState exist |
+| UNAUTHENTICATED on save stashes and restores the draft | PENDING (backend) | |
+
+## Gate 7: deploy artifacts + demo hardening
+
+| Check | Status | Notes |
+|---|---|---|
+| Production build passes | PASS | `next build` in real mode (placeholder Convex URL) and mock mode; standalone server at `.next/standalone/apps/web/server.js` |
+| Docker image builds | SKIPPED | Docker isn't installed on this machine. Run the `docker build` command in `README.md` on a machine that has it |
+| Compose + Caddy snippets, README deploy steps | PASS | `deploy/compose.web.yml`, `deploy/Caddyfile.web` (no root compose/Caddyfile exist yet) |
+| Friendly copy for every error code | PASS | `lib/api/errorCopy.ts` |
+| Dev mock controls hidden in production | PASS | the image forces `NEXT_PUBLIC_USE_MOCKS=false`; controls only render when the mock API is mounted |
+| Seed-reset instructions link | PENDING (backend) | Person 2 hasn't written them yet |

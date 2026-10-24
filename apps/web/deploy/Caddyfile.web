@@ -1,0 +1,8 @@
+# Site block for the web dashboard. Merge into the root Caddyfile when it exists.
+# WEB_DOMAIN is e.g. app.example.com; its DNS A record must point at the Vultr instance.
+# Caddy provisions HTTPS automatically.
+
+{$WEB_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy web:3000
+}

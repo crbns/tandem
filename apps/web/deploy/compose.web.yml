@@ -1,0 +1,30 @@
+# Web dashboard service for the Vultr Docker Compose stack.
+# There is no root compose file yet: merge this `web` service into it when one
+# exists (run from the repo root so the build context sees the whole monorepo).
+#
+#   docker compose -f apps/web/deploy/compose.web.yml build web
+#   docker compose -f apps/web/deploy/compose.web.yml up -d web
+#
+# Values come from a root `.env` next to the compose file (never committed):
+#   NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud
+#   NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=<optional>
+
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_CONVEX_URL: ${NEXT_PUBLIC_CONVEX_URL:?set NEXT_PUBLIC_CONVEX_URL}
+        NEXT_PUBLIC_DEFAULT_WORKSPACE_ID: ${NEXT_PUBLIC_DEFAULT_WORKSPACE_ID:-}
+    image: tandem-web
+    restart: unless-stopped
+    # Not published on the host: Caddy reaches it as web:3000 on the compose network.
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/sign-in"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
