@@ -28,3 +28,15 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | Seeded files render with correct versions and actor badges | PASS | proposal.md v1 Agent · Claude; brief.md v2 Human · Alex; notes.txt v1 |
 | Create file → v1 → opens detail | PASS | verified end-to-end after Phase 4 added the detail route |
 | Refresh button + refetch on window focus | PASS | how MCP-created files appear in P0 (no realtime) |
+
+## Gate 4: editor, optimistic-lock save, conflict UI
+
+| Check | Status | Notes |
+|---|---|---|
+| Edit `proposal.md` → Save → version 2, toast | PASS | Ctrl/Cmd+S and button; toast "Saved as version 2" |
+| Mock conflict: Simulate agent edit → type → Save → ConflictPanel, draft intact, latest shown | PASS | side-by-side with line highlights; "Version 3 by Agent · Claude" |
+| Keep editing on top of latest → next save is an intentional overwrite | PASS | base moves to v3, draft kept, save → v4 |
+| Discard mine & load latest (with confirmation) | PASS | |
+| Never auto-retries; errors keep the draft | PASS | covered by `saveMachine.test.ts` |
+| UNAUTHENTICATED → draft stashed in sessionStorage, restored after sign-in | PASS (code + reducer tests) | not exercisable in mock mode; check in Phase 6 |
+| Tests pass | PASS | |
