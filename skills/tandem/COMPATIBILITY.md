@@ -139,12 +139,26 @@ memory was verified separately by the Step C reviewer's manual probe on
 2026-10-23. Full table:
 [`eval/results/2026-10-23-claude-code.md`](./eval/results/2026-10-23-claude-code.md).
 
-| Prompts | Condition | Skill invoked | Any Tandem call | `sync_workspace` | First Tandem call = sync | Write tool | Errors/timeouts |
+| Prompts | Condition | Skill invoked | Any Tandem call | Sync attempted | First Tandem call = sync | Write attempted | CLI errors/timeouts (legacy) |
 |---|---|---|---|---|---|---|---|
 | 5 project prompts | WITH_SKILL | 10/10 | 10/10 | 10/10 | 10/10 | 4/10 | 0/10 |
 | 5 project prompts | NO_SKILL | 0/10 | 10/10 | 0/10 | 0/10 | 2/10 | 0/10 |
 | 2 unrelated controls | WITH_SKILL | 0/4 | 0/4 | 0/4 | 0/4 | 0/4 | 0/4 |
 | 2 unrelated controls | NO_SKILL | 0/4 | 0/4 | 0/4 | 0/4 | 0/4 | 0/4 |
+
+The historical table counts attempted sync/write calls. The committed JSON
+contains analyzed calls and tool errors, but omits raw tool-result events, so
+it cannot prove successful syncs under the updated harness; the committed
+results were left unchanged and no paid trials were rerun. Its legacy error
+column counts CLI errors/timeouts only (the recorded `tandem_errors` arrays
+are all empty).
+
+New harness summaries distinguish `sync`/`write` (attempted) from
+`sync_ok`/`write_ok` (at least one matching non-error tool result). `tool_errors`
+counts trials with one or more Tandem MCP errors, even when the final answer
+succeeds. `errors_or_timeouts` includes tool errors, CLI failures (including
+nonzero exit or missing final result), and timeouts. First-call order measures
+attempts, and all trials remain in the denominator.
 
 What the numbers do and don't show:
 

@@ -92,26 +92,33 @@ const live = { children: new Set(), roots: new Set() };
 let opts;
 let aborting = false;
 
-process.on("exit", () => {
-  for (const c of live.children) killGroup(c, "SIGKILL");
-  removeRoots();
-});
-for (const [sig, code] of [
-  ["SIGINT", 130],
-  ["SIGTERM", 143],
-]) {
-  process.on(sig, () => abort(sig, code));
-}
-
-main().catch((err) => {
-  if (aborting) return; // abort() cleans up and sets the exit code.
-  if (err.usage) {
-    console.error(`${err.message}\n\n${USAGE}`);
-    process.exit(2);
+// Importing analysis helpers must not launch trials or install CLI signal handlers.
+if (
+  process.argv[1] &&
+  safeRealpath(resolve(process.argv[1])) ===
+    safeRealpath(fileURLToPath(import.meta.url))
+) {
+  process.on("exit", () => {
+    for (const c of live.children) killGroup(c, "SIGKILL");
+    removeRoots();
+  });
+  for (const [sig, code] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ]) {
+    process.on(sig, () => abort(sig, code));
   }
-  console.error(`\nFAILED: ${err.message}`);
-  process.exit(1);
-});
+
+  main().catch((err) => {
+    if (aborting) return; // abort() cleans up and sets the exit code.
+    if (err.usage) {
+      console.error(`${err.message}\n\n${USAGE}`);
+      process.exit(2);
+    }
+    console.error(`\nFAILED: ${err.message}`);
+    process.exit(1);
+  });
+}
 
 async function main() {
   opts = parseArgs(process.argv.slice(2));
@@ -366,7 +373,7 @@ function runClaude(promptText, cwd, mcpConfig) {
   });
 }
 
-function analyze(run, { prompt, condition, rep }) {
+export function analyze(run, { prompt, condition, rep }) {
   const events = [];
   for (const line of run.stdout.split("\n")) {
     if (!line.trim()) continue;
@@ -394,15 +401,18 @@ function analyze(run, { prompt, condition, rep }) {
     if (e.type === "assistant") {
       for (const b of e.message?.content ?? []) {
         if (b.type !== "tool_use") continue;
-        const call = { name: b.name, input: b.input, error: null };
+        const call = { name: b.name, input: b.input, ok: false, error: null };
         calls.push(call);
         byId.set(b.id, call);
       }
     } else if (e.type === "user") {
       const content = e.message?.content;
       for (const b of Array.isArray(content) ? content : []) {
-        if (b.type === "tool_result" && b.is_error && byId.has(b.tool_use_id)) {
-          byId.get(b.tool_use_id).error = textOf(b.content).slice(0, 300);
+        if (b.type === "tool_result" && byId.has(b.tool_use_id)) {
+          const call = byId.get(b.tool_use_id);
+          call.ok = !b.is_error;
+          if (b.is_error)
+            call.error = textOf(b.content).slice(0, 300) || "tool result error";
         }
       }
     }
@@ -443,22 +453,30 @@ function analyze(run, { prompt, condition, rep }) {
     timed_out: run.timedOut,
     error: !init
       ? `no init event: ${run.stderr.trim().slice(0, 300)}`
-      : result?.is_error
-        ? result.subtype
-        : null,
+      : !result
+        ? "no final result event"
+        : run.code !== 0
+          ? `claude exited with code ${run.code}`
+          : result.is_error
+            ? result.subtype || "final result error"
+            : null,
     auth_error: authError,
     tools: calls.map(display),
     tandem_tools: tandemNames,
     tandem_called: tandemCalls.length > 0,
     sync_called: tandemNames.includes("sync_workspace"),
+    sync_ok: tandemCalls.some(
+      (c) => c.name === "mcp__tandem__sync_workspace" && c.ok,
+    ),
     first_tandem_is_sync: tandemNames[0] === "sync_workspace",
     skill_invoked: calls.some(
       (c) => c.name === "Skill" && c.input?.skill === "tandem",
     ),
     write_called: writes.length > 0,
+    write_ok: writes.some((c) => c.ok),
     write_tools: writes.map((c) => ({
       tool: c.name.slice("mcp__tandem__".length),
-      ok: !c.error,
+      ok: c.ok,
       error: c.error,
     })),
     tandem_errors: tandemCalls
@@ -519,7 +537,7 @@ function summarize(trials, prompts, conditions) {
   return { rows, totals };
 }
 
-function rates(ts) {
+export function rates(ts) {
   const count = (f) => ts.filter(f).length;
   const costs = ts.map((t) => t.cost_usd).filter((x) => typeof x === "number");
   return {
@@ -527,9 +545,14 @@ function rates(ts) {
     skill_invoked: count((t) => t.skill_invoked),
     any_tandem: count((t) => t.tandem_called),
     sync: count((t) => t.sync_called),
+    sync_ok: count((t) => t.sync_ok),
     first_is_sync: count((t) => t.first_tandem_is_sync),
     write: count((t) => t.write_called),
-    errors_or_timeouts: count((t) => t.error || t.timed_out),
+    write_ok: count((t) => t.write_ok),
+    tool_errors: count((t) => t.tandem_errors.length > 0),
+    errors_or_timeouts: count(
+      (t) => t.error || t.timed_out || t.tandem_errors.length > 0,
+    ),
     cost_usd: Number(costs.reduce((a, b) => a + b, 0).toFixed(4)),
   };
 }
@@ -592,10 +615,10 @@ function summarizeIsolation(trials) {
 
 function renderSummaryTable(summary) {
   const head =
-    "| Prompt | Condition | n | Skill invoked | Any Tandem call | sync_workspace | First Tandem call = sync | Write tool | Errors/timeouts |\n|---|---|---|---|---|---|---|---|---|\n";
+    "| Prompt | Condition | n | Skill invoked | Any Tandem call | Sync attempted | Sync OK | First Tandem call = sync | Write attempted | Write OK | Tool errors | Errors/timeouts (incl. tool errors) |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n";
   const fmt = (k, n) => `${k}/${n}`;
   const row = (label, r) =>
-    `| ${label} | ${r.condition} | ${r.n} | ${fmt(r.skill_invoked, r.n)} | ${fmt(r.any_tandem, r.n)} | ${fmt(r.sync, r.n)} | ${fmt(r.first_is_sync, r.n)} | ${fmt(r.write, r.n)} | ${fmt(r.errors_or_timeouts, r.n)} |`;
+    `| ${label} | ${r.condition} | ${r.n} | ${fmt(r.skill_invoked, r.n)} | ${fmt(r.any_tandem, r.n)} | ${fmt(r.sync, r.n)} | ${fmt(r.sync_ok, r.n)} | ${fmt(r.first_is_sync, r.n)} | ${fmt(r.write, r.n)} | ${fmt(r.write_ok, r.n)} | ${fmt(r.tool_errors, r.n)} | ${fmt(r.errors_or_timeouts, r.n)} |`;
   return (
     head +
     summary.rows.map((r) => row(`\`${r.prompt_id}\``, r)).join("\n") +
@@ -615,6 +638,10 @@ function renderMarkdown(r) {
       const flags = [
         t.timed_out && "timeout",
         t.error,
+        ...t.tandem_errors.map(
+          (e) =>
+            `${e.tool}: ${e.error.replace(/\s+/g, " ").replace(/\|/g, "\\|")}`,
+        ),
         t.permission_denials.length &&
           `denied: ${t.permission_denials.join(",")}`,
       ]
@@ -643,7 +670,7 @@ Generated by \`skills/tandem/eval/run.mjs\`. Raw data: \`${r.stem}.json\`.
 
 ## Summary
 
-Counts are k/n trials. "Write tool" = any of create_document, update_document, publish_work, propose_context_change. A trial that errored or timed out still counts in n. Tool calls made inside subagents are excluded.
+Counts are k/n trials. Sync/write attempted count trials with matching tool calls; Sync/write OK require at least one matching non-error tool result. Write tools are create_document, update_document, publish_work, propose_context_change. First Tandem call = sync measures attempted order. Tool errors counts trials with at least one Tandem tool error, even if the final answer succeeds. Errors/timeouts includes tool errors, CLI failures (including nonzero exit or a missing final result), and timeouts; these trials still count in n. Tool calls made inside subagents are excluded.
 
 ${renderSummaryTable(r.summary)}
 ## Isolation

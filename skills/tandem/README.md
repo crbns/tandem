@@ -150,6 +150,27 @@ Use `--help` for the other options (`--prompts`, `--conditions`,
 `--concurrency`, `--keep`, ...). Each run uses your logged-in Claude Code
 account. The default 28 runs cost about $1.
 
+Summary counts are trials, not individual calls. `sync` and `write` measure
+attempts; `sync_ok` and `write_ok` require at least one matching non-error tool
+result. A write is any `create_document`, `update_document`, `publish_work`, or
+`propose_context_change` call. `tool_errors` counts trials with at least one
+Tandem MCP tool error, even if Claude returns a normal final answer.
+`errors_or_timeouts` includes those tool errors, CLI failures (including a
+nonzero exit or missing final result event), and timeouts. First-call order
+measures attempts. Failed trials remain in the denominator.
+
+Run the deterministic harness tests without Claude or an MCP server:
+
+```sh
+node --test skills/tandem/eval/
+```
+
+The committed 2026-10-23 JSON stores analyzed calls and errors, but not the raw
+tool-result events needed to prove successful syncs. Its JSON and Markdown
+results are unchanged; the historical sync/write columns measure attempts,
+and its errors column predates tool-error aggregation. No paid trials were
+rerun to update the metrics.
+
 **What the 2026-10-23 results mean.** With the skill, Claude Code called
 `sync_workspace` first in 10/10 project chats. Without it, it did so in 0/10.
 Neither condition touched Tandem on the unrelated controls. Without the skill,
