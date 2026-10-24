@@ -172,8 +172,9 @@ export const addWorkspaceMember = mutation({
       .withIndex("email", (q) => q.eq("email", email))
       .unique();
     if (!invitee) throw new ConvexError({ code: "USER_NOT_REGISTERED" });
-    if (!invitee.emailVerificationTime)
-      throw new ConvexError({ code: "USER_EMAIL_NOT_VERIFIED" });
+    // Membership is explicitly added by a workspace owner/admin. Password
+    // accounts have no verification flow configured in this hackathon build,
+    // so requiring emailVerificationTime would make every invite impossible.
     const existing = await ctx.db
       .query("workspace_members")
       .withIndex("by_workspace_and_user", (q) =>

@@ -50,13 +50,14 @@ function asActor(value: unknown): Actor | undefined {
   const v = asRecord(value);
   if (!v) return undefined;
   // Canonical camelCase, or MCP's snake_case Attribution { actor_type, user_id, client }.
-  const actorType = v.actorType ?? v.actor_type;
+  const actorType = v.actorType ?? v.actor_type ?? v.type;
   const userId = v.userId ?? v.user_id;
   if ((actorType !== "human" && actorType !== "agent") || typeof userId !== "string") return undefined;
   const str = (x: unknown) => (typeof x === "string" ? x : undefined);
-  const userName = str(v.userName ?? v.user_name);
+  const label = str(v.label);
+  const userName = str(v.userName ?? v.user_name) ?? (actorType === "human" ? label : undefined);
   const agentClient = str(v.agentClient ?? v.client);
-  const agentName = str(v.agentName ?? v.agent_name);
+  const agentName = str(v.agentName ?? v.agent_name) ?? (actorType === "agent" ? label : undefined);
   return {
     actorType,
     userId,
@@ -71,7 +72,18 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
   if (isApiErrorCode(data)) return new TandemApiError(data);
 
   const record = asRecord(data);
-  const code = record && isApiErrorCode(record.code) ? record.code : "UNKNOWN";
+  const backendCode = record && typeof record.code === "string" ? record.code : undefined;
+  const code = backendCode && isApiErrorCode(backendCode)
+    ? backendCode
+    : backendCode === "INVALID_NAME" || backendCode === "INVALID_PARENT_FOLDER" || backendCode === "INVALID_EMAIL" || backendCode === "USER_NOT_REGISTERED"
+      ? "INVALID_INPUT"
+      : backendCode === "USER_NOT_INITIALIZED"
+        ? "UNAUTHENTICATED"
+        : backendCode === "WORKSPACE_NOT_FOUND"
+          ? "FORBIDDEN"
+          : backendCode === "PROPOSAL_ALREADY_DECIDED" || backendCode === "USER_EMAIL_NOT_VERIFIED"
+            ? "APPROVAL_REQUIRED"
+            : "UNKNOWN";
   const details: ApiErrorDetails = {};
   if (record) {
     // Canonical keys are camelCase (CONTRACT_NOTES); snake_case is accepted so a

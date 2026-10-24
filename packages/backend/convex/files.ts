@@ -61,22 +61,13 @@ async function getAuthorizedFile(
 
 export const listFiles = query({
   args: {
-    workspaceId: v.optional(v.id("workspaces")),
+    workspaceId: v.id("workspaces"),
     folderId: v.optional(v.id("folders")),
     query: v.optional(v.string()),
   },
   returns: v.array(fileValidator),
   handler: async (ctx, args) => {
-    const user = await requireUser(ctx);
-    let workspaceId = args.workspaceId;
-    if (!workspaceId) {
-      const membership = await ctx.db
-        .query("workspace_members")
-        .withIndex("by_user_and_workspace", (q) => q.eq("userId", user._id))
-        .first();
-      if (!membership) throw new ConvexError({ code: "FORBIDDEN" });
-      workspaceId = membership.workspaceId;
-    }
+    const workspaceId = args.workspaceId;
     await requireMembership(ctx, workspaceId);
     const rows = args.folderId
       ? await ctx.db
@@ -84,11 +75,11 @@ export const listFiles = query({
           .withIndex("by_workspace_and_parent", (q) =>
             q.eq("workspaceId", workspaceId!).eq("parentId", args.folderId),
           )
-          .take(100)
+          .collect()
       : await ctx.db
           .query("files")
           .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId!))
-          .take(100);
+          .collect();
     const needle = args.query?.trim().toLocaleLowerCase();
     return rows
       .filter(
@@ -112,7 +103,7 @@ export const readFile = query({
 
 export const createDocument = mutation({
   args: {
-    workspaceId: v.optional(v.id("workspaces")),
+    workspaceId: v.id("workspaces"),
     parentId: v.optional(v.id("folders")),
     name: v.string(),
     mimeType: v.string(),
@@ -120,17 +111,8 @@ export const createDocument = mutation({
   },
   returns: fileValidator,
   handler: async (ctx, args) => {
-    const user = await requireUser(ctx);
-    let workspaceId = args.workspaceId;
-    if (!workspaceId) {
-      const membership = await ctx.db
-        .query("workspace_members")
-        .withIndex("by_user_and_workspace", (q) => q.eq("userId", user._id))
-        .first();
-      if (!membership) throw new ConvexError({ code: "FORBIDDEN" });
-      workspaceId = membership.workspaceId;
-    }
-    await requireMembership(ctx, workspaceId);
+    const workspaceId = args.workspaceId;
+    const { user } = await requireMembership(ctx, workspaceId);
     if (args.parentId) {
       const folder = await ctx.db.get(args.parentId);
       if (!folder || folder.workspaceId !== workspaceId)
@@ -230,24 +212,60 @@ export const getFileVersions = query({
     v.object({
       id: v.id("file_revisions"),
       version: v.number(),
-      content: v.string(),
+      content: v.optional(v.string()),
       actor: actorValidator,
       createdAt: v.number(),
     }),
   ),
   handler: async (ctx, args) => {
     const file = await getAuthorizedFile(ctx, args.fileId);
+    const requestedLimit = args.limit ?? 20;
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(Math.max(Math.floor(requestedLimit), 1), 100)
+      : 20;
     const revisions = await ctx.db
       .query("file_revisions")
       .withIndex("by_file_and_version", (q) => q.eq("fileId", file._id))
       .order("desc")
-      .take(Math.min(Math.max(args.limit ?? 20, 1), 100));
-    return revisions.map(({ _id, version, content, actor, createdAt }) => ({
+      .take(limit);
+    // Keep history metadata bounded. The selected revision's content is read
+    // separately through getFileRevision.
+    return revisions.map(({ _id, version, actor, createdAt }) => ({
       id: _id,
       version,
-      content,
       actor,
       createdAt,
     }));
+  },
+});
+
+export const getFileRevision = query({
+  args: { fileId: v.id("files"), version: v.number() },
+  returns: v.union(
+    v.object({
+      id: v.id("file_revisions"),
+      version: v.number(),
+      content: v.string(),
+      actor: actorValidator,
+      createdAt: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { fileId, version }) => {
+    const file = await getAuthorizedFile(ctx, fileId);
+    const revision = await ctx.db
+      .query("file_revisions")
+      .withIndex("by_file_and_version", (q) =>
+        q.eq("fileId", file._id).eq("version", version),
+      )
+      .unique();
+    if (!revision) return null;
+    return {
+      id: revision._id,
+      version: revision.version,
+      content: revision.content,
+      actor: revision.actor,
+      createdAt: revision.createdAt,
+    };
   },
 });
