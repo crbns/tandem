@@ -3290,9 +3290,11 @@ describe("file history for 'what changed?'", () => {
 
     const old = await callTool(t, apiKey, "read_file", { file_id: created.id, version: 1 });
     expect(old.isError).toBeUndefined();
-    expect(old.structuredContent).toMatchObject({ content: "a\nb\n", version: 1, file: { version: 2 } });
+    // content_version, not version: only file.version goes in expected_version.
+    expect(old.structuredContent).toMatchObject({ content: "a\nb\n", content_version: 1, file: { version: 2 } });
+    expect(old.structuredContent).not.toHaveProperty("version");
     const latest = await callTool(t, apiKey, "read_file", { file_id: created.id });
-    expect(latest.structuredContent).toMatchObject({ content: "a\nc\nd\n", version: 2 });
+    expect(latest.structuredContent).toMatchObject({ content: "a\nc\nd\n", content_version: 2 });
 
     const missing = await callTool(t, apiKey, "read_file", { file_id: created.id, version: 9 });
     expect(missing.isError).toBe(true);

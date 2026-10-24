@@ -273,5 +273,7 @@ describe("binary uploads", () => {
       limit: 10,
     });
     expect(versions.versions[0]?.sizeBytes).toBe(9);
+    // Binary revisions have no line counts.
+    expect(versions.versions.map((v) => v.change)).toEqual([null, null]);
   });
 });

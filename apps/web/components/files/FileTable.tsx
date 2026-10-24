@@ -9,6 +9,7 @@ import { folderHref } from "@/lib/folders";
 import { formatAbsolute, formatRelative } from "@/lib/time";
 import { useNow } from "@/lib/useNow";
 import { useArrivedFiles } from "@/lib/api/useWorkspace";
+import { ArrivalGlow } from "./ArrivalGlow";
 import { ActorBadge } from "@/components/common/ActorBadge";
 import { FileActions } from "./FileActions";
 import { FolderActions } from "./FolderActions";
@@ -98,19 +99,16 @@ export function FileTable({ workspaceId, folders = [], files, selectedId, onSele
         {files.map((file) => {
           const href = fileHref(workspaceId, file.id);
           const selected = file.id === selectedId;
-          const arrivedVersion = arrivedFiles.get(file.id);
-          const arrived = arrivedVersion !== undefined;
+          const arrival = arrivedFiles.get(file.id);
           return (
             <TableRow
-              // Keyed on the version so a re-save remounts the row and replays the arrival.
-              key={`${file.id}@${file.version}`}
+              key={file.id}
               tabIndex={0}
               aria-selected={selected}
-              data-arrived={arrivedVersion}
+              data-arrived={arrival?.version}
               className={cn(
-                "cursor-pointer outline-none focus-visible:bg-accent",
+                "relative isolate cursor-pointer outline-none focus-visible:bg-accent",
                 selected && "bg-accent",
-                arrived && "animate-arrival",
               )}
               onClick={() => onSelect?.(file.id)}
               onFocus={() => onSelect?.(file.id)}
@@ -123,6 +121,7 @@ export function FileTable({ workspaceId, folders = [], files, selectedId, onSele
                 {displayId(file.id)}
               </TableCell>
               <TableCell className="w-full min-w-40 max-w-0">
+                {arrival && <ArrivalGlow key={arrival.at} mark={arrival} />}
                 <Link
                   href={href}
                   className="block truncate font-semibold hover:underline"

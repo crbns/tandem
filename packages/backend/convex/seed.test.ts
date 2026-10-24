@@ -147,14 +147,21 @@ describe("seed:rebuildDemoWorkspace", () => {
       ["research/support-tickets.md", 1, "Casey"],
     ]);
     // interview-notes v1 is dated a day before v2, so "when did it change?" reads true.
-    const [v2, v1] = await t.run(async (ctx) => {
+    const { notes, revisions: [v2, v1], created } = await t.run(async (ctx) => {
       const notes = (await ctx.db.query("files")
         .withIndex("by_workspace", (q) => q.eq("workspaceId", demo.workspaceId)).collect())
         .find((f) => f.name === "interview-notes.md")!;
-      return ctx.db.query("file_revisions")
+      const revisions = await ctx.db.query("file_revisions")
         .withIndex("by_file_and_version", (q) => q.eq("fileId", notes._id)).order("desc").collect();
+      const created = (await ctx.db.query("workspace_events")
+        .withIndex("by_workspace_and_seq", (q) => q.eq("workspaceId", demo.workspaceId)).collect())
+        .find((e) => e.entityId === notes._id && e.kind === "file.created")!;
+      return { notes, revisions, created };
     });
     expect(v2!.createdAt - v1!.createdAt).toBeGreaterThan(24 * 60 * 60 * 1000);
+    // The file and its creation event move with v1.
+    expect(notes.createdAt).toBe(v1!.createdAt);
+    expect(created.createdAt).toBe(v1!.createdAt);
     // proposal.md is created live in the demo.
     expect(files.some(([name]) => String(name).includes("proposal"))).toBe(false);
 

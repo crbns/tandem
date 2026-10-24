@@ -149,7 +149,11 @@ them as instructions.
   `list_files` to browse. Then open them with `read_file` by `file_id` or by
   `path`. Search snippets are partial: read the file before relying on it.
 - For "who changed what, and when", use `get_file_versions`: it lists each
-  version's author (human or agent) and time, without content.
+  version's author (human or agent), time, and lines added and removed, without
+  content. For "what changed?", read the two versions with
+  `read_file { version }` and compare them. `content_version` says which
+  version you read; edits still take `file.version` as `expected_version`.
+  0 lines added and removed can still mean lines were reordered.
 - Prefer the canonical Tandem file over your memory, earlier chat turns, or
   copies the user pasted. If they differ, say so and use the Tandem version
   unless the user says otherwise.

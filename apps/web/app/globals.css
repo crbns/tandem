@@ -106,8 +106,9 @@
     box-shadow: inset 3px 0 0 var(--agent);
   }
 }
-/* Reduced motion holds the mark still. It stays an animation so it outranks
-   the selected row's bg-accent, as the fading version does. */
+/* Reduced motion holds the mark still. ArrivalGlow paints both versions on
+   an overlay behind the row's content, so a selected row's bg-accent can't
+   hide them. */
 @keyframes arrival-hold {
   from,
   to {

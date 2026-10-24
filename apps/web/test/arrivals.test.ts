@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { arrivalMessage, detectArrivals } from "@/lib/arrivals";
+import { ARRIVAL_MS, arrivalDelay, arrivalMessage, detectArrivals } from "@/lib/arrivals";
 import type { Actor, FileSummary } from "@/lib/api/types";
 
 const alexsClaude: Actor = { actorType: "agent", userId: "u_alex", userName: "Alex", agentClient: "claude" };
@@ -51,5 +51,20 @@ describe("arrivalMessage", () => {
     expect(arrivalMessage({ kind: "updated", file: file("a", 3, alexsClaude, "brief.md") })).toBe(
       "Alex via Claude saved brief.md v3",
     );
+  });
+});
+
+describe("arrivalDelay", () => {
+  it("starts a fresh arrival at the beginning of its fade", () => {
+    expect(arrivalDelay(1000, 1000)).toBe(0);
+  });
+
+  it("resumes mid-fade when a list mounts after the arrival, instead of replaying it", () => {
+    expect(arrivalDelay(1000, 4000)).toBe(-3000);
+  });
+
+  it("never runs past the end or into the future", () => {
+    expect(arrivalDelay(1000, 1000 + ARRIVAL_MS + 500)).toBe(-ARRIVAL_MS);
+    expect(arrivalDelay(5000, 1000)).toBe(0);
   });
 });

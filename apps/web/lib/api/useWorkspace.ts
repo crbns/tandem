@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ARRIVAL_MS, arrivalMessage, detectArrivals } from "@/lib/arrivals";
+import { ARRIVAL_MS, arrivalMessage, detectArrivals, type ArrivalMark } from "@/lib/arrivals";
 import { useTandemApi } from "./index";
 import { useResource } from "./useResource";
 import type { FileSummary, Workspace } from "./types";
@@ -46,11 +46,11 @@ export function useWorkspaceRefresh(workspaceId: string, reload: () => void) {
 
 /**
  * Files an assistant just created, saved or moved, by id, with the version
- * that arrived; the file table marks their rows.
+ * that arrived and when; file lists mark their rows.
  */
-export const ArrivalsContext = createContext<ReadonlyMap<string, number>>(new Map());
+export const ArrivalsContext = createContext<ReadonlyMap<string, ArrivalMark>>(new Map());
 
-export function useArrivedFiles(): ReadonlyMap<string, number> {
+export function useArrivedFiles(): ReadonlyMap<string, ArrivalMark> {
   return useContext(ArrivalsContext);
 }
 
@@ -60,13 +60,13 @@ export function useArrivedFiles(): ReadonlyMap<string, number> {
  * returned map for ARRIVAL_MS so its row can be marked. No toast for the
  * file already open: its editor reports the newer version itself.
  */
-export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>): ReadonlyMap<string, number> {
+export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>): ReadonlyMap<string, ArrivalMark> {
   const router = useRouter();
   const pathname = usePathname();
   const openPath = useRef(pathname);
   openPath.current = pathname;
   const previous = useRef<{ workspaceId: string; files: FileSummary[] } | null>(null);
-  const [arrived, setArrived] = useState<ReadonlyMap<string, number>>(new Map());
+  const [arrived, setArrived] = useState<ReadonlyMap<string, ArrivalMark>>(new Map());
   // One timer per file: a second save within ARRIVAL_MS restarts its mark
   // instead of the first save's timer clearing it early.
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -85,9 +85,10 @@ export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>)
     previous.current = { workspaceId, files: files.data };
     const arrivals = detectArrivals(before, files.data);
     if (arrivals.length === 0) return;
+    const at = Date.now();
     setArrived((current) => {
       const next = new Map(current);
-      for (const { file } of arrivals) next.set(file.id, file.version);
+      for (const { file } of arrivals) next.set(file.id, { version: file.version, at });
       return next;
     });
     for (const arrival of arrivals) {

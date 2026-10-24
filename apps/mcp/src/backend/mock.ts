@@ -15,6 +15,7 @@ import {
   type FailedTool,
 } from "../errors.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
+import { lineChanges } from "./diff.js";
 import {
   MAX_NAME_LENGTH,
   isValidName,
@@ -392,7 +393,18 @@ export class MockBackend implements TandemBackend {
       }
       file = found.file;
     }
-    return { file: this.toMetadata(file), content: head(file).content };
+    if (input.version !== undefined) {
+      const revision = file.revisions.find((r) => r.version === input.version);
+      if (!revision) {
+        throw new TandemError(
+          "INVALID_INPUT",
+          `${file.name} has no version ${input.version}; its latest is ${head(file).version}. get_file_versions lists them.`,
+        );
+      }
+      return { file: this.toMetadata(file), content: revision.content, content_version: revision.version };
+    }
+    const latest = head(file);
+    return { file: this.toMetadata(file), content: latest.content, content_version: latest.version };
   }
 
   async getFileVersions(
@@ -401,16 +413,17 @@ export class MockBackend implements TandemBackend {
     limit: number,
   ): Promise<FileVersions> {
     const file = this.getFile(actor, fileId);
-    const versions = file.revisions
-      .slice()
-      .reverse()
-      .slice(0, limit)
-      .map((r) => ({
+    const newestFirst = file.revisions.slice().reverse();
+    const versions = newestFirst.slice(0, limit).map((r, i) => {
+      const { linesAdded, linesRemoved } = lineChanges(newestFirst[i + 1]?.content ?? "", r.content);
+      return {
         version: r.version,
         created_at: r.created_at,
         author: r.created_by,
         size_bytes: Buffer.byteLength(r.content, "utf8"),
-      }));
+        change: { lines_added: linesAdded, lines_removed: linesRemoved },
+      };
+    });
     return { file: this.toMetadata(file), versions };
   }
 

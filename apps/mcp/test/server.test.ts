@@ -304,7 +304,28 @@ describe("Tandem MCP server", () => {
     expect(after.structuredContent).toMatchObject({
       file: { version: 2 },
       content: "v2 content",
+      content_version: 2,
     });
+
+    // Same history contract as the Convex server: older versions by number,
+    // and per-version line counts.
+    const older = await call(alex, "read_file", { file_id: file.id, version: 1 });
+    expect(older.structuredContent).toMatchObject({
+      file: { version: 2 },
+      content: "v1 content",
+      content_version: 1,
+    });
+    const missing = await call(alex, "read_file", { file_id: file.id, version: 9 });
+    expect(missing.isError).toBe(true);
+    const versions = await call(alex, "get_file_versions", { file_id: file.id });
+    expect(
+      (versions.structuredContent as { versions: { version: number; change: unknown }[] }).versions.map(
+        (v) => [v.version, v.change],
+      ),
+    ).toEqual([
+      [2, { lines_added: 1, lines_removed: 1 }],
+      [1, { lines_added: 1, lines_removed: 0 }],
+    ]);
 
     await Promise.all([alex.close(), sam.close()]);
   });

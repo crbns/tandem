@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import { ArrowRightIcon, FolderIcon, RotateCwIcon } from "lucide-react";
 import { useTandemApi } from "@/lib/api";
 import { useResource, type Resource } from "@/lib/api/useResource";
-import { useWorkspaceFiles, useWorkspaceRefresh } from "@/lib/api/useWorkspace";
+import { useArrivedFiles, useWorkspaceFiles, useWorkspaceRefresh } from "@/lib/api/useWorkspace";
 import { clientName } from "@/lib/actors";
 import { folderHref, plural } from "@/lib/folders";
 import { condenseTree, contextDigest, recentFiles, summarizeAgents, RECENT_ACTIVITY_MS } from "@/lib/overview";
@@ -15,6 +15,7 @@ import { useNow } from "@/lib/useNow";
 import type { AgentActivity, ContextDetails, FileSummary, FolderSummary } from "@/lib/api/types";
 import { CustodyMark } from "@/components/common/CustodyMark";
 import { ErrorState } from "@/components/common/ErrorState";
+import { ArrivalGlow } from "@/components/files/ArrivalGlow";
 import { FileIcon } from "@/components/files/FileIcon";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -198,6 +199,8 @@ function FilesPanel({
   const data = resource.status === "ready" ? resource.data : null;
   const tree = useMemo(() => data && condenseTree(data.folders, data.files), [data]);
   const recent = useMemo(() => data && recentFiles(data.files), [data]);
+  // The landing page: an assistant's new or saved file lights up here too.
+  const arrived = useArrivedFiles();
   return (
     <Panel id="overview-files" title="Files" href={folderHref(workspaceId, null)} linkLabel="Open files">
       {resource.status === "loading" && <Skeleton className="h-48" aria-label="Loading files" />}
@@ -227,7 +230,8 @@ function FilesPanel({
                     </Link>
                   </li>
                 ) : (
-                  <li key={row.file.id}>
+                  <li key={row.file.id} className="relative isolate">
+                    {arrived.has(row.file.id) && <ArrivalGlow key={arrived.get(row.file.id)!.at} mark={arrived.get(row.file.id)!} />}
                     <Link href={fileHref(row.file)} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-accent">
                       <FileIcon mimeType={row.file.mimeType} />
                       <span className="min-w-0 flex-1 truncate">{row.file.name}</span>
@@ -250,7 +254,8 @@ function FilesPanel({
             <h3 className="label-caps mt-1 text-muted-foreground">Recently changed</h3>
             <ul aria-label="Recently changed files" className="flex flex-col text-sm">
               {recent.map((file) => (
-                <li key={file.id}>
+                <li key={file.id} className="relative isolate">
+                  {arrived.has(file.id) && <ArrivalGlow key={arrived.get(file.id)!.at} mark={arrived.get(file.id)!} />}
                   <Link href={fileHref(file)} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-accent">
                     <CustodyMark kind={file.updatedBy.actorType} />
                     <span className="min-w-0 flex-1 truncate" title={file.path}>

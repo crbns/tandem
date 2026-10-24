@@ -73,6 +73,8 @@ export interface FolderMetadata {
 export interface FileWithContent {
   file: FileMetadata;
   content: string;
+  /** The version `content` belongs to; file.version stays the latest. */
+  content_version: number;
 }
 
 /**
@@ -106,6 +108,8 @@ export interface ListFilesResult {
 export interface ReadFileInput {
   file_id?: string;
   path?: string;
+  /** An earlier version to read; the latest when omitted. Unknown versions throw INVALID_INPUT. */
+  version?: number;
 }
 
 export interface CreateFolderInput {
@@ -209,6 +213,8 @@ export interface FileVersion {
   author: Attribution;
   /** UTF-8 byte length of that revision's content. */
   size_bytes: number;
+  /** Lines added and removed against the version before it. */
+  change: { lines_added: number; lines_removed: number } | null;
 }
 
 export interface FileVersions {

@@ -10,6 +10,20 @@ export interface Arrival {
 /** How long an arrived row stays marked in the file list. */
 export const ARRIVAL_MS = 8000;
 
+/** A marked file: the version that arrived, and when the dashboard noticed it. */
+export interface ArrivalMark {
+  version: number;
+  at: number;
+}
+
+/**
+ * The CSS animation-delay (ms, zero or negative) that puts an arrival's fade
+ * where it should be at `now`, so a list that mounts late doesn't replay it.
+ */
+export function arrivalDelay(at: number, now: number): number {
+  return Math.max(-ARRIVAL_MS, Math.min(0, at - now));
+}
+
 /**
  * Compares two listings of the same workspace. Only agent writes count: a
  * person saw their own edit, and the point is noticing what an assistant did
