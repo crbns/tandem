@@ -59,10 +59,11 @@ saved, or published when you did not.
 
 ## 3. Edit existing documents safely
 
-1. Call `read_file` and keep the returned `version` and content.
+1. Call `read_file` and keep the returned `file.version` and `content`.
 2. Make your change against that content, preserving everything you were not
    asked to change.
-3. Call `update_document` with `expected_version` set to the version you read.
+3. Call `update_document` with `expected_version` set to the `file.version` you
+   read.
 4. Never overwrite a file without reading it first in this conversation, and
    never send a version number you did not get from the server.
 
@@ -85,7 +86,7 @@ Someone else saved a newer version since you read it.
 - Check with `search_files`/`list_files` first so you don't duplicate an
   existing file; update that file instead if one exists.
 - Write Markdown. Use a clear, descriptive, kebab-case name such as
-  `q4-launch-plan.md`, and place it in the relevant folder if folders exist.
+  `q4-launch-plan.md`. Only pass a folder id if a tool already returned one.
 
 ## 6. Publish work
 
@@ -111,12 +112,12 @@ Someone else saved a newer version since you read it.
 
 | Code | What to do |
 |---|---|
-| `UNAUTHENTICATED` | Ask the user to reconnect or re-authorize the Tandem connector. Don't retry until they do. |
+| `UNAUTHENTICATED` (usually not a tool result: the connector fails or asks to re-authenticate) | Ask the user to reconnect or re-authorize the Tandem connector. Don't retry until they do. |
 | `FORBIDDEN` | Tell the user they don't have access to that workspace or file. Don't retry or try workarounds. |
 | `FILE_NOT_FOUND` | Re-run `list_files`/`search_files` to get current ids. Don't guess ids. |
 | `VERSION_CONFLICT` | Follow section 4. |
 | `APPROVAL_REQUIRED` | The change needs human approval. Switch to `propose_context_change` and tell the user. |
-| `INVALID_INPUT` | Read the error message, fix the arguments, retry once. |
+| `INVALID_INPUT` or `Input validation error` (MCP error -32602) | Your arguments were rejected. Read the error message, fix the arguments, retry once. |
 
 For any other error, report it to the user in plain words and don't invent a
 success.

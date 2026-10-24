@@ -94,10 +94,19 @@ export class MockBackend implements TandemBackend {
     actor: Actor,
     input: CreateDocumentInput,
   ): Promise<FileMetadata> {
+    const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
+    // No folders in the mock yet, so no parent_id can name a valid folder.
+    if (input.parent_id !== undefined) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "Folders are not supported yet; omit parent_id.",
+        { parent_id: input.parent_id },
+      );
+    }
     const file: StoredFile = {
       id: `file_${randomUUID()}`,
-      workspace_id: this.resolveWorkspace(actor, input.workspace_id),
-      parent_id: input.parent_id ?? null,
+      workspace_id: workspaceId,
+      parent_id: null,
       name: input.name,
       mime_type: input.mime_type,
       revisions: [newRevision(actor, 1, input.content)],
@@ -141,9 +150,10 @@ export class MockBackend implements TandemBackend {
   }
 
   private getFile(actor: Actor, fileId: string): StoredFile {
+    // Another tenant's file looks exactly like a missing one, so ids can't be probed.
     const file = this.files.get(fileId);
-    if (!file) throw fileNotFound(fileId);
-    this.resolveWorkspace(actor, file.workspace_id);
+    if (!file || !this.members.get(file.workspace_id)?.has(actor.user_id))
+      throw fileNotFound(fileId);
     return file;
   }
 }

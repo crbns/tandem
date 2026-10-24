@@ -21,7 +21,7 @@ export class TandemError extends Error {
 export function forbidden(workspaceId: string): TandemError {
   return new TandemError(
     "FORBIDDEN",
-    `You are not a member of workspace ${workspaceId}. Call list_files without workspace_id to use your default workspace.`,
+    `You don't have access to workspace ${workspaceId}.`,
     { workspace_id: workspaceId },
   );
 }

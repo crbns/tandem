@@ -38,6 +38,10 @@ export interface CreateDocumentInput {
   content: string;
   mime_type: string;
   workspace_id?: string;
+  /**
+   * Must name an existing folder in the same workspace as the new document;
+   * otherwise throw INVALID_INPUT. Never link a record across workspaces.
+   */
   parent_id?: string;
 }
 

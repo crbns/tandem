@@ -32,7 +32,7 @@ export function createMcpServer(
           .optional()
           .describe("Case-insensitive substring to match against file names."),
       },
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     (args) =>
       run(async () => ({ files: await backend.listFiles(actor, args) })),
@@ -48,7 +48,7 @@ export function createMcpServer(
       inputSchema: {
         file_id: z.string().min(1).describe("File id from list_files."),
       },
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     ({ file_id }) => run(() => backend.readFile(actor, file_id)),
   );
@@ -67,7 +67,7 @@ export function createMcpServer(
           .describe('File name including extension, e.g. "notes.md".'),
         content: z.string().describe("Full text content of the document."),
         mime_type: z
-          .string()
+          .enum(["text/markdown", "text/plain"])
           .default("text/markdown")
           .describe('MIME type. Defaults to "text/markdown".'),
         workspace_id: z
@@ -79,7 +79,15 @@ export function createMcpServer(
         parent_id: z
           .string()
           .optional()
-          .describe("Folder to create it in. Omit for the workspace root."),
+          .describe(
+            "Folder to create it in. Folders aren't supported yet, so omit this.",
+          ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
       },
     },
     (args) => run(() => backend.createDocument(actor, args)),
@@ -104,6 +112,13 @@ export function createMcpServer(
           .int()
           .positive()
           .describe("The file.version you based your edit on."),
+      },
+      // Idempotent: a retry with the same expected_version can't apply twice.
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       },
     },
     (args) => run(() => backend.updateDocument(actor, args)),

@@ -15,7 +15,9 @@ let baseUrl: string;
 beforeAll(async () => {
   server = createApp({
     backend: new MockBackend(),
-    identity: new DevTokenResolver("alex-token:user_alex,sam-token:user_sam"),
+    identity: new DevTokenResolver(
+      "alex-token:user_alex,sam-token:user_sam,jordan-token:user_jordan",
+    ),
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
@@ -78,6 +80,31 @@ describe("Tandem MCP server", () => {
       "read_file",
       "update_document",
     ]);
+    await client.close();
+  });
+
+  it("annotates tools as non-destructive and closed-world", async () => {
+    const client = await connect("alex-token");
+    const { tools } = await client.listTools();
+    const annotations = Object.fromEntries(
+      tools.map((t) => [t.name, t.annotations]),
+    );
+    expect(annotations).toEqual({
+      list_files: { readOnlyHint: true, openWorldHint: false },
+      read_file: { readOnlyHint: true, openWorldHint: false },
+      create_document: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      update_document: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    });
     await client.close();
   });
 
@@ -183,6 +210,63 @@ describe("Tandem MCP server", () => {
       expect(result.isError).toBe(true);
       expect(errorCode(result)).toBe("FORBIDDEN");
     }
+    await client.close();
+  });
+
+  it("hides other tenants' files behind FILE_NOT_FOUND", async () => {
+    const jordan = await connect("jordan-token");
+    const alex = await connect("alex-token");
+    const before = await call(alex, "read_file", { file_id: "file_brief" });
+
+    for (const [name, args] of [
+      ["read_file", { file_id: "file_brief" }],
+      [
+        "update_document",
+        { file_id: "file_brief", content: "hijacked", expected_version: 1 },
+      ],
+    ] as const) {
+      const result = await call(jordan, name, args);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual({
+        error: {
+          code: "FILE_NOT_FOUND",
+          message: expect.not.stringContaining("ws_demo"),
+          file_id: "file_brief",
+        },
+      });
+    }
+
+    const after = await call(alex, "read_file", { file_id: "file_brief" });
+    expect(after.structuredContent).toEqual(before.structuredContent);
+    await Promise.all([jordan.close(), alex.close()]);
+  });
+
+  it("rejects parent_id until folders exist", async () => {
+    const client = await connect("alex-token");
+    const result = await call(client, "create_document", {
+      name: "nested.md",
+      content: "x",
+      parent_id: "file_brief",
+    });
+    expect(result.isError).toBe(true);
+    expect(errorCode(result)).toBe("INVALID_INPUT");
+    expect((result.content[0] as { text: string }).text).toContain(
+      "omit parent_id",
+    );
+    await client.close();
+  });
+
+  it("rejects unsupported mime types", async () => {
+    const client = await connect("alex-token");
+    const result = await call(client, "create_document", {
+      name: "doc.pdf",
+      content: "x",
+      mime_type: "application/pdf",
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(
+      /Input validation error/,
+    );
     await client.close();
   });
 });
