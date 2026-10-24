@@ -9,7 +9,9 @@
     "check-types": "turbo run check-types",
     "test": "turbo run test",
     "test:e2e": "pnpm --filter @repo/e2e test:e2e",
-    "skill:zip": "sh skills/package.sh"
+    "skill:zip": "sh skills/package.sh",
+    "demo:reset": "pnpm --filter @repo/backend demo:reset",
+    "test:demo": "pnpm --filter @repo/e2e test:demo"
   },
   "devDependencies": {
     "prettier": "3.9.6",

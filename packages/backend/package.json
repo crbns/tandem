@@ -11,7 +11,8 @@
     "setup": "convex dev --until-success",
     "deploy": "convex deploy",
     "check-types": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "demo:reset": "node scripts/demo-reset.mjs"
   },
   "dependencies": {
     "@auth/core": "0.41.1",

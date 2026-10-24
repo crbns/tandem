@@ -10,7 +10,7 @@ export type AgentClient = (typeof AGENT_CLIENTS)[number];
 
 const TOKEN_PREFIX = "tdm_";
 // "tdm_" + 32 random bytes as unpadded base64url.
-const TOKEN_PATTERN = /^tdm_[A-Za-z0-9_-]{43}$/;
+export const TOKEN_PATTERN = /^tdm_[A-Za-z0-9_-]{43}$/;
 
 /** A verified agent connection, its person, and their current membership. */
 export interface AgentSession {
