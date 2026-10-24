@@ -1,50 +1,135 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Tandem: Provenance Record. Cool archival grey ground, white paper panels,
+   archive slate for structure, accession red only on things you can press,
+   verdigris (agent) and ink-blue (human) as the two custody identities. */
+
+@theme inline {
+  --font-sans: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-label: "Archivo Narrow", "Public Sans", ui-sans-serif, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-archive: var(--archive);
+  --color-archive-tint: var(--archive-tint);
+  --color-agent: var(--agent);
+  --color-agent-tint: var(--agent-tint);
+  --color-human: var(--human);
+  --color-human-tint: var(--human-tint);
+  --color-unknown: var(--unknown);
+  --color-warn: var(--warn);
+  --color-warn-tint: var(--warn-tint);
+  --color-warn-rule: var(--warn-rule);
+  --color-diff-left: var(--diff-left);
+  --color-diff-right: var(--diff-right);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --radius: 0.25rem;
+  --background: #f3f4f2; /* acid-free board */
+  --foreground: #1c2226;
+  --card: #ffffff;
+  --card-foreground: #1c2226;
+  --popover: #ffffff;
+  --popover-foreground: #1c2226;
+  --primary: #b4321f; /* accession red: pressable actions only */
+  --primary-foreground: #ffffff;
+  --secondary: #eceeed;
+  --secondary-foreground: #1c2226;
+  --muted: #eceeed;
+  --muted-foreground: #5d6870;
+  --accent: #e8edf0; /* archive slate tint: hover, selection */
+  --accent-foreground: #1c2226;
+  --destructive: #9e2b1b;
+  --border: #d9ddda;
+  --input: #c9cfcc;
+  --ring: #3b4f5c;
+  --sidebar: #ffffff;
+  --archive: #3b4f5c;
+  --archive-tint: #e8edf0;
+  --agent: #2f7a6d;
+  --agent-tint: #e5f0ed;
+  --human: #2b5a8a;
+  --human-tint: #e6edf5;
+  --unknown: #a7b0b5;
+  /* Ochre: unsaved and warning states. Clashes with neither identity nor red. */
+  --warn: #7a5410;
+  --warn-tint: #f7f0df;
+  --warn-rule: #e2cf9e;
+  /* Diff bands: ochre for lines only on the left, slate for lines only on the right. */
+  --diff-left: #f5ecd6;
+  --diff-right: #dfe7ec;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* The one authored moment: a selected file's custody record slides in. */
+@keyframes custody-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@utility animate-custody-in {
+  animation: custody-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
   }
 }
 
-html,
-body {
-  max-width: 100vw;
-  overflow-x: hidden;
+/* Catalogue label: condensed caps for column heads, codes and version tags. */
+@utility label-caps {
+  font-family: var(--font-label);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-}
-
-* {
-  box-sizing: border-box;
-  padding: 0;
-  margin: 0;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-.imgDark {
-  display: none;
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
+  * {
+    @apply border-border outline-ring/60;
+  }
   html {
-    color-scheme: dark;
+    scrollbar-color: #b9c1c4 transparent;
   }
-
-  .imgLight {
-    display: none;
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    font-feature-settings: "tnum" 1;
+    caret-color: var(--archive);
   }
-  .imgDark {
-    display: unset;
+  ::selection {
+    background: #cfdae0;
+    color: var(--foreground);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  a {
+    text-underline-offset: 3px;
   }
 }
