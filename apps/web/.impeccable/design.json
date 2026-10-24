@@ -1,0 +1,551 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-24T04:46:36.781Z",
+  "title": "Design System: Tandem",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Accession Red",
+        "canonical": "#b4321f",
+        "oklch": "oklch(51.4% 0.170 31)",
+        "tonalRamp": [
+          "oklch(15% 0.064 31)",
+          "oklch(26% 0.112 31)",
+          "oklch(38% 0.161 31)",
+          "oklch(49% 0.170 31)",
+          "oklch(61% 0.167 31)",
+          "oklch(72% 0.118 31)",
+          "oklch(84% 0.070 31)",
+          "oklch(95% 0.021 31)"
+        ]
+      },
+      "background": {
+        "role": "neutral",
+        "displayName": "Acid-free Board",
+        "canonical": "#f3f4f2",
+        "oklch": "oklch(96.6% 0.003 128)",
+        "tonalRamp": [
+          "oklch(15% 0.001 128)",
+          "oklch(26% 0.002 128)",
+          "oklch(38% 0.003 128)",
+          "oklch(49% 0.003 128)",
+          "oklch(61% 0.003 128)",
+          "oklch(72% 0.002 128)",
+          "oklch(84% 0.001 128)",
+          "oklch(95% 0.000 128)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Archival Ink",
+        "canonical": "#1c2226",
+        "oklch": "oklch(24.8% 0.012 237)",
+        "tonalRamp": [
+          "oklch(15% 0.004 237)",
+          "oklch(26% 0.008 237)",
+          "oklch(38% 0.011 237)",
+          "oklch(49% 0.012 237)",
+          "oklch(61% 0.011 237)",
+          "oklch(72% 0.008 237)",
+          "oklch(84% 0.005 237)",
+          "oklch(95% 0.001 237)"
+        ]
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "Paper White",
+        "canonical": "#ffffff",
+        "oklch": "oklch(100.0% 0.000 90)",
+        "tonalRamp": [
+          "oklch(15% 0.000 90)",
+          "oklch(26% 0.000 90)",
+          "oklch(38% 0.000 90)",
+          "oklch(49% 0.000 90)",
+          "oklch(61% 0.000 90)",
+          "oklch(72% 0.000 90)",
+          "oklch(84% 0.000 90)",
+          "oklch(95% 0.000 90)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Board Grey",
+        "canonical": "#eceeed",
+        "oklch": "oklch(94.7% 0.003 165)",
+        "tonalRamp": [
+          "oklch(15% 0.001 165)",
+          "oklch(26% 0.002 165)",
+          "oklch(38% 0.002 165)",
+          "oklch(49% 0.003 165)",
+          "oklch(61% 0.002 165)",
+          "oklch(72% 0.002 165)",
+          "oklch(84% 0.001 165)",
+          "oklch(95% 0.000 165)"
+        ]
+      },
+      "muted-foreground": {
+        "role": "neutral",
+        "displayName": "Graphite",
+        "canonical": "#5d6870",
+        "oklch": "oklch(51.1% 0.019 239)",
+        "tonalRamp": [
+          "oklch(15% 0.007 239)",
+          "oklch(26% 0.012 239)",
+          "oklch(38% 0.018 239)",
+          "oklch(49% 0.019 239)",
+          "oklch(61% 0.018 239)",
+          "oklch(72% 0.013 239)",
+          "oklch(84% 0.008 239)",
+          "oklch(95% 0.002 239)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Rule Grey",
+        "canonical": "#d9ddda",
+        "oklch": "oklch(89.4% 0.006 154)",
+        "tonalRamp": [
+          "oklch(15% 0.002 154)",
+          "oklch(26% 0.004 154)",
+          "oklch(38% 0.006 154)",
+          "oklch(49% 0.006 154)",
+          "oklch(61% 0.006 154)",
+          "oklch(72% 0.004 154)",
+          "oklch(84% 0.002 154)",
+          "oklch(95% 0.001 154)"
+        ]
+      },
+      "input": {
+        "role": "neutral",
+        "displayName": "Field Grey",
+        "canonical": "#c9cfcc",
+        "oklch": "oklch(84.9% 0.008 165)",
+        "tonalRamp": [
+          "oklch(15% 0.003 165)",
+          "oklch(26% 0.005 165)",
+          "oklch(38% 0.007 165)",
+          "oklch(49% 0.008 165)",
+          "oklch(61% 0.008 165)",
+          "oklch(72% 0.005 165)",
+          "oklch(84% 0.003 165)",
+          "oklch(95% 0.001 165)"
+        ]
+      },
+      "archive": {
+        "role": "secondary",
+        "displayName": "Archive Slate",
+        "canonical": "#3b4f5c",
+        "oklch": "oklch(41.6% 0.033 237)",
+        "tonalRamp": [
+          "oklch(15% 0.012 237)",
+          "oklch(26% 0.022 237)",
+          "oklch(38% 0.031 237)",
+          "oklch(49% 0.033 237)",
+          "oklch(61% 0.032 237)",
+          "oklch(72% 0.023 237)",
+          "oklch(84% 0.014 237)",
+          "oklch(95% 0.004 237)"
+        ]
+      },
+      "archive-tint": {
+        "role": "secondary",
+        "displayName": "Archive Slate Tint",
+        "canonical": "#e8edf0",
+        "oklch": "oklch(94.3% 0.007 234)",
+        "tonalRamp": [
+          "oklch(15% 0.003 234)",
+          "oklch(26% 0.004 234)",
+          "oklch(38% 0.006 234)",
+          "oklch(49% 0.007 234)",
+          "oklch(61% 0.007 234)",
+          "oklch(72% 0.005 234)",
+          "oklch(84% 0.003 234)",
+          "oklch(95% 0.001 234)"
+        ]
+      },
+      "agent": {
+        "role": "tertiary",
+        "displayName": "Verdigris",
+        "canonical": "#2f7a6d",
+        "oklch": "oklch(52.9% 0.077 180)",
+        "tonalRamp": [
+          "oklch(15% 0.029 180)",
+          "oklch(26% 0.051 180)",
+          "oklch(38% 0.073 180)",
+          "oklch(49% 0.077 180)",
+          "oklch(61% 0.075 180)",
+          "oklch(72% 0.053 180)",
+          "oklch(84% 0.032 180)",
+          "oklch(95% 0.010 180)"
+        ]
+      },
+      "human": {
+        "role": "tertiary",
+        "displayName": "Ink Blue",
+        "canonical": "#2b5a8a",
+        "oklch": "oklch(45.8% 0.094 251)",
+        "tonalRamp": [
+          "oklch(15% 0.035 251)",
+          "oklch(26% 0.062 251)",
+          "oklch(38% 0.089 251)",
+          "oklch(49% 0.094 251)",
+          "oklch(61% 0.092 251)",
+          "oklch(72% 0.066 251)",
+          "oklch(84% 0.039 251)",
+          "oklch(95% 0.012 251)"
+        ]
+      },
+      "unknown": {
+        "role": "tertiary",
+        "displayName": "Unrecorded Grey",
+        "canonical": "#a7b0b5",
+        "oklch": "oklch(75.2% 0.012 232)",
+        "tonalRamp": [
+          "oklch(15% 0.005 232)",
+          "oklch(26% 0.008 232)",
+          "oklch(38% 0.012 232)",
+          "oklch(49% 0.012 232)",
+          "oklch(61% 0.012 232)",
+          "oklch(72% 0.009 232)",
+          "oklch(84% 0.005 232)",
+          "oklch(95% 0.002 232)"
+        ]
+      },
+      "destructive": {
+        "role": "status",
+        "displayName": "Deep Accession Red",
+        "canonical": "#9e2b1b",
+        "oklch": "oklch(46.7% 0.154 31)",
+        "tonalRamp": [
+          "oklch(15% 0.058 31)",
+          "oklch(26% 0.102 31)",
+          "oklch(38% 0.146 31)",
+          "oklch(49% 0.154 31)",
+          "oklch(61% 0.151 31)",
+          "oklch(72% 0.107 31)",
+          "oklch(84% 0.063 31)",
+          "oklch(95% 0.019 31)"
+        ]
+      },
+      "warn": {
+        "role": "status",
+        "displayName": "Ochre",
+        "canonical": "#7a5410",
+        "oklch": "oklch(47.6% 0.093 76)",
+        "tonalRamp": [
+          "oklch(15% 0.035 76)",
+          "oklch(26% 0.062 76)",
+          "oklch(38% 0.088 76)",
+          "oklch(49% 0.093 76)",
+          "oklch(61% 0.092 76)",
+          "oklch(72% 0.065 76)",
+          "oklch(84% 0.038 76)",
+          "oklch(95% 0.012 76)"
+        ]
+      },
+      "warn-tint": {
+        "role": "status",
+        "displayName": "Ochre Wash",
+        "canonical": "#f7f0df",
+        "oklch": "oklch(95.6% 0.024 88)",
+        "tonalRamp": [
+          "oklch(15% 0.009 88)",
+          "oklch(26% 0.016 88)",
+          "oklch(38% 0.022 88)",
+          "oklch(49% 0.024 88)",
+          "oklch(61% 0.023 88)",
+          "oklch(72% 0.016 88)",
+          "oklch(84% 0.010 88)",
+          "oklch(95% 0.003 88)"
+        ]
+      },
+      "warn-rule": {
+        "role": "status",
+        "displayName": "Ochre Rule",
+        "canonical": "#e2cf9e",
+        "oklch": "oklch(85.8% 0.068 89)",
+        "tonalRamp": [
+          "oklch(15% 0.025 89)",
+          "oklch(26% 0.045 89)",
+          "oklch(38% 0.064 89)",
+          "oklch(49% 0.068 89)",
+          "oklch(61% 0.066 89)",
+          "oklch(72% 0.047 89)",
+          "oklch(84% 0.028 89)",
+          "oklch(95% 0.008 89)"
+        ]
+      },
+      "diff-left": {
+        "role": "status",
+        "displayName": "Diff Ochre",
+        "canonical": "#f5ecd6",
+        "oklch": "oklch(94.4% 0.031 88)",
+        "tonalRamp": [
+          "oklch(15% 0.011 88)",
+          "oklch(26% 0.020 88)",
+          "oklch(38% 0.029 88)",
+          "oklch(49% 0.031 88)",
+          "oklch(61% 0.030 88)",
+          "oklch(72% 0.021 88)",
+          "oklch(84% 0.013 88)",
+          "oklch(95% 0.004 88)"
+        ]
+      },
+      "diff-right": {
+        "role": "status",
+        "displayName": "Diff Slate",
+        "canonical": "#dfe7ec",
+        "oklch": "oklch(92.3% 0.011 235)",
+        "tonalRamp": [
+          "oklch(15% 0.004 235)",
+          "oklch(26% 0.007 235)",
+          "oklch(38% 0.010 235)",
+          "oklch(49% 0.011 235)",
+          "oklch(61% 0.011 235)",
+          "oklch(72% 0.008 235)",
+          "oklch(84% 0.005 235)",
+          "oklch(95% 0.001 235)"
+        ]
+      },
+      "primary-foreground": {
+        "role": "primary",
+        "displayName": "On Red White",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "oklch(15% 0.000 90)",
+          "oklch(26% 0.000 90)",
+          "oklch(38% 0.000 90)",
+          "oklch(49% 0.000 90)",
+          "oklch(61% 0.000 90)",
+          "oklch(72% 0.000 90)",
+          "oklch(84% 0.000 90)",
+          "oklch(95% 0.000 90)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page titles and the sign-in wordmark."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Panel headings and the approved goal statement."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Working size for cells, buttons and breadcrumbs; tabular numerals."
+      },
+      "body-sm": {
+        "displayName": "Body Small",
+        "purpose": "Timestamps, the rail note, the diff legend."
+      },
+      "label": {
+        "displayName": "Catalogue Label",
+        "purpose": "Archivo Narrow caps for codes, versions, column heads and actor class. Never an eyebrow."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "File content in diffs and draft previews."
+      }
+    },
+    "shadows": [
+      {
+        "name": "control-hairline",
+        "value": "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+        "purpose": "Buttons (not ghost) and inputs."
+      },
+      {
+        "name": "floating-toast",
+        "value": "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+        "purpose": "Toasts."
+      },
+      {
+        "name": "dialog",
+        "value": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
+        "purpose": "Dialogs, over an rgb(0 0 0 / 0.4) scrim."
+      }
+    ],
+    "motion": [
+      {
+        "name": "custody-in",
+        "value": "180ms cubic-bezier(0.16, 1, 0.3, 1); from opacity 0, translateY(4px)",
+        "purpose": "The one authored moment: the selected file's custody record enters. None under prefers-reduced-motion."
+      },
+      {
+        "name": "state-transition",
+        "value": "transition-colors, Tailwind default 150ms",
+        "purpose": "Hover and selection tints on buttons, rows and nav items."
+      }
+    ],
+    "focus": {
+      "global": "outline: 2px solid var(--ring); outline-offset: 2px",
+      "controls": "buttons and inputs add a 3px ring at 50% of var(--ring)"
+    },
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px",
+        "purpose": "Register shows the Custody column."
+      },
+      {
+        "name": "md",
+        "value": "768px",
+        "purpose": "Rail appears; Last held by column shows."
+      },
+      {
+        "name": "lg",
+        "value": "1024px",
+        "purpose": "Diff columns sit side by side."
+      },
+      {
+        "name": "xl",
+        "value": "1280px",
+        "purpose": "No. column and the custody record panel appear."
+      }
+    ],
+    "layout": {
+      "railWidth": "232px",
+      "topBarHeight": "56px",
+      "contentMax": "1152px",
+      "registerAndRecordGrid": "minmax(0,1fr) 20rem, gap 24px",
+      "registerRow": "48px + 1px rule"
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Accession red, pressable primary actions only; loses the red when disabled.",
+      "html": "<button class=\"ds-btn-primary\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"><path d=\"M5 12h14M12 5v14\"/></svg>New file</button> <button class=\"ds-btn-primary\" disabled>Save</button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;gap:8px;height:36px;padding:8px 16px;border:0;border-radius:4px;background:var(--primary);color:var(--primary-foreground);font:500 14px/20px \"Public Sans\",sans-serif;box-shadow:0 1px 2px 0 rgb(0 0 0/.05);cursor:pointer;transition:background-color .15s}.ds-btn-primary:hover{background:color-mix(in srgb,var(--primary) 90%,transparent)}.ds-btn-primary:focus-visible{outline:2px solid var(--ring);outline-offset:2px;box-shadow:0 0 0 3px color-mix(in srgb,var(--ring) 50%,transparent)}.ds-btn-primary:disabled{background:var(--muted);color:var(--muted-foreground);box-shadow:none;cursor:default}"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Secondary actions: Refresh, Full history, both conflict choices.",
+      "html": "<button class=\"ds-btn-outline\">Full history</button>",
+      "css": ".ds-btn-outline{display:inline-flex;align-items:center;gap:8px;height:36px;padding:8px 16px;border:1px solid var(--border);border-radius:4px;background:var(--background);color:var(--foreground);font:500 14px/20px \"Public Sans\",sans-serif;box-shadow:0 1px 2px 0 rgb(0 0 0/.05);cursor:pointer;transition:background-color .15s}.ds-btn-outline:hover{background:var(--archive-tint)}.ds-btn-outline:focus-visible{outline:2px solid var(--ring);outline-offset:2px}"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Tool actions in the save bar and diff headers.",
+      "html": "<button class=\"ds-btn-ghost\">History</button>",
+      "css": ".ds-btn-ghost{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border:0;border-radius:4px;background:transparent;color:var(--foreground);font:500 14px/20px \"Public Sans\",sans-serif;cursor:pointer;transition:background-color .15s}.ds-btn-ghost:hover{background:var(--archive-tint)}.ds-btn-ghost:focus-visible{outline:2px solid var(--ring);outline-offset:2px}"
+    },
+    {
+      "name": "Filter Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "36px field, 1px field-grey outline, slate focus.",
+      "html": "<label class=\"ds-input-wrap\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"m20 20-3.5-3.5\"/></svg><input class=\"ds-input\" placeholder=\"Filter by name\"></label>",
+      "css": ".ds-input-wrap{position:relative;display:block;max-width:320px;color:var(--muted-foreground)}.ds-input-wrap svg{position:absolute;left:10px;top:10px}.ds-input{width:100%;height:36px;padding:4px 12px 4px 32px;border:1px solid var(--input);border-radius:4px;background:var(--card);color:var(--foreground);font:400 14px/20px \"Public Sans\",sans-serif;box-shadow:0 1px 2px 0 rgb(0 0 0/.05);outline:none}.ds-input:focus-visible{border-color:var(--ring);box-shadow:0 0 0 3px color-mix(in srgb,var(--ring) 50%,transparent)}"
+    },
+    {
+      "name": "Rail Navigation",
+      "kind": "nav",
+      "refersTo": "nav-item-active",
+      "description": "White left rail; active item in slate tint with the count in catalogue caps.",
+      "html": "<nav class=\"ds-rail\"><a class=\"ds-rail-item is-active\" href=\"#\">Files<span class=\"ds-count\">3</span></a><a class=\"ds-rail-item\" href=\"#\">Another section</a></nav>",
+      "css": ".ds-rail{display:flex;flex-direction:column;gap:2px;width:208px;padding:12px;background:var(--card);border-right:1px solid var(--border)}.ds-rail-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:4px;color:var(--foreground);font:500 14px/20px \"Public Sans\",sans-serif;text-decoration:none;transition:background-color .15s}.ds-rail-item:hover{background:var(--archive-tint)}.ds-rail-item.is-active{background:var(--archive-tint);color:var(--archive)}.ds-rail-item:focus-visible{outline:2px solid var(--ring);outline-offset:2px}.ds-count{margin-left:auto;font:600 12px/16px \"Archivo Narrow\",sans-serif;letter-spacing:.06em;text-transform:uppercase;font-weight:400;color:var(--muted-foreground)}"
+    },
+    {
+      "name": "Identity Plate",
+      "kind": "chip",
+      "refersTo": "custody-mark-agent",
+      "description": "Mark, AGENT/HUMAN catalogue label, name; attribution, never presence.",
+      "html": "<span class=\"ds-plate\"><i class=\"ds-mark ds-agent\"></i><b class=\"ds-label ds-t-agent\">Agent</b>Claude<em> for Alex</em></span> <span class=\"ds-plate\"><i class=\"ds-mark ds-human\"></i><b class=\"ds-label ds-t-human\">Human</b>Alex</span>",
+      "css": ".ds-plate{display:inline-flex;align-items:center;gap:6px;font:500 14px/20px \"Public Sans\",sans-serif;color:var(--foreground);white-space:nowrap;margin-right:16px}.ds-plate em{font-style:normal;font-weight:400;color:var(--muted-foreground)}.ds-mark{display:inline-block;width:8px;height:8px}.ds-agent{background:var(--agent)}.ds-human{background:var(--human);border-radius:9999px}.ds-label{font:600 12px/16px \"Archivo Narrow\",sans-serif;letter-spacing:.06em;text-transform:uppercase}.ds-t-agent{color:var(--agent)}.ds-t-human{color:var(--human)}"
+    },
+    {
+      "name": "Custody Strip",
+      "kind": "custom",
+      "refersTo": "custody-mark-head",
+      "description": "One fixed mark per recent version, head one size larger, then the version tag.",
+      "html": "<span class=\"ds-strip\"><i class=\"ds-m ds-unk\"></i><i class=\"ds-m ds-ag\"></i><i class=\"ds-m ds-hu ds-head\"></i><span class=\"ds-v\">v3</span></span>",
+      "css": ".ds-strip{display:inline-flex;align-items:center;gap:4px}.ds-m{display:inline-block;width:8px;height:8px}.ds-ag{background:var(--agent)}.ds-hu{background:var(--human);border-radius:9999px}.ds-unk{box-shadow:inset 0 0 0 1px var(--unknown)}.ds-head{width:12px;height:12px}.ds-v{margin-left:6px;font:600 12px/16px \"Archivo Narrow\",sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--foreground)}"
+    },
+    {
+      "name": "Custody Record Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Paper panel with a 2px custody rule; slides in over 180ms on selection.",
+      "html": "<aside class=\"ds-record\"><h2>Custody record</h2><p>proposal.md <span class=\"ds-cap\">TDM-CB32</span></p><ol><li><i class=\"ds-rm ds-rag\"></i><span class=\"ds-cap\">v2</span> <span class=\"ds-cap ds-cur\">Current</span> Claude<small>Saved via MCP · 3 min ago</small></li><li><i class=\"ds-rm ds-rhu\"></i><span class=\"ds-cap\">v1</span> Alex<small>Saved in the dashboard · 2 h ago</small></li></ol></aside>",
+      "css": "@keyframes ds-custody-in{from{opacity:0;transform:translateY(4px)}}.ds-record{width:320px;padding:20px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--foreground);font:400 14px/20px \"Public Sans\",sans-serif;animation:ds-custody-in 180ms cubic-bezier(.16,1,.3,1)}@media (prefers-reduced-motion:reduce){.ds-record{animation:none}}.ds-record h2{margin:0;font:700 16px/24px \"Public Sans\",sans-serif}.ds-record p{margin:4px 0 0;color:var(--muted-foreground)}.ds-record ol{list-style:none;margin:16px 0 0;padding:0;border-left:2px solid var(--border)}.ds-record li{position:relative;padding:0 0 16px 16px}.ds-record small{display:block;font-size:12px;line-height:16px;color:var(--muted-foreground)}.ds-rm{position:absolute;left:-7px;top:4px;width:12px;height:12px}.ds-rag{background:var(--agent)}.ds-rhu{background:var(--human);border-radius:9999px}.ds-cap{font:600 12px/16px \"Archivo Narrow\",sans-serif;letter-spacing:.06em;text-transform:uppercase}.ds-cur{color:var(--archive)}"
+    },
+    {
+      "name": "Version Tag",
+      "kind": "chip",
+      "refersTo": "version-tag",
+      "description": "Slate-tinted catalogue tag in the save bar and the approved goal.",
+      "html": "<span class=\"ds-vtag\">Editing from v1</span>",
+      "css": ".ds-vtag{display:inline-block;padding:4px 8px;border-radius:2px;background:var(--archive-tint);color:var(--archive);font:600 12px/16px \"Archivo Narrow\",sans-serif;letter-spacing:.06em;text-transform:uppercase}"
+    },
+    {
+      "name": "Conflict Alert",
+      "kind": "custom",
+      "refersTo": "alert-warning",
+      "description": "Ochre wash for a version conflict; nothing is lost.",
+      "html": "<div class=\"ds-alert\" role=\"alert\"><strong>Claude saved version 2 while you were editing</strong><span>Your changes are not saved yet, and nothing has been overwritten.</span></div>",
+      "css": ".ds-alert{display:grid;gap:2px;padding:12px 16px;border:1px solid var(--warn-rule);border-radius:4px;background:var(--warn-tint);color:var(--warn);font:400 14px/20px \"Public Sans\",sans-serif}.ds-alert strong{font-weight:500}.ds-alert span{opacity:.9}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Provenance Record",
+    "overview": "Every file in Tandem is handled like an archived object that carries its own chain of custody. The dashboard reads as an accession register rather than a SaaS file list. It sits on a cool acid-free grey board, with white paper panels drawn in 1px rules and ink-dark text. Condensed catalogue caps are used for accession numbers, version tags and column heads. Identity is the system's main subject. Each save is marked by who held the file, an assistant or a person, and that mark keeps the same shape and colour wherever it appears.\n\nThe surface is dense, quiet and daylight-legible: 14px body on a 20px line, tabular numerals everywhere, flat panels and almost no decoration. Colour is scarce and always means something. Slate gives structure and selection, verdigris marks agents, ink-blue marks humans, ochre marks unsaved or contested work, and accession red appears only on things you can press. The one authored motion is the custody record sliding into place when you select a file.\n\nThe build rejects the neutral SaaS file table with pill badges: actor identity is a fixed mark plus a catalogue label, never a coloured lozenge.",
+    "keyCharacteristics": [
+      "Cool grey board, white paper panels, 1px rules, 4px corners.",
+      "Two custody identities: verdigris squares for agents, ink-blue circles for humans; hollow squares for unrecorded versions.",
+      "Archivo Narrow caps for codes, versions and column heads; Public Sans for everything else.",
+      "Accession red reserved for pressable primary actions.",
+      "Flat at rest; shadow only on floating layers.",
+      "One motion: the custody record's 180ms slide-in."
+    ],
+    "rules": [
+      {
+        "name": "The Red Means Press Rule",
+        "body": "Accession red appears only on things you can press: the primary button and the link. It never marks status, identity, headings or decoration, and a disabled button loses it.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two Holders Rule",
+        "body": "Verdigris belongs to agents and ink-blue to humans, everywhere and for nothing else. The shape (square or circle) always carries the identity alongside the hue, so it reads without colour vision.",
+        "section": "colors"
+      },
+      {
+        "name": "The Catalogue Caps Rule",
+        "body": "Archivo Narrow caps label data: codes, versions, actor class and column heads. It is never set as an eyebrow or kicker above a heading, and never used for running text.",
+        "section": "typography"
+      },
+      {
+        "name": "The Paper On Board Rule",
+        "body": "Panels, the register and the custody record never cast shadows. They are set apart by white against grey and a 1px rule. Shadows are only for things that float: dialogs, toasts and menus.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** put Accession Red only on pressable primary actions, and strip it from disabled ones.",
+      "**Do** show every actor through the identity plate: mark, AGENT/HUMAN catalogue label, name, and \"for {person}\" for agents.",
+      "**Do** keep custody marks at fixed sizes: 8px for every version, 12px for the head.",
+      "**Do** draw a chain of custody as one 2px vertical rule with marks centred on it, newest first.",
+      "**Do** set codes, versions, column heads and actor class in Archivo Narrow 600 caps at 12px with 0.06em tracking.",
+      "**Do** separate surfaces with white paper on the grey board and a 1px rule, at 4px corners.",
+      "**Do** mark diffs with a −/+ gutter marker as well as the ochre or slate band.",
+      "**Do** use ochre for unsaved and contested work, never red."
+    ],
+    "donts": [
+      "**Don't** render actor identity as coloured pill badges or lozenges; the build replaced them with marks and catalogue labels.",
+      "**Don't** use verdigris or ink-blue for anything except agent and human identity.",
+      "**Don't** convey custody by colour alone; the square-versus-circle shape is required.",
+      "**Don't** say \"online\" or show live presence dots; the plate is attribution, and times read \"last edited\" or \"saved\".",
+      "**Don't** use catalogue caps as an eyebrow or kicker above headings.",
+      "**Don't** add shadows to panels, the register or the custody record; shadows belong to dialogs, toasts and menus.",
+      "**Don't** add motion beyond the custody-in slide and functional spinners, and honour reduced-motion."
+    ]
+  }
+}
