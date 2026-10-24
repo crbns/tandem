@@ -398,7 +398,7 @@ export class MockBackend implements TandemBackend {
     changed.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 
     const work = ws.events
-      .filter((e) => e.type === "work.published" && e.seq > sinceSeq)
+      .filter((e) => e.type === "work.published" && e.seq > sinceSeq && e.seq <= cursorSeq)
       .reverse()
       .map((e) => this.published.get(e.subject_id)!)
       .slice(0, SYNC_WORK_LIMIT + 1);
