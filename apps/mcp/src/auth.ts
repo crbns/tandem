@@ -1,5 +1,8 @@
 import type { Actor } from "./backend/types.js";
 
+/** A verified caller before the auth layer marks it as an agent. */
+export type Identity = Omit<Actor, "actor_type">;
+
 /**
  * Turns an API key into a verified identity. The dev resolver below will be
  * replaced by an OAuth/JWT verifier implementing the same interface.
@@ -9,7 +12,7 @@ export interface IdentityResolver {
    * `key` is null when the request has no `api-key` header. Returns null when
    * the key is missing, unknown, expired, or invalid.
    */
-  resolve(key: string | null): Promise<Actor | null>;
+  resolve(key: string | null): Promise<Identity | null>;
 }
 
 /** Resolves keys from a static map, e.g. TANDEM_DEV_TOKENS="key1:user_alex,key2:user_sam". */
@@ -28,7 +31,7 @@ export class DevTokenResolver implements IdentityResolver {
     return this.tokens.size;
   }
 
-  async resolve(key: string | null): Promise<Actor | null> {
+  async resolve(key: string | null): Promise<Identity | null> {
     const userId = key ? this.tokens.get(key) : undefined;
     return userId ? { user_id: userId, client: "dev-token" } : null;
   }
@@ -45,7 +48,7 @@ export class DevAnonResolver implements IdentityResolver {
     readonly userId: string,
   ) {}
 
-  async resolve(key: string | null): Promise<Actor | null> {
+  async resolve(key: string | null): Promise<Identity | null> {
     if (key === null) return { user_id: this.userId, client: "dev-anon" };
     return this.inner.resolve(key);
   }
@@ -72,15 +75,17 @@ export function withDevAnon(
 /**
  * Resolves the `api-key` header value (`req.headers["api-key"]`). Only a missing
  * header counts as anonymous; an empty or repeated header is rejected like an
- * unknown key.
+ * unknown key. Every MCP caller is an agent: actor_type is set here, never from
+ * tool arguments or the resolver.
  */
 export async function authenticate(
   identity: IdentityResolver,
   header: string | string[] | undefined,
 ): Promise<Actor | null> {
-  if (header === undefined) return identity.resolve(null);
-  const key = apiKeyFromHeader(header);
-  return key ? identity.resolve(key) : null;
+  const key = header === undefined ? null : apiKeyFromHeader(header);
+  if (header !== undefined && !key) return null;
+  const resolved = await identity.resolve(key);
+  return resolved && { ...resolved, actor_type: "agent" };
 }
 
 export function apiKeyFromHeader(

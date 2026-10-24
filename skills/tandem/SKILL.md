@@ -29,22 +29,32 @@ Use only the tools the connector actually exposes. The full surface is:
 `update_document`, `publish_work`, `propose_context_change`, `get_approvals`,
 `get_file_versions`, `get_workspace_info`.
 
-Some of these (`sync_workspace`, `publish_work`, `propose_context_change`,
-`get_approvals`) may not be available yet. If a tool you need is missing,
-fall back to the closest available one and tell the user what you could not do.
-If no Tandem tools are available at all, say so plainly. Never claim you synced,
-saved, or published when you did not.
+If a tool you need is missing from the connector, use the closest one it does
+expose and tell the user what you could not do. If no Tandem tools are available
+at all, say so plainly. Never claim you synced, saved, or published when you did
+not.
 
 ## 1. Sync at the start of project work
 
 - At the start of meaningful project work in a conversation, call
-  `sync_workspace`. If it is unavailable, call `get_workspace_info` (who you
-  are connected as, your workspaces and roles, which one is the default) and
-  then `list_files`.
-- Use the result to orient: current goal, approved decisions, owners, pending
-  approvals, recently changed files.
-- Sync is best-effort. Re-sync before a significant write if time has passed or
-  the user mentions teammates changing things.
+  `sync_workspace` with no arguments (add `workspace_id` only if the user means
+  a non-default workspace; `get_workspace_info` lists them).
+- It returns the approved `context` (goal, scope, constraints, decisions,
+  ownership, open questions) and its `context_version`, `pending_proposals`
+  (summaries, not yet in effect), `changed_files` (metadata only), recent
+  `events`, and a `cursor`. Use it to orient before answering or writing.
+- Keep the `cursor`. Later in the same conversation, re-sync with
+  `since: <cursor>` to get only what changed since: new events and the files
+  they touched (the context is always returned in full). Each sync returns a new
+  cursor; use the latest one. With `since`, `events_truncated: true` means more
+  events remain: sync again with the new cursor. In a snapshot (no `since`) it
+  means only the latest 50 events are shown; older ones are omitted and there is
+  nothing to page. If `files_truncated` is true, use `list_files` or
+  `search_files` to see the rest. If a cursor is rejected (`INVALID_INPUT`),
+  sync without `since`.
+- Re-sync before a significant write if time has passed or the user mentions
+  teammates changing things. Sync is best-effort: teammates may change things
+  right after.
 
 ## 2. Find and read the authoritative document
 
@@ -94,7 +104,10 @@ Someone else saved a newer version since you read it.
 ## 6. Publish work
 
 - Use `publish_work` only for relevant project deliverables or findings that the
-  user has authorized sharing with the team.
+  user has authorized sharing with the team. Pass `kind` (`"deliverable"` or
+  `"finding"`), a short `title`, a `summary` the team can act on, and the
+  `file_ids` it covers. It returns `published`; it doesn't change files or
+  context.
 - Never publish or export private conversation history, the user's personal
   content, or material unrelated to the project.
 - If you are unsure whether something should be shared, ask first.
@@ -105,10 +118,17 @@ Someone else saved a newer version since you read it.
 
 - Goal, scope, major decisions, and ownership are human-approved. Never change
   them directly, including by editing a file to claim they changed.
-- Call `propose_context_change` with: the specific change, a short rationale,
-  and the ids of the source files that support it.
-- Tell the user the proposal is pending human approval and has not taken effect.
-  Use `get_approvals` to check status when asked.
+- Call `propose_context_change` with `field`, `proposed_value`, a short
+  `rationale`, and `source_ids` (ids of files that support it). Value by field:
+  - `goal` or `scope`: the full new text.
+  - `constraints`: the full new list of strings (it replaces the old list).
+  - `decisions`: the text of one new decision.
+  - `ownership`: `{ area, owner_user_id }` for one area; the owner must be a
+    workspace member.
+- It returns a `proposal` with `status: "pending"` and changes nothing. Tell
+  the user it awaits a human owner's approval in the dashboard and has not
+  taken effect. Use `get_approvals` (default `status: "pending"`; also
+  `"approved"`, `"rejected"`, `"all"`) to check when asked.
 - Until approved, treat the current approved context as authoritative.
 
 ## 8. Error codes
