@@ -1,5 +1,10 @@
 import type { ApiErrorCode } from "./errors";
 
+/** Copy for errors from creating a file, where the generic text talks about editing. */
+export const CREATE_ERROR_COPY: Partial<Record<ApiErrorCode, string>> = {
+  FORBIDDEN: "You can't create files in this workspace.",
+};
+
 /** User-facing copy for each error code. Components never show raw messages. */
 export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: string }> = {
   FORBIDDEN: {

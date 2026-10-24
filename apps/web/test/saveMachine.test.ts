@@ -120,6 +120,27 @@ describe("saveReducer", () => {
   });
 });
 
+describe("DISCARD_DRAFT", () => {
+  const initial = initSaveState("hello", 1);
+
+  it("throws away a dirty draft and returns to the base", () => {
+    const discarded = run(initial, { type: "EDIT", draft: "junk" }, { type: "DISCARD_DRAFT" });
+    expect(discarded).toEqual(initial);
+  });
+
+  it("is ignored while saving or in conflict (those have their own actions)", () => {
+    const saving = run(initial, { type: "EDIT", draft: "x" }, { type: "SAVE" });
+    expect(run(saving, { type: "DISCARD_DRAFT" })).toBe(saving);
+    const conflicted = run(saving, { type: "SAVE_CONFLICT", theirs });
+    expect(run(conflicted, { type: "DISCARD_DRAFT" })).toBe(conflicted);
+  });
+
+  it("works from an error state", () => {
+    const errored = run(initial, { type: "EDIT", draft: "x" }, { type: "SAVE" }, { type: "SAVE_ERROR", code: "NETWORK" });
+    expect(run(errored, { type: "DISCARD_DRAFT" })).toEqual(initial);
+  });
+});
+
 describe("draftToStash", () => {
   const initial = initSaveState("hello", 1);
 

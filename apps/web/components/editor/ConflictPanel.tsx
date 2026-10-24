@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { CircleAlertIcon, CopyIcon, GitMergeIcon, RotateCcwIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { CircleAlertIcon, CopyIcon, PencilLineIcon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { Theirs } from "@/lib/editor/saveMachine";
+import { actorLabel } from "@/lib/actors";
 import { ActorBadge } from "@/components/common/ActorBadge";
 import { DiffView } from "@/components/common/DiffView";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -26,6 +27,13 @@ interface ConflictPanelProps {
 
 export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: ConflictPanelProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const headingRef = useRef<HTMLDivElement>(null);
+  const who = theirs.updatedBy ? actorLabel(theirs.updatedBy) : "Someone";
+
+  // The textarea that had focus just unmounted; move focus somewhere meaningful.
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
 
   async function copyMine() {
     try {
@@ -38,14 +46,13 @@ export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: Confl
 
   return (
     <div className="flex flex-col gap-4">
-      <Alert variant="warning">
+      <Alert variant="warning" role="alert">
         <CircleAlertIcon />
-        <AlertTitle>
-          Version {theirs.version} was saved while you were editing. Your changes were not saved.
+        <AlertTitle ref={headingRef} tabIndex={-1} className="outline-none">
+          {who} saved version {theirs.version} while you were editing. Your changes were not saved.
         </AlertTitle>
         <AlertDescription>
-          Nothing has been overwritten. Your text is kept below. Compare it with the latest version, then choose
-          what to do.
+          Nothing has been overwritten. Your text is kept on the left; version {theirs.version} is on the right.
         </AlertDescription>
       </Alert>
 
@@ -69,8 +76,8 @@ export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: Confl
 
       <div className="flex flex-wrap gap-2">
         <Button onClick={onKeepMine}>
-          <GitMergeIcon />
-          Keep editing on top of latest
+          <PencilLineIcon />
+          Keep my text
         </Button>
         <Button variant="outline" onClick={() => void copyMine()}>
           <CopyIcon />
@@ -82,8 +89,9 @@ export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: Confl
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        &ldquo;Keep editing on top of latest&rdquo; keeps your text in the editor. Your next save will replace
-        version {theirs.version}, which you&apos;ve now seen.
+        &ldquo;Keep my text&rdquo; does not merge. Your next save will <strong>overwrite</strong> {who}&apos;s
+        version {theirs.version}. Copy anything you need from the right-hand column into your text first; it
+        stays visible above the editor until you save.
       </p>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>

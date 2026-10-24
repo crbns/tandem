@@ -7,6 +7,7 @@ import { useSession, InvalidCredentialsError } from "@/lib/auth/useSession";
 import { USE_MOCKS } from "@/lib/config";
 import { MOCK_USERS } from "@/lib/auth/mockUsers";
 import { safeNext } from "@/lib/safeNext";
+import { endSignOut } from "@/lib/auth/signOutIntent";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,6 +22,9 @@ function SignInForm() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Reaching sign-in completes any explicit sign-out.
+  useEffect(() => endSignOut(), []);
 
   useEffect(() => {
     if (session.status === "authenticated") router.replace(safeNext(rawNext, window.location.origin));

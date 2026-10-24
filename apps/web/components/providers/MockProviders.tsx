@@ -6,6 +6,7 @@ import { findMockUser } from "@/lib/auth/mockUsers";
 import { useStoredValue, writeStored } from "@/lib/storage";
 import { MockApiContext, TandemApiContext, type Actor } from "@/lib/api";
 import { createMockApi } from "@/lib/api/mock";
+import { humanActorId } from "@/lib/actors";
 
 const SESSION_KEY = "tandem.mock.session";
 
@@ -31,7 +32,7 @@ function parseUser(raw: string | null): SessionUser | null {
 
 function actorFor(user: SessionUser | null): Actor {
   return user
-    ? { actorType: "human", actorId: `user_${user.email}`, actorName: user.name }
+    ? { actorType: "human", actorId: humanActorId(user.email), actorName: user.name }
     : { actorType: "human", actorId: "user_anonymous", actorName: "Unknown" };
 }
 

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, type ReactNode } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useSession } from "@/lib/auth/useSession";
+import { isSigningOut } from "@/lib/auth/signOutIntent";
 import { useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
 import { AppShell } from "@/components/shell/AppShell";
@@ -33,8 +34,9 @@ export default function WorkspaceLayout({ children }: { children: ReactNode }) {
 
   // The proxy guards /w/* server-side in real mode; this also covers mock mode
   // and a session that expires while the tab is open.
+  // An explicit sign-out navigates on its own (without `next`).
   useEffect(() => {
-    if (status === "unauthenticated") {
+    if (status === "unauthenticated" && !isSigningOut()) {
       router.replace(`/sign-in?next=${encodeURIComponent(pathname)}`);
     }
   }, [status, pathname, router]);

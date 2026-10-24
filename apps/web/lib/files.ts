@@ -8,6 +8,15 @@ export function filterAndSortFiles(files: readonly FileSummary[], query: string)
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+/**
+ * The backend authorizes by the file's own workspace, so a file id pasted under
+ * another workspace's URL would still load. Treat that as not found rather than
+ * rendering workspace B's file inside workspace A's shell.
+ */
+export function belongsToWorkspace(file: Pick<FileSummary, "workspaceId">, workspaceId: string): boolean {
+  return file.workspaceId === workspaceId;
+}
+
 const TEXT_EXTENSIONS: Record<string, string> = {
   md: "text/markdown",
   markdown: "text/markdown",

@@ -62,7 +62,7 @@ export default function FilesPage() {
 
         {resource.status === "error" && (
           <div className="p-4">
-            <ErrorState error={resource.error} onRetry={reload} />
+            <ErrorState error={resource.error} onRetry={reload} retrying={refreshing} />
           </div>
         )}
 
@@ -72,6 +72,11 @@ export default function FilesPage() {
             <p className="font-medium">No files yet</p>
             <p className="max-w-sm text-sm text-muted-foreground">
               Create one, or ask your assistant to create one through Tandem.
+            </p>
+            <p className="max-w-sm text-xs text-muted-foreground">
+              Assistants connected to this workspace through Tandem&apos;s MCP server save here directly. Their
+              files appear in this list marked <span className="font-medium">Agent</span>; press Refresh if one
+              doesn&apos;t show up yet.
             </p>
           </div>
         )}

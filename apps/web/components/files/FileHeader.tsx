@@ -13,7 +13,7 @@ interface FileHeaderProps {
 export function FileHeader({ workspaceId, name, mimeType, trail }: FileHeaderProps) {
   return (
     <div className="flex flex-col gap-1">
-      <nav className="flex items-center gap-1 text-sm text-muted-foreground">
+      <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-sm text-muted-foreground">
         <Link href={`/w/${workspaceId}`} className="hover:text-foreground">
           Files
         </Link>

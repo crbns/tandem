@@ -37,7 +37,9 @@ export type SaveEvent =
   | { type: "SAVE_ERROR"; code: ApiErrorCode }
   | { type: "RELOAD_THEIRS" }
   | { type: "KEEP_MINE_REBASE" }
-  | { type: "DISMISS_ERROR" };
+  | { type: "DISMISS_ERROR" }
+  /** User explicitly throws away their unsaved edits (after confirming). */
+  | { type: "DISCARD_DRAFT" };
 
 export function initSaveState(content: string, version: number): SaveState {
   return { base: content, baseVersion: version, draft: content, phase: { kind: "clean" } };
@@ -112,5 +114,10 @@ export function saveReducer(state: SaveState, event: SaveEvent): SaveState {
     case "DISMISS_ERROR":
       if (phase.kind !== "error") return state;
       return { ...state, phase: settled(state.base, state.draft) };
+
+    case "DISCARD_DRAFT":
+      // Saving and conflict have their own exits; don't race an in-flight save.
+      if (phase.kind !== "dirty" && phase.kind !== "error") return state;
+      return initSaveState(state.base, state.baseVersion);
   }
 }

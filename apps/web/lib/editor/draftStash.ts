@@ -2,22 +2,28 @@
 
 import { readStored, writeStored } from "../storage";
 
-// Holds an unsaved draft across a forced sign-in (UNAUTHENTICATED on save).
-// sessionStorage: scoped to this tab, gone when it closes.
+// Holds unsaved drafts so a lost session, forced sign-in, or navigation can't
+// drop them. sessionStorage: scoped to this tab, gone when it closes. Keyed by
+// user as well as file, so a different person signing in on the same tab never
+// gets someone else's draft.
 
 interface StashedDraft {
   draft: string;
   baseVersion: number;
 }
 
-const keyFor = (fileId: string) => `tandem.draft.${fileId}`;
+const PREFIX = "tandem.draft.";
 
-export function stashDraft(fileId: string, stash: StashedDraft) {
-  writeStored(keyFor(fileId), JSON.stringify(stash), "session");
+export function draftStashKey(userKey: string, fileId: string): string {
+  return `${PREFIX}${encodeURIComponent(userKey)}.${fileId}`;
 }
 
-export function readDraftStash(fileId: string): StashedDraft | null {
-  const raw = readStored(keyFor(fileId), "session");
+export function stashDraft(userKey: string, fileId: string, stash: StashedDraft) {
+  writeStored(draftStashKey(userKey, fileId), JSON.stringify(stash), "session");
+}
+
+export function readDraftStash(userKey: string, fileId: string): StashedDraft | null {
+  const raw = readStored(draftStashKey(userKey, fileId), "session");
   if (!raw) return null;
   try {
     const value: unknown = JSON.parse(raw);
@@ -37,6 +43,16 @@ export function readDraftStash(fileId: string): StashedDraft | null {
   return null;
 }
 
-export function clearDraftStash(fileId: string) {
-  writeStored(keyFor(fileId), null, "session");
+export function clearDraftStash(userKey: string, fileId: string) {
+  writeStored(draftStashKey(userKey, fileId), null, "session");
+}
+
+/** On an explicit sign-out: the user chose to leave, so don't keep drafts around. */
+export function clearAllDraftStashes() {
+  try {
+    const keys = Object.keys(window.sessionStorage).filter((k) => k.startsWith(PREFIX));
+    keys.forEach((k) => window.sessionStorage.removeItem(k));
+  } catch {
+    // storage unavailable: nothing was stashed
+  }
 }

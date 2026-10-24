@@ -1,28 +1,34 @@
 "use client";
 
 import { useCallback } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
-import { FileQuestionIcon } from "lucide-react";
-import { useTandemApi } from "@/lib/api";
+import { FileQuestionIcon, HistoryIcon } from "lucide-react";
+import { TandemApiError, useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
-import { isTextMimeType } from "@/lib/files";
+import { belongsToWorkspace, isTextMimeType } from "@/lib/files";
 import { formatAbsolute } from "@/lib/time";
 import { FileEditor } from "@/components/editor/FileEditor";
 import { FileHeader } from "@/components/files/FileHeader";
 import { ActorBadge } from "@/components/common/ActorBadge";
 import { ErrorState } from "@/components/common/ErrorState";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export default function FilePage() {
   const { workspaceId, fileId } = useParams<{ workspaceId: string; fileId: string }>();
   const api = useTandemApi();
-  const load = useCallback(() => api.readFile(fileId), [api, fileId]);
-  const { resource, reload } = useResource(load);
+  const load = useCallback(async () => {
+    const file = await api.readFile(fileId);
+    if (!belongsToWorkspace(file, workspaceId)) throw new TandemApiError("FILE_NOT_FOUND");
+    return file;
+  }, [api, fileId, workspaceId]);
+  const { resource, refreshing, reload } = useResource(load);
   const fileHref = `/w/${workspaceId}/files/${fileId}`;
 
   if (resource.status === "loading") {
     return (
-      <div className="mx-auto flex max-w-6xl flex-col gap-4">
+      <div className="mx-auto flex max-w-6xl flex-col gap-4" aria-busy="true">
         <Skeleton className="h-7 w-48" />
         <Skeleton className="h-11 w-full" />
         <Skeleton className="h-[60vh] w-full" />
@@ -33,7 +39,7 @@ export default function FilePage() {
   if (resource.status === "error") {
     return (
       <div className="mx-auto max-w-2xl">
-        <ErrorState error={resource.error} onRetry={reload} />
+        <ErrorState error={resource.error} onRetry={reload} retrying={refreshing} />
       </div>
     );
   }
@@ -59,6 +65,12 @@ export default function FilePage() {
               <ActorBadge actor={file.updatedBy} /> {formatAbsolute(file.updatedAt)}
             </dd>
           </dl>
+          <Button variant="outline" size="sm" asChild>
+            <Link href={`${fileHref}/history`}>
+              <HistoryIcon />
+              History
+            </Link>
+          </Button>
         </div>
       )}
     </div>

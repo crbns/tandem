@@ -29,6 +29,8 @@ function getAuthProxy() {
 export default function proxy(request: NextRequest, event: NextFetchEvent) {
   // Mock mode has no server-side session; the client-side guard handles it.
   if (USE_MOCKS) return NextResponse.next();
+  // Health checks must not depend on Convex being reachable.
+  if (request.nextUrl.pathname === "/api/health") return NextResponse.next();
   return getAuthProxy()(request, event);
 }
 

@@ -1,7 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { CheckIcon, CircleAlertIcon, CircleDotIcon, HistoryIcon, Loader2Icon, SaveIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CircleAlertIcon,
+  CircleDotIcon,
+  HistoryIcon,
+  Loader2Icon,
+  SaveIcon,
+  Undo2Icon,
+} from "lucide-react";
 import type { Actor } from "@/lib/api/types";
 import type { SavePhase } from "@/lib/editor/saveMachine";
 import { formatAbsolute, formatRelative } from "@/lib/time";
@@ -25,6 +33,8 @@ interface SaveBarProps {
   lastEditedAt: number;
   canSave: boolean;
   onSave: () => void;
+  /** Shown when there are unsaved edits that can be thrown away. */
+  onDiscard?: () => void;
   historyHref: string;
   readOnly?: boolean;
 }
@@ -36,6 +46,7 @@ export function SaveBar({
   lastEditedAt,
   canSave,
   onSave,
+  onDiscard,
   historyHref,
   readOnly,
 }: SaveBarProps) {
@@ -44,9 +55,10 @@ export function SaveBar({
 
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border bg-sidebar px-3 py-2 text-sm">
-      <span className="font-medium tabular-nums">Version {version}</span>
+      {/* While there are unsaved edits, the number is the version they're based on, not the head. */}
+      <span className="font-medium tabular-nums">{phase === "clean" ? `Version ${version}` : `Editing from v${version}`}</span>
       <span className={cn("inline-flex items-center gap-1.5", state.className)} aria-live="polite">
-        <state.Icon className={cn("size-4", phase === "saving" && "animate-spin")} />
+        <state.Icon className={cn("size-4", phase === "saving" && "animate-spin")} aria-hidden />
         {state.label}
       </span>
       <span className="inline-flex items-center gap-1.5 text-muted-foreground">
@@ -60,6 +72,12 @@ export function SaveBar({
             History
           </Link>
         </Button>
+        {!readOnly && onDiscard && (
+          <Button variant="ghost" size="sm" onClick={onDiscard}>
+            <Undo2Icon />
+            Discard changes
+          </Button>
+        )}
         {!readOnly && (
           <Button size="sm" onClick={onSave} disabled={!canSave} title="Save (Ctrl/Cmd+S)">
             {phase === "saving" ? <Loader2Icon className="animate-spin" /> : <SaveIcon />}

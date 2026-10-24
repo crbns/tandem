@@ -7,6 +7,7 @@ import { useAuthActions } from "@convex-dev/auth/react";
 import { CONVEX_URL } from "@/lib/config";
 import { SessionContext, InvalidCredentialsError, type Session } from "@/lib/auth/useSession";
 import { useStoredValue, writeStored } from "@/lib/storage";
+import { isInvalidCredentialsError } from "@/lib/auth/signInErrors";
 import { TandemApiContext } from "@/lib/api";
 import { createConvexApi } from "@/lib/api/convex";
 
@@ -26,14 +27,20 @@ function ConvexSessionBridge({ children }: { children: ReactNode }) {
       async signIn(nextEmail, password) {
         try {
           await signIn("password", { email: nextEmail, password, flow: "signIn" });
-        } catch {
-          throw new InvalidCredentialsError();
+        } catch (err) {
+          // Only real credential failures say "wrong password"; network/server
+          // errors propagate so the page can say Tandem is unreachable.
+          if (isInvalidCredentialsError(err)) throw new InvalidCredentialsError();
+          throw err;
         }
         writeStored(EMAIL_KEY, nextEmail);
       },
       async signOut() {
-        await signOut();
-        writeStored(EMAIL_KEY, null);
+        try {
+          await signOut();
+        } finally {
+          writeStored(EMAIL_KEY, null);
+        }
       },
     }),
     [isLoading, isAuthenticated, email, signIn, signOut],

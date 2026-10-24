@@ -77,7 +77,7 @@ On the Vultr instance (run these yourself):
 
 1. SSH in and `cd` to the checkout, then `git pull`.
 2. Put `NEXT_PUBLIC_CONVEX_URL` (production Convex URL) and optionally `NEXT_PUBLIC_DEFAULT_WORKSPACE_ID` in the root `.env`.
-3. `docker compose up -d --build web` (or `-f apps/web/deploy/compose.web.yml` until the root compose file exists).
+3. `docker compose up -d --build web`. Until the root compose file exists, use `docker compose -f apps/web/deploy/compose.web.yml --env-file .env up -d --build web` from the repo root. The container healthcheck hits `/api/health`, which doesn't depend on Convex.
 4. Add a DNS A record for the web domain (e.g. `app.<domain>`) pointing at the instance IP, and set `WEB_DOMAIN` for Caddy.
 5. Ask Person 2 to confirm Convex Auth's `SITE_URL` in the Convex deployment env matches the production web URL (`https://app.<domain>`).
 

@@ -82,8 +82,7 @@ const MESSAGE_PATTERNS: ReadonlyArray<[RegExp, ApiErrorCode]> = [
   [/Failed to fetch|NetworkError|Connection lost|WebSocket/i, "NETWORK"],
 ];
 
-export function normalizeError(err: unknown): TandemApiError {
-  if (err instanceof TandemApiError) return err;
+function classify(err: unknown): TandemApiError {
   if (err instanceof ConvexError) return fromConvexError(err);
   if (err instanceof Error) {
     for (const [pattern, code] of MESSAGE_PATTERNS) {
@@ -92,4 +91,16 @@ export function normalizeError(err: unknown): TandemApiError {
     return new TandemApiError("UNKNOWN", { cause: err.message });
   }
   return new TandemApiError("UNKNOWN", { cause: String(err) });
+}
+
+export function normalizeError(err: unknown): TandemApiError {
+  if (err instanceof TandemApiError) return err;
+  const normalized = classify(err);
+  // Users only see generic copy for UNKNOWN, so leave a trace for whoever is
+  // debugging (e.g. a backend contract mismatch mid-demo). Logged once, here,
+  // at the point of normalization; never includes file content.
+  if (normalized.code === "UNKNOWN") {
+    console.error("[tandem] unexpected backend error:", normalized.details.cause);
+  }
+  return normalized;
 }

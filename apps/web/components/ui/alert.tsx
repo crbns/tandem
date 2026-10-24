@@ -19,9 +19,14 @@ const alertVariants = cva(
 function Alert({
   className,
   variant,
+  role,
   ...props
 }: React.ComponentProps<"div"> & VariantProps<typeof alertVariants>) {
-  return <div data-slot="alert" role="alert" className={cn(alertVariants({ variant }), className)} {...props} />;
+  // Only errors interrupt screen readers; notices are polite status messages.
+  const resolvedRole = role ?? (variant === "destructive" ? "alert" : "status");
+  return (
+    <div data-slot="alert" role={resolvedRole} className={cn(alertVariants({ variant }), className)} {...props} />
+  );
 }
 
 function AlertTitle({ className, ...props }: React.ComponentProps<"div">) {
