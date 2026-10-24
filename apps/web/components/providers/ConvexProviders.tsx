@@ -5,9 +5,19 @@ import { ConvexReactClient, useConvex, useConvexAuth } from "convex/react";
 import { ConvexAuthNextjsProvider } from "@convex-dev/auth/nextjs";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { CONVEX_URL } from "@/lib/config";
-import { SessionContext, InvalidCredentialsError, type Session } from "@/lib/auth/useSession";
+import {
+  SessionContext,
+  AccountExistsError,
+  InvalidCredentialsError,
+  WeakPasswordError,
+  type Session,
+} from "@/lib/auth/useSession";
 import { useStoredValue, writeStored } from "@/lib/storage";
-import { isInvalidCredentialsError } from "@/lib/auth/signInErrors";
+import {
+  isAccountExistsError,
+  isInvalidCredentialsError,
+  isWeakPasswordError,
+} from "@/lib/auth/signInErrors";
 import { TandemApiContext } from "@/lib/api";
 import { createConvexApi } from "@/lib/api/convex";
 
@@ -41,6 +51,22 @@ function ConvexSessionBridge({ children }: { children: ReactNode }) {
           throw err;
         }
         // Only remember an identity that actually signed in.
+        if (result.signingIn) writeStored(EMAIL_KEY, nextEmail.trim());
+      },
+      async signUp(name, nextEmail, password) {
+        let result: { signingIn: boolean };
+        try {
+          result = await signIn("password", {
+            name: name.trim(),
+            email: nextEmail,
+            password,
+            flow: "signUp",
+          });
+        } catch (err) {
+          if (isWeakPasswordError(err)) throw new WeakPasswordError();
+          if (isAccountExistsError(err)) throw new AccountExistsError();
+          throw err;
+        }
         if (result.signingIn) writeStored(EMAIL_KEY, nextEmail.trim());
       },
       async signOut() {

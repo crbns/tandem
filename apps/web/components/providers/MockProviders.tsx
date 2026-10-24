@@ -1,8 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { SessionContext, InvalidCredentialsError, type Session, type SessionUser } from "@/lib/auth/useSession";
-import { findMockUser } from "@/lib/auth/mockUsers";
+import {
+  SessionContext,
+  AccountExistsError,
+  InvalidCredentialsError,
+  MIN_PASSWORD_LENGTH,
+  WeakPasswordError,
+  type Session,
+  type SessionUser,
+} from "@/lib/auth/useSession";
+import { MOCK_USERS, findMockUser } from "@/lib/auth/mockUsers";
 import { useStoredValue, writeStored } from "@/lib/storage";
 import { MockApiContext, TandemApiContext, type Actor } from "@/lib/api";
 import { createMockApi } from "@/lib/api/mock";
@@ -56,6 +64,15 @@ export function MockProviders({ children }: { children: ReactNode }) {
         const found = findMockUser(email, password);
         if (!found) throw new InvalidCredentialsError();
         writeStored(SESSION_KEY, JSON.stringify(found));
+      },
+      // Mock accounts aren't stored: a mock sign-up just signs in as the new person.
+      async signUp(name, email, password) {
+        await new Promise((r) => setTimeout(r, 250));
+        if (password.length < MIN_PASSWORD_LENGTH) throw new WeakPasswordError();
+        const normalized = email.trim().toLowerCase();
+        if (MOCK_USERS.some((u) => u.email.toLowerCase() === normalized)) throw new AccountExistsError();
+        const created: SessionUser = { email: normalized, name: name.trim() || (normalized.split("@")[0] ?? normalized) };
+        writeStored(SESSION_KEY, JSON.stringify(created));
       },
       async signOut() {
         writeStored(SESSION_KEY, null);

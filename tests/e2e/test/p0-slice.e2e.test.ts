@@ -8,7 +8,8 @@ import { ConvexHttpClient } from "convex/browser";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { TandemApiError } from "../../../apps/web/lib/api/errors";
 import { Agent, rawMcpStatus } from "../src/agent";
-import { signUp, type Human } from "../src/humans";
+import { passwordSignIn, signUp, type Human } from "../src/humans";
+import { isAccountExistsError, isWeakPasswordError } from "../../../apps/web/lib/auth/signInErrors";
 
 const convexUrl = inject("convexUrl");
 const mcpUrl = inject("mcpUrl");
@@ -95,6 +96,28 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     await Promise.all([a?.close(), b?.close(), c?.close()]);
     if (process.env.E2E_EVIDENCE)
       writeFileSync(process.env.E2E_EVIDENCE, `${JSON.stringify(evidence, null, 2)}\n`);
+  });
+
+  it("0. sign-up rejects a short password (coded WEAK_PASSWORD) and an existing email", async () => {
+    const weak = await passwordSignIn(convexUrl, {
+      ...person("weak", "Wes"),
+      password: "short",
+      flow: "signUp",
+    }).catch((err: unknown) => err);
+    expect(isWeakPasswordError(weak)).toBe(true);
+    expect((weak as { data?: { code?: string } }).data?.code).toBe("WEAK_PASSWORD");
+
+    // Convex Auth treats a sign-up with an existing email and the RIGHT password
+    // as a sign-in; only a different password is "already exists".
+    const dup = await passwordSignIn(convexUrl, {
+      ...person("a", "Avery"),
+      password: `${password}-other`,
+      flow: "signUp",
+    }).catch((err: unknown) => err);
+    expect(dup).toBeInstanceOf(Error);
+    // Local deployments keep the message; production redacts it (the form then
+    // falls back to "if you already have an account, sign in instead").
+    expect(isAccountExistsError(dup)).toBe(true);
   });
 
   it("1. A creates a workspace with an approved goal and invites B; C has their own workspace", async () => {
