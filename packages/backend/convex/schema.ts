@@ -116,7 +116,11 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_workspace_and_parent", ["workspaceId", "parentId"])
-    .index("by_workspace", ["workspaceId"]),
+    .index("by_workspace", ["workspaceId"])
+    .searchIndex("search_name", {
+      searchField: "name",
+      filterFields: ["workspaceId", "parentId"],
+    }),
 
   file_revisions: defineTable({
     workspaceId: v.id("workspaces"),

@@ -1,3 +1,4 @@
+import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -64,28 +65,36 @@ export const listFiles = query({
     workspaceId: v.id("workspaces"),
     folderId: v.optional(v.id("folders")),
     query: v.optional(v.string()),
+    paginationOpts: paginationOptsValidator,
   },
-  returns: v.array(fileValidator),
+  returns: v.object({
+    page: v.array(fileValidator),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
   handler: async (ctx, args) => {
     const workspaceId = args.workspaceId;
     await requireMembership(ctx, workspaceId);
-    const rows = args.folderId
-      ? await ctx.db
-          .query("files")
-          .withIndex("by_workspace_and_parent", (q) =>
+    const requested = args.paginationOpts.numItems;
+    if (!Number.isInteger(requested) || requested < 1 || requested > 200)
+      throw new ConvexError({ code: "INVALID_INPUT" });
+    const needle = args.query?.trim();
+    const rows = needle
+      ? ctx.db.query("files").withSearchIndex("search_name", (q) => {
+          const search = q.search("name", needle).eq("workspaceId", workspaceId!);
+          return args.folderId ? search.eq("parentId", args.folderId) : search;
+        })
+      : args.folderId
+        ? ctx.db.query("files").withIndex("by_workspace_and_parent", (q) =>
             q.eq("workspaceId", workspaceId!).eq("parentId", args.folderId),
           )
-          .collect()
-      : await ctx.db
-          .query("files")
-          .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId!))
-          .collect();
-    const needle = args.query?.trim().toLocaleLowerCase();
-    return rows
-      .filter(
-        (file) => !needle || file.name.toLocaleLowerCase().includes(needle),
-      )
-      .map(toMetadata);
+        : ctx.db.query("files").withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId!));
+    const result = await rows.paginate(args.paginationOpts);
+    return {
+      page: result.page.map(toMetadata),
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
   },
 });
 

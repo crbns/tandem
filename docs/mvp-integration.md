@@ -25,7 +25,7 @@ Convex is the source of truth. Use the backend functions under `packages/backend
 | Revoke invite | `api.workspaces.revokeWorkspaceInvite` | Owner/admin of invite's own workspace; `{ inviteId }` |
 | Workspace details/events | `api.workspaces.getWorkspaceInfo`    | Requires workspace membership                                                          |
 | Approved project context | `api.workspaces.getWorkspaceContext` | Requires workspace membership                                                          |
-| List/search file names   | `api.files.listFiles`                | `query` is a case-insensitive filename substring, not full-text search                 |
+| List/search file names   | `api.files.listFiles`                | Requires `paginationOpts: { numItems, cursor }` (1–200 items); returns `{ page, isDone, continueCursor }`. `query` uses a workspace-scoped filename search index (term/prefix matching), optionally filtered by `folderId`                 |
 | Read latest file         | `api.files.readFile`                 | Returns metadata plus nullable text content                                            |
 | Create text document     | `api.files.createDocument`           | Creates file version 1 and a workspace event atomically                                |
 | Update text document     | `api.files.updateDocument`           | Requires `expectedVersion`; stale writes throw `VERSION_CONFLICT`                      |
@@ -73,3 +73,9 @@ The dashboard uses `apps/web/.env.local`. The MCP server reads environment varia
 Email-based member addition has been replaced by bearer invite tokens, independent of Password email verification. Owners/admins create a member link on the workspace page and copy it for a teammate; `/invite/<token>` signs the recipient in with a same-origin return path and then accepts the invite. Treat the link as a credential and share it only with its intended recipient.
 
 Tokens have 256 random bits from `crypto.getRandomValues`; only SHA-256 hashes are stored. They expire after seven days, can be revoked, and admit one new member. A current member following a valid unused link returns to the workspace without consuming it. Invalid, expired, revoked, and used links return `INVITE_INVALID`, `INVITE_EXPIRED`, `INVITE_REVOKED`, and `INVITE_USED`. Creation/revocation require owner/admin; invite roles never include owner. Invite records carry attribution, revision, and timestamps.
+
+## File listing pagination
+
+`files:listFiles` authenticates membership before querying the workspace index or `search_name` index. All queries constrain `workspaceId`; folder queries also constrain `parentId`. Filename search follows Convex token/prefix semantics rather than arbitrary substring matching. Callers must follow `continueCursor` until `isDone`.
+
+The dashboard's `TandemApi.listFiles(workspaceId)` retains its complete-array contract: the Convex adapter loads pages of 100 and rejects with `LIST_LIMIT_EXCEEDED` rather than returning a partial list after 10,000 files or 100 pages. It also rejects repeated/empty continuation cursors. The dashboard continues filtering the loaded complete list locally.

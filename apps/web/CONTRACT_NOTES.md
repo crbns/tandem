@@ -9,7 +9,7 @@ All arguments use camelCase; timestamps are epoch milliseconds. IDs are Convex I
 | Dashboard operation | Convex reference | Arguments | Return |
 | --- | --- | --- | --- |
 | List workspaces | `workspaces.listWorkspaces` | `{}` | Workspaces for the signed-in user |
-| List files | `files.listFiles` | `{ workspaceId, folderId?, query? }` | File metadata array |
+| List files | `files.listFiles` | `{ workspaceId, folderId?, query?, paginationOpts }` | `{ page, isDone, continueCursor }` |
 | Create file | `files.createDocument` | `{ workspaceId, parentId?, name, mimeType, content }` | Created file metadata |
 | Read file | `files.readFile` | `{ fileId }` | `{ file, content }` |
 | Update file | `files.updateDocument` | `{ fileId, expectedVersion, content }` | Updated file metadata |
@@ -50,7 +50,7 @@ and open questions) do not conflict with unrelated updates.
 |---|---|---|
 | `listWorkspaces()` | `workspaces:listWorkspaces` | `{}` → `{ id, name, role }[]` |
 | `createWorkspace(name)` | `workspaces:createWorkspace` | `{ name }` → workspace ID |
-| `listFiles(workspaceId)` | `files:listFiles` | `{ workspaceId }` → file metadata |
+| `listFiles(workspaceId)` | `files:listFiles` | `{ workspaceId, paginationOpts: { numItems: 100, cursor } }` → `{ page, isDone, continueCursor }` |
 | `createFile(workspaceId, input)` | `files:createDocument` | `{ workspaceId, name, mimeType, content }` → `{ id, version }` |
 | `readFile(fileId)` | `files:readFile` | `{ fileId }` → `{ file, content }`, mapped to FileDetail |
 | `updateFileContent(fileId, update)` | `files:updateDocument` | `{ fileId, expectedVersion, content }` → file metadata |
@@ -73,3 +73,7 @@ then MCP remains disconnected from Convex.
 The current Password provider does not send verification email. Workspace
 owners/admins create single-use token invites; signed-in recipients accept
 them without relying on email as proof of account ownership.
+
+## Paginated file lists
+
+The Convex adapter follows every `files:listFiles` cursor and maps all page metadata before returning a `FileSummary[]`. It rejects `LIST_LIMIT_EXCEEDED` at 10,000 files / 100 pages (and on repeated or empty nonterminal cursors), so it never silently returns an incomplete list. Backend page sizes are 1–200. Optional `query` uses the `search_name` index with required workspace equality and optional parent equality; search matches terms/prefixes, not arbitrary substrings.
