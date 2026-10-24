@@ -183,7 +183,7 @@ export const proposeContextChange = mutation({
     supersedes: v.optional(v.string()),
     expectedVersion: v.optional(v.number()),
     field: fieldValidator,
-    proposedValue: v.string(),
+    proposedValue: v.optional(v.string()),
     rationale: v.string(),
     sourceFileIds: v.array(v.id("files")),
     /** Required for ownership (proposedValue is then the area); else omitted. */

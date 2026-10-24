@@ -35,7 +35,7 @@ describe("context lifecycle", () => {
     expect(entry).toMatchObject({ status: "active", updatedBy: agent, resolvedAt: null });
     expect(entry.id).toBeTruthy();
     as(agent);
-    await mock.proposeContextChange(workspaceId, { ...input, operation: "resolve", entryId: entry.id, expectedVersion: context.version });
+    await mock.proposeContextChange(workspaceId, { field: input.field, rationale: input.rationale, sourceFileIds: [], operation: "resolve", entryId: entry.id, expectedVersion: context.version });
     as(human);
     context = await mock.getContextDetails(workspaceId);
     expect(context.openQuestions[0]).toMatchObject({ id: entry.id, status: "resolved", resolvedBy: agent, resolvedAt: expect.any(Number) });
@@ -47,7 +47,7 @@ describe("context lifecycle", () => {
     as(agent);
     await expect(mock.proposeContextChange(workspaceId, { ...input, operation: "remove", entryId: entry.id, expectedVersion: resolvedVersion })).rejects.toMatchObject({ code: "INVALID_INPUT" });
     as(human);
-    await mock.proposeContextChange(workspaceId, { ...input, operation: "remove", entryId: entry.id, expectedVersion: resolvedVersion });
+    await mock.proposeContextChange(workspaceId, { field: input.field, rationale: input.rationale, sourceFileIds: [], operation: "remove", entryId: entry.id, expectedVersion: resolvedVersion });
     expect((await mock.getContextDetails(workspaceId)).openQuestions).toEqual([]);
     expect((await mock.listProposals(workspaceId, "applied")).find((p) => p.id === result.id)).toMatchObject({ createdBy: agent, supersedes: null });
     expect(changed).toHaveBeenCalledTimes(3);
@@ -89,6 +89,21 @@ describe("context lifecycle", () => {
     expect(after.decisions[0]).toMatchObject({ id: original.id, status: "superseded", supersededBy: replacement.id });
     expect(replacement).toMatchObject({ status: "active", text: "Use two clients" });
     expect((await mock.getContext(workspaceId))?.decisions).not.toContain(original.text);
+  });
+
+  it("preserves ownership identity across targeted edits", async () => {
+    const { mock } = setup();
+    await mock.listWorkspaces();
+    let context = await mock.getContextDetails(workspaceId);
+    await mock.updateContextField(workspaceId, { field: "ownership", proposedValue: "Original area", ownerUserId: human.userId, sourceFileIds: [], expectedVersion: context.version });
+    context = await mock.getContextDetails(workspaceId);
+    const id = context.ownership[0]!.id;
+    for (const target of [{ entryId: id }, { entryIndex: 0 }]) {
+      await mock.updateContextField(workspaceId, { field: "ownership", proposedValue: `Renamed ${context.version}`, ownerUserId: human.userId, sourceFileIds: [], expectedVersion: context.version, ...target });
+      context = await mock.getContextDetails(workspaceId);
+      expect(context.ownership).toHaveLength(1);
+      expect(context.ownership[0]).toMatchObject({ id, ownerUserId: human.userId });
+    }
   });
 
   it("maps resolver actors without losing backend lifecycle IDs", () => {

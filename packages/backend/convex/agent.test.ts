@@ -682,27 +682,47 @@ describe("sync published work", () => {
 
   it("delivers work exactly once while draining event pages without gaps", async () => {
     const { t, alex, sam, workspaceId } = await setup();
-    const publisher = await alex.mutation(api.agentConnections.createAgentConnection, {
-      workspaceId, client: "claude",
-    });
-    const reader = await sam.mutation(api.agentConnections.createAgentConnection, {
-      workspaceId, client: "chatgpt",
-    });
+    const publisher = await alex.mutation(
+      api.agentConnections.createAgentConnection,
+      {
+        workspaceId,
+        client: "claude",
+      },
+    );
+    const reader = await sam.mutation(
+      api.agentConnections.createAgentConnection,
+      {
+        workspaceId,
+        client: "chatgpt",
+      },
+    );
     const file = await t.mutation(api.mcp.createDocument, {
-      token: publisher.token, name: "backlog.md", mimeType: "text/markdown", content: "",
+      token: publisher.token,
+      name: "backlog.md",
+      mimeType: "text/markdown",
+      content: "",
     });
-    const before = await t.mutation(api.mcp.syncWorkspace, { token: reader.token });
+    const before = await t.mutation(api.mcp.syncWorkspace, {
+      token: reader.token,
+    });
     for (let version = 1; version <= 50; version++) {
       await t.mutation(api.mcp.updateDocument, {
-        token: publisher.token, fileId: file.id, expectedVersion: version, content: `Update ${version}`,
+        token: publisher.token,
+        fileId: file.id,
+        expectedVersion: version,
+        content: `Update ${version}`,
       });
     }
     const published = await t.mutation(api.mcp.publishWork, {
-      token: publisher.token, kind: "finding", title: "After the backlog",
-      summary: "Full finding after 50 updates", fileIds: [file.id],
+      token: publisher.token,
+      kind: "finding",
+      title: "After the backlog",
+      summary: "Full finding after 50 updates",
+      fileIds: [file.id],
     });
     const first = await t.mutation(api.mcp.syncWorkspace, {
-      token: reader.token, sinceSeq: before.cursorSeq,
+      token: reader.token,
+      sinceSeq: before.cursorSeq,
     });
     expect(first.events).toHaveLength(50);
     expect(first.eventsTruncated).toBe(true);
@@ -710,7 +730,8 @@ describe("sync published work", () => {
     expect(first.recentWork).toEqual([]);
     expect(first.workTruncated).toBe(false);
     const second = await t.mutation(api.mcp.syncWorkspace, {
-      token: reader.token, sinceSeq: first.cursorSeq,
+      token: reader.token,
+      sinceSeq: first.cursorSeq,
     });
     expect(second.eventsTruncated).toBe(false);
     expect(second.recentWork).toEqual([published]);
@@ -720,7 +741,8 @@ describe("sync published work", () => {
     );
     expect([...first.recentWork, ...second.recentWork]).toEqual([published]);
     const empty = await t.mutation(api.mcp.syncWorkspace, {
-      token: reader.token, sinceSeq: second.cursorSeq,
+      token: reader.token,
+      sinceSeq: second.cursorSeq,
     });
     expect(empty.events).toEqual([]);
     expect(empty.recentWork).toEqual([]);
@@ -767,7 +789,8 @@ describe("sync published work", () => {
     expect(incremental.recentWork).toEqual(published.slice(30, 50).reverse());
     expect(incremental.workTruncated).toBe(true);
     const continuation = await t.mutation(api.mcp.syncWorkspace, {
-      token, sinceSeq: incremental.cursorSeq,
+      token,
+      sinceSeq: incremental.cursorSeq,
     });
     expect(continuation.recentWork).toEqual(published.slice(50).reverse());
     expect(continuation.eventsTruncated).toBe(false);
@@ -1551,4 +1574,90 @@ describe("context tiers (#25)", () => {
       (await alex.query(api.context.getDetails, { workspaceId })).revision,
     ).toBe(after.revision);
   });
+});
+
+describe("context lifecycle review regressions", () => {
+  it("preserves ownership identity when editing by ID or legacy index", async () => {
+    const { alex, samId, workspaceId } = await setup();
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId,
+      field: "ownership",
+      proposedValue: "Original area",
+      ownerUserId: samId,
+      sourceFileIds: [],
+      expectedVersion: 1,
+    });
+    let context = await alex.query(api.context.getDetails, { workspaceId });
+    const id = context.ownership[0]!.id;
+    for (const target of [{ entryId: id }, { entryIndex: 0 }]) {
+      await alex.mutation(api.context.updateContextField, {
+        workspaceId,
+        field: "ownership",
+        proposedValue: `Renamed ${context.revision}`,
+        ownerUserId: samId,
+        sourceFileIds: [],
+        expectedVersion: context.revision,
+        ...target,
+      });
+      context = await alex.query(api.context.getDetails, { workspaceId });
+      expect(context.ownership).toMatchObject([{ id, ownerUserId: samId }]);
+      expect(context.ownership).toHaveLength(1);
+    }
+  });
+
+  it.each([undefined, "Ignored".repeat(500)])(
+    "resolves a dashboard-created long question without depending on the supplied value (%#)",
+    async (proposedValue) => {
+      const { t, alex, sam, workspaceId } = await setup();
+      const text = "Q".repeat(3000);
+      await alex.mutation(api.context.updateContextField, {
+        workspaceId,
+        field: "open_question",
+        proposedValue: text,
+        sourceFileIds: [],
+        expectedVersion: 1,
+      });
+      const { token } = await sam.mutation(
+        api.agentConnections.createAgentConnection,
+        { workspaceId, client: "claude" },
+      );
+      const before = await t.mutation(api.mcp.syncWorkspace, { token });
+      const entry = before.context.openQuestions[0]!;
+      const result = await t.mutation(api.mcp.proposeContextChange, {
+        token,
+        field: "open_question",
+        operation: "resolve",
+        entryId: entry.id,
+        expectedVersion: before.context.revision,
+        ...(proposedValue === undefined ? {} : { proposedValue }),
+        rationale: "Answered",
+        sourceFileIds: [],
+      });
+      expect(result.proposal).toMatchObject({
+        status: "applied",
+        proposedValue: text,
+      });
+      const after = await t.mutation(api.mcp.syncWorkspace, { token });
+      expect(after.context.openQuestions[0]).toMatchObject({
+        id: entry.id,
+        text,
+        status: "resolved",
+        resolvedBy: { type: "agent" },
+        resolvedAt: expect.any(Number),
+      });
+      await alex.mutation(api.context.proposeContextChange, {
+        workspaceId,
+        field: "open_question",
+        operation: "remove",
+        entryId: entry.id,
+        expectedVersion: after.context.revision,
+        rationale: "Cleanup",
+        sourceFileIds: [],
+      });
+      expect(
+        (await alex.query(api.context.getDetails, { workspaceId }))
+          .openQuestions,
+      ).toEqual([]);
+    },
+  );
 });

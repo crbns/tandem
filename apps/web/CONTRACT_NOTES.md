@@ -23,7 +23,7 @@ All arguments use camelCase; timestamps are epoch milliseconds; Record IDs are C
 | `getContext(workspaceId)` | `workspaces:getWorkspaceContext` | `{ workspaceId }` → approved context or null |
 | `getContextDetails(workspaceId)` | `context:getDetails` | `{ workspaceId }` → entries with stable `id`, lifecycle status and attribution |
 | `updateContextField(workspaceId, input)` | `context:updateContextField` | `{ workspaceId, field, proposedValue, sourceFileIds, expectedVersion, entryId?, entryIndex?, ownerUserId? }` → `{ version }`; UI edits use `entryId` |
-| `proposeContextChange(workspaceId, input)` | `context:proposeContextChange` | `{ workspaceId, field, proposedValue, rationale, sourceFileIds, operation?, entryId?, supersedes?, expectedVersion?, ownerUserId? }` → `{ id, status: "pending" \| "applied" }` |
+| `proposeContextChange(workspaceId, input)` | `context:proposeContextChange` | `{ workspaceId, field, proposedValue?, rationale, sourceFileIds, operation?, entryId?, supersedes?, expectedVersion?, ownerUserId? }` → `{ id, status: "pending" \| "applied" }` |
 | `listProposals(workspaceId, status?)` | `context:getApprovals` | `{ workspaceId, status? }` → newest 100 proposals; any member |
 | `decideProposal(proposal, decision)` | `context:decideContextProposal` (+ `context:getApprovals` with `status: "stale"` after an approval) | `{ proposalId, decision }` → null |
 | `createAgentConnection(workspaceId, input)` | `agentConnections:createAgentConnection` | `{ workspaceId, client, displayName? }` → `{ connectionId, token, createdAt }` |
@@ -76,3 +76,5 @@ The Password provider sends no verification email. Owners/admins create single-u
 ## Paginated file lists
 
 The adapter follows every `files:listFiles` cursor and rejects with `LIST_LIMIT_EXCEEDED` past 10,000 files / 100 pages (or on a repeated or empty nonterminal cursor), so it never returns a silently partial list.
+
+For context proposals, `proposedValue` is required only for `add`. Resolve/remove load the entry by ID and ignore any supplied value; send `entryId` and `expectedVersion` instead.

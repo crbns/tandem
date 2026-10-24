@@ -303,7 +303,6 @@ describe("Convex-backed server", () => {
     });
     await call(client, "propose_context_change", {
       field: "open_questions",
-      proposed_value: "Answered?",
       rationale: "Answered",
       operation: "resolve",
       entry_id: "question-stable",
@@ -318,6 +317,17 @@ describe("Convex-backed server", () => {
         expectedVersion: 8,
       },
     });
+    expect(fake.calls.at(-1)?.args).not.toHaveProperty("proposedValue");
+    const ignored = await call(client, "propose_context_change", {
+      field: "open_questions",
+      operation: "resolve",
+      entry_id: "question-stable",
+      expected_version: 8,
+      rationale: "Answered",
+      proposed_value: "Ignored".repeat(500),
+    });
+    expect(ignored.isError).toBeFalsy();
+    expect(fake.calls.at(-1)?.args).not.toHaveProperty("proposedValue");
     const replacement = await call(client, "propose_context_change", {
       field: "decisions",
       proposed_value: "Replacement",

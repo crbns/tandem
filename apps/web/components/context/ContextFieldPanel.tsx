@@ -150,7 +150,7 @@ export function ContextFieldPanel({
     try {
       await api.proposeContextChange(workspaceId, {
         field, operation, entryId: entry.id, expectedVersion: version,
-        proposedValue: entry.text, sourceFileIds: entry.sourceFileIds,
+        sourceFileIds: entry.sourceFileIds,
         rationale: operation === "resolve" ? "Resolved from project context." : "Removed from project context.",
       });
       toast.success(operation === "resolve" ? "Question resolved." : `${FIELD_LABELS[field]} removed.`);

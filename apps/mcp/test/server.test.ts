@@ -1265,7 +1265,6 @@ describe("context tools", () => {
     );
     const resolve = {
       field: "open_questions" as const,
-      proposed_value: question.text,
       rationale: "Answered",
       operation: "resolve" as const,
       entry_id: question.id,

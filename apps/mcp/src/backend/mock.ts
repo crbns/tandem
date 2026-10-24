@@ -439,7 +439,10 @@ export class MockBackend implements TandemBackend {
     changed.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 
     const work = ws.events
-      .filter((e) => e.type === "work.published" && e.seq > sinceSeq && e.seq <= cursorSeq)
+      .filter(
+        (e) =>
+          e.type === "work.published" && e.seq > sinceSeq && e.seq <= cursorSeq,
+      )
       .reverse()
       .map((e) => this.published.get(e.subject_id)!)
       .slice(0, SYNC_WORK_LIMIT + 1);
@@ -564,13 +567,15 @@ export class MockBackend implements TandemBackend {
         : undefined;
     if (operation !== "add" && !target)
       throw new TandemError("INVALID_INPUT", "Active context entry not found.");
-    this.checkValue(workspaceId, input.field, input.proposed_value);
+    const proposedValue =
+      operation === "add" ? input.proposed_value : target!.text;
+    this.checkValue(workspaceId, input.field, proposedValue);
     const proposal: ContextProposal = {
       base_context_version: this.workspaces.get(workspaceId)!.context_version,
       id: `prop_${randomUUID()}`,
       workspace_id: workspaceId,
       field: input.field,
-      proposed_value: structuredClone(input.proposed_value),
+      proposed_value: structuredClone(proposedValue),
       rationale: input.rationale,
       source_ids: this.checkFileIds(workspaceId, input.source_ids),
       status: working ? "applied" : "pending",
@@ -583,7 +588,7 @@ export class MockBackend implements TandemBackend {
         this.applyToContext(
           workspaceId,
           input.field,
-          input.proposed_value,
+          proposedValue,
           actor,
           proposal.source_ids,
         );
@@ -837,8 +842,8 @@ export class MockBackend implements TandemBackend {
   private checkValue(
     workspaceId: string,
     field: ContextField,
-    value: ProposedValue,
-  ): void {
+    value: ProposedValue | undefined,
+  ): asserts value is ProposedValue {
     const fail = (expected: string) =>
       new TandemError(
         "INVALID_INPUT",

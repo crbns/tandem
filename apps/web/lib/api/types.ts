@@ -194,7 +194,8 @@ export interface WorkspaceMember {
   name: string;
 }
 
-export interface ContextProposalInput extends ContextChangeInput {
+export interface ContextProposalInput extends Omit<ContextChangeInput, "proposedValue"> {
+  proposedValue?: string;
   rationale: string;
   operation?: "add" | "resolve" | "remove";
   entryId?: string;

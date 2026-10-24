@@ -499,6 +499,7 @@ export function createMockApi({
       const operation = input.operation ?? "add";
       if (input.expectedVersion !== undefined && input.expectedVersion !== ctx.version)
         throw new TandemApiError("VERSION_CONFLICT", { currentVersion: ctx.version });
+      let proposedValue = input.proposedValue ?? "";
       const working = input.field === "constraint" || input.field === "open_question";
       if (operation !== "add") {
         if (!working || (operation === "resolve" && input.field !== "open_question") || !input.entryId || input.expectedVersion === undefined || input.supersedes)
@@ -507,17 +508,18 @@ export function createMockApi({
         const entries = input.field === "constraint" ? ctx.constraints : ctx.openQuestions;
         const index = entries.findIndex((entry) => entry.id === input.entryId && (operation === "remove" || entry.status === "active"));
         if (index < 0) throw new TandemApiError("INVALID_INPUT");
+        proposedValue = entries[index]!.text;
       } else {
-        validateChange(workspaceId, input);
+        validateChange(workspaceId, { ...input, proposedValue });
         if (input.entryId !== undefined) throw new TandemApiError("INVALID_INPUT");
         if (input.supersedes !== undefined && (input.field !== "decision" || !ctx.decisions.some((entry) => entry.id === input.supersedes && entry.status === "active")))
           throw new TandemApiError("INVALID_INPUT");
       }
       const id = `proposal_${nextId++}`;
-      const area = input.proposedValue.trim();
+      const area = proposedValue.trim();
       const status = working ? "applied" as const : "pending" as const;
       if (working) {
-        if (operation === "add") applyChange(workspaceId, input, actor);
+        if (operation === "add") applyChange(workspaceId, { ...input, proposedValue }, actor);
         else {
           const entries = input.field === "constraint" ? ctx.constraints : ctx.openQuestions;
           const index = entries.findIndex((entry) => entry.id === input.entryId);
@@ -529,7 +531,7 @@ export function createMockApi({
       proposals.push({
         id, workspaceId, field: input.field, rationale: input.rationale, sourceFileIds: [...input.sourceFileIds],
         supersedes: input.supersedes ?? null,
-        proposedValue: input.field === "ownership" ? `${area}: ${memberNames.get(input.ownerUserId!) ?? "Workspace member"}` : input.proposedValue,
+        proposedValue: input.field === "ownership" ? `${area}: ${memberNames.get(input.ownerUserId!) ?? "Workspace member"}` : proposedValue,
         ...(input.field === "ownership" ? { ownerArea: area, ownerUserId: input.ownerUserId } : {}),
         ...(input.field === "goal" || input.field === "scope" ? { baseValue: ctx[input.field]?.text ?? "" } : {}),
         status, createdBy: { ...actor }, createdAt: Date.now(), decidedBy: null, decidedAt: null,

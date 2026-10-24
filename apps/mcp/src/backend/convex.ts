@@ -259,7 +259,7 @@ const fn = {
       supersedes?: string;
       expectedVersion?: number;
       field: ConvexField;
-      proposedValue: string;
+      proposedValue?: string;
       ownerUserId?: string;
       rationale: string;
       sourceFileIds: string[];
@@ -675,12 +675,27 @@ export function toTandemError(
   }
 }
 
-/** Convex's context model is canonical: one text value per proposal (plus the owner for ownership). */
+function toConvexField(field: ProposeContextChangeInput["field"]): ConvexField {
+  switch (field) {
+    case "constraints":
+      return "constraint";
+    case "decisions":
+      return "decision";
+    case "open_questions":
+      return "open_question";
+    default:
+      return field;
+  }
+}
+
+/** Additions carry a text value; lifecycle operations identify the stored entry. */
 function toConvexProposal(input: ProposeContextChangeInput): {
   field: ConvexField;
-  proposedValue: string;
+  proposedValue?: string;
   ownerUserId?: string;
 } {
+  if (input.operation === "resolve" || input.operation === "remove")
+    return { field: toConvexField(input.field) };
   const value = input.proposed_value;
   const invalid = (expected: string) =>
     new TandemError(

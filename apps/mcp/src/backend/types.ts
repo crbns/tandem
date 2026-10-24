@@ -319,7 +319,7 @@ export interface ProposeContextChangeInput {
   supersedes?: string;
   expected_version?: number;
   field: ContextField;
-  proposed_value: ProposedValue;
+  proposed_value?: ProposedValue;
   rationale: string;
   /** Each must be a file in the same workspace, else FILE_NOT_FOUND. */
   source_ids?: string[];

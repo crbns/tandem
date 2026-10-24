@@ -255,7 +255,7 @@ export async function proposeContextChangeCore(
     workspaceId: Id<"workspaces">;
     field: ContextField;
     /** For ownership, the area being assigned. */
-    proposedValue: string;
+    proposedValue?: string;
     rationale: string;
     sourceFileIds: Id<"files">[];
     /** Untrusted; required for ownership and rejected for every other field. */
@@ -280,12 +280,12 @@ export async function proposeContextChangeCore(
       (field !== "decision" || operation !== "add"))
   )
     throw new ConvexError({ code: "INVALID_INPUT" });
-  let proposedValue = args.proposedValue.trim();
+  let proposedValue = (args.proposedValue ?? "").trim();
   if (operation === "add" && (!proposedValue || proposedValue.length > 10000))
     throw new ConvexError({ code: "INVALID_INPUT", field: "proposedValue" });
   let owner: { ownerUserId: Id<"users">; ownerArea: string } | undefined;
   if (field === "ownership") {
-    const area = args.proposedValue.trim();
+    const area = proposedValue;
     if (!area || area.length > MAX_OWNER_AREA_LENGTH)
       throw new ConvexError({ code: "INVALID_INPUT", field: "proposedValue" });
     if (args.ownerUserId === undefined)
@@ -844,6 +844,10 @@ export async function applyApprovedProposal(
           ),
           {
             ...value,
+            id:
+              entryIndex === undefined
+                ? value.id
+                : context.ownership[entryIndex]!.id,
             text: ownershipText(proposal.ownerArea, owner),
             ownerUserId: owner._id,
             ownerArea: proposal.ownerArea,

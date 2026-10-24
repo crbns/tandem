@@ -4,6 +4,14 @@ import { z } from "zod";
 import type { Actor, TandemBackend } from "./backend/types.js";
 import { TandemError } from "./errors.js";
 
+const contextAdditionValue = z.union([
+  z.string().trim().min(1).max(2000),
+  z.object({
+    area: z.string().trim().min(1).max(200),
+    owner_user_id: z.string().min(1),
+  }),
+]);
+
 /** Builds an MCP server whose tools act as `actor`. Identity never comes from tool arguments. */
 export function createMcpServer(
   backend: TandemBackend,
@@ -268,67 +276,76 @@ export function createMcpServer(
         "Resolve an open question with operation resolve, entry_id and expected_version from sync context_version; history is retained. " +
         "Only humans can remove working entries. Resolve/remove require expected_version. " +
         "A decisions addition may supersede an active decision ID using supersedes; the old decision changes only after approval. " +
-        "proposed_value is text, or { area, owner_user_id } for ownership; field, proposed_value and rationale remain required for every operation. " +
+        "For add, proposed_value is required text, or { area, owner_user_id } for ownership; for resolve/remove it is optional and ignored because the server loads the target entry. Field and rationale remain required. " +
         "Cite supporting files in source_ids.",
-      inputSchema: {
-        field: z
-          .enum([
-            "goal",
-            "scope",
-            "constraints",
-            "decisions",
-            "ownership",
-            "open_questions",
-          ])
-          .describe("Which part of the context to change."),
-        operation: z.enum(["add", "resolve", "remove"]).default("add"),
-        entry_id: z
-          .string()
-          .min(1)
-          .optional()
-          .describe(
-            "Stable context entry ID from sync; required for resolve/remove.",
-          ),
-        supersedes: z
-          .string()
-          .min(1)
-          .optional()
-          .describe("Active decision ID replaced only on approval."),
-        expected_version: z
-          .number()
-          .int()
-          .nonnegative()
-          .optional()
-          .describe("sync context_version; required for resolve/remove."),
-        proposed_value: z
-          .union([
-            z.string().trim().min(1).max(2000),
-            z.object({
-              area: z.string().trim().min(1).max(200),
-              owner_user_id: z.string().min(1),
-            }),
-          ])
-          .describe(
-            "string for goal, scope, decisions, open_questions or one new constraint; { area, owner_user_id } for ownership.",
-          ),
-        rationale: z
-          .string()
-          .trim()
-          .min(1)
-          .max(2000)
-          .describe("Why the change is needed, in 1–2000 characters."),
-        source_ids: z
-          .array(z.string().min(1))
-          .max(20)
-          .optional()
-          .describe("Ids of files in this workspace that support the change."),
-        workspace_id: z
-          .string()
-          .optional()
-          .describe(
-            "Workspace to propose in. Defaults to your default workspace.",
-          ),
-      },
+      inputSchema: z
+        .object({
+          field: z
+            .enum([
+              "goal",
+              "scope",
+              "constraints",
+              "decisions",
+              "ownership",
+              "open_questions",
+            ])
+            .describe("Which part of the context to change."),
+          operation: z.enum(["add", "resolve", "remove"]).default("add"),
+          entry_id: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              "Stable context entry ID from sync; required for resolve/remove.",
+            ),
+          supersedes: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("Active decision ID replaced only on approval."),
+          expected_version: z
+            .number()
+            .int()
+            .nonnegative()
+            .optional()
+            .describe("sync context_version; required for resolve/remove."),
+          proposed_value: z
+            .unknown()
+            .optional()
+            .describe(
+              "Required for add: text (1–2000 characters), or { area, owner_user_id } for ownership. Omit for resolve/remove; any supplied value is ignored.",
+            ),
+          rationale: z
+            .string()
+            .trim()
+            .min(1)
+            .max(2000)
+            .describe("Why the change is needed, in 1–2000 characters."),
+          source_ids: z
+            .array(z.string().min(1))
+            .max(20)
+            .optional()
+            .describe(
+              "Ids of files in this workspace that support the change.",
+            ),
+          workspace_id: z
+            .string()
+            .optional()
+            .describe(
+              "Workspace to propose in. Defaults to your default workspace.",
+            ),
+        })
+        .superRefine((args, ctx) => {
+          if (args.operation !== "add") return;
+          const parsed = contextAdditionValue.safeParse(args.proposed_value);
+          if (!parsed.success) {
+            for (const issue of parsed.error.issues)
+              ctx.addIssue({
+                ...issue,
+                path: ["proposed_value", ...issue.path],
+              });
+          }
+        }),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -338,7 +355,13 @@ export function createMcpServer(
     },
     (args) =>
       run(async () => ({
-        proposal: await backend.proposeContextChange(actor, args),
+        proposal: await backend.proposeContextChange(actor, {
+          ...args,
+          proposed_value:
+            args.operation === "add"
+              ? contextAdditionValue.parse(args.proposed_value)
+              : undefined,
+        }),
       })),
   );
 

@@ -483,7 +483,7 @@ export const proposeContextChange = mutation({
     supersedes: v.optional(v.string()),
     expectedVersion: v.optional(v.number()),
     field: contextFieldValidator,
-    proposedValue: v.string(),
+    proposedValue: v.optional(v.string()),
     rationale: v.string(),
     sourceFileIds: v.array(v.string()),
     /** Required for ownership (proposedValue is then the area); else omitted. */
@@ -503,7 +503,10 @@ export const proposeContextChange = mutation({
       entryId: args.entryId,
       supersedes: args.supersedes,
       expectedVersion: args.expectedVersion,
-      proposedValue: boundedText(args.proposedValue, 2000, "proposedValue"),
+      proposedValue:
+        (args.operation ?? "add") === "add"
+          ? boundedText(args.proposedValue ?? "", 2000, "proposedValue")
+          : undefined,
       rationale: boundedText(args.rationale, 2000, "rationale"),
       sourceFileIds: await checkSourceFiles(
         ctx,

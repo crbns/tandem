@@ -148,9 +148,10 @@ Someone else saved a newer version since you read it.
     it fails with `INVALID_INPUT`.
 - `operation` defaults to `add`. To resolve an open question, sync first and
   call the same tool with `operation: "resolve"`, `field: "open_questions"`,
-  `entry_id` and `expected_version: <context_version>`. Keep `proposed_value`
-  (the question text), `rationale`, and supporting `source_ids`. Agents and
-  humans may resolve questions; only humans may `remove` working entries.
+  `entry_id` and `expected_version: <context_version>`, plus a short `rationale`.
+  Omit `proposed_value` for resolve/remove: the server loads the target entry
+  by ID and ignores any supplied value. Agents and humans may resolve
+  questions; only humans may `remove` working entries.
   Resolve/remove require `expected_version`; on conflict sync and reconcile.
 - Read list entry `id`, `status` (`active`, `resolved`, `superseded`),
   `resolved_by`, `resolved_at`, and `superseded_by`; retain history and use
