@@ -214,14 +214,26 @@ function FilesPanel({
                 ),
               )}
             </ul>
-            {tree.hidden > 0 && <p className="text-xs text-muted-foreground">and {tree.hidden} more</p>}
+            {(tree.hiddenFolders > 0 || tree.hiddenFiles > 0) && (
+              <p className="text-xs text-muted-foreground">
+                and{" "}
+                {[
+                  tree.hiddenFolders > 0 && `${plural(tree.hiddenFolders, "more folder")}`,
+                  tree.hiddenFiles > 0 && `${plural(tree.hiddenFiles, "more file")} at the root`,
+                ]
+                  .filter(Boolean)
+                  .join(", ")}
+              </p>
+            )}
             <h3 className="label-caps mt-1 text-muted-foreground">Recently changed</h3>
             <ul aria-label="Recently changed files" className="flex flex-col text-sm">
               {recentFiles(files).map((file) => (
                 <li key={file.id}>
                   <Link href={fileHref(file)} className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-accent">
                     <CustodyMark kind={file.updatedBy.actorType} />
-                    <span className="min-w-0 flex-1 truncate">{file.path ?? file.name}</span>
+                    <span className="min-w-0 flex-1 truncate" title={file.path}>
+                      {file.name}
+                    </span>
                     <span className="shrink-0 text-xs text-muted-foreground" title={formatAbsolute(file.updatedAt)}>
                       {formatRelative(file.updatedAt, now)}
                     </span>

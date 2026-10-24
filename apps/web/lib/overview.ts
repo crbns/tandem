@@ -48,19 +48,22 @@ export type TreeRow =
 
 export interface CondensedTree {
   rows: TreeRow[];
-  /** Rows left out to keep the view short. */
-  hidden: number;
+  /** Folders left out, including every one deeper than `maxDepth`. */
+  hiddenFolders: number;
+  /** Root files left out. */
+  hiddenFiles: number;
 }
 
 /**
  * The workspace tree at a glance: folders down to `maxDepth` (deeper ones are
  * counted in their ancestor's file count), then the root's files, newest
- * first, cut at `maxRows`.
+ * first. Folders and root files are capped separately so many folders never
+ * crowd out the root's files.
  */
 export function condenseTree(
   folders: readonly FolderSummary[],
   files: readonly FileSummary[],
-  { maxDepth = 2, maxRows = 10 }: { maxDepth?: number; maxRows?: number } = {},
+  { maxDepth = 2, maxFolders = 8, maxFiles = 5 }: { maxDepth?: number; maxFolders?: number; maxFiles?: number } = {},
 ): CondensedTree {
   const ordered = treeOrder(folders);
   const parentOf = new Map(folders.map((folder) => [folder.id, folder.parentId]));
@@ -72,16 +75,20 @@ export function condenseTree(
       subtreeFiles.set(id, (subtreeFiles.get(id) ?? 0) + 1);
     }
   }
-  const rows: TreeRow[] = [
-    ...ordered
-      .filter(({ depth }) => depth <= maxDepth)
-      .map(({ folder, depth }): TreeRow => ({ kind: "folder", folder, depth, fileCount: subtreeFiles.get(folder.id) ?? 0 })),
-    ...files
-      .filter((file) => file.parentId === null)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .map((file): TreeRow => ({ kind: "file", file })),
-  ];
-  return { rows: rows.slice(0, maxRows), hidden: Math.max(0, rows.length - maxRows) };
+  const folderRows = ordered
+    .filter(({ depth }) => depth <= maxDepth)
+    .slice(0, maxFolders)
+    .map(({ folder, depth }): TreeRow => ({ kind: "folder", folder, depth, fileCount: subtreeFiles.get(folder.id) ?? 0 }));
+  const rootFiles = files.filter((file) => file.parentId === null);
+  const fileRows = [...rootFiles]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, maxFiles)
+    .map((file): TreeRow => ({ kind: "file", file }));
+  return {
+    rows: [...folderRows, ...fileRows],
+    hiddenFolders: folders.length - folderRows.length,
+    hiddenFiles: rootFiles.length - fileRows.length,
+  };
 }
 
 /** The most recently changed files anywhere in the workspace. */

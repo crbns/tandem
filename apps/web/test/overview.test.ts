@@ -75,16 +75,22 @@ describe("condenseTree", () => {
 
   it("lists folders to depth 2 with subtree file counts, then root files newest first", () => {
     const tree = condenseTree(folders, files);
-    expect(tree.hidden).toBe(0);
+    // "c" sits below maxDepth: its file counts toward a and b, and it counts as hidden.
+    expect(tree).toMatchObject({ hiddenFolders: 1, hiddenFiles: 0 });
     expect(
       tree.rows.map((row) => (row.kind === "folder" ? `${row.folder.name}:${row.depth}:${row.fileCount}` : row.file.id)),
     ).toEqual(["a:1:2", "b:2:1", "z:1:0", "new", "old"]);
   });
 
-  it("cuts at maxRows and reports what it hid", () => {
-    const tree = condenseTree(folders, files, { maxRows: 2 });
-    expect(tree.rows).toHaveLength(2);
-    expect(tree.hidden).toBe(3);
+  it("caps folders and root files separately, so many folders never hide the root's files", () => {
+    const many = Array.from({ length: 12 }, (_, i) => folder(`f${i}`, `f${String(i).padStart(2, "0")}`, null));
+    const tree = condenseTree(many, [file("old", null, 1), file("new", null, 2), file("mid", null, 1.5)], {
+      maxFolders: 8,
+      maxFiles: 2,
+    });
+    expect(tree.rows.filter((row) => row.kind === "folder")).toHaveLength(8);
+    expect(tree.rows.flatMap((row) => (row.kind === "file" ? [row.file.id] : []))).toEqual(["new", "mid"]);
+    expect(tree).toMatchObject({ hiddenFolders: 4, hiddenFiles: 1 });
   });
 });
 
