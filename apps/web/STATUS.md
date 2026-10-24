@@ -67,17 +67,24 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 
 ## Gate 6: live Convex integration
 
-The backend functions exist; these need a seeded deployment (dev `NEXT_PUBLIC_CONVEX_URL` and a test login, in `apps/web/.env.local` only).
+Measured 2026-10-24 against `colorful-grouse-361` after the authorized deployment of clean `origin/main` @ `5aafe3b`. The local Next.js dashboard used this cloud backend; the agent used the real Streamable HTTP MCP endpoint with a bearer API key. Local anonymous Convex was also measured. See [D11 report](../../docs/phase-d/30-report.md) for commands, limitations, and screenshots. “Claude” below identifies the MCP connection's client attribution; no native Claude conversation is claimed.
 
 | Check | Status | Notes |
 |---|---|---|
-| Claude-created file appears in the dashboard without reload | PENDING (live) | reactive refresh verified in mock + adapter unit test |
-| Human save → v2; Claude rereads v2 | PENDING (live) | needs Person 1's MCP + Person 2's functions |
-| Stale write from a second tab → ConflictPanel; Convex keeps newer | PENDING (live) | same flow verified in mock via Simulate agent edit |
-| History attributes agent vs human | PENDING (live) | verified in mock |
-| Signed-out `/w/*` redirects (real-mode proxy) | PASS | production standalone server: `/w/ws_demo` → 307 `/sign-in?next=%2Fw%2Fws_demo` |
-| Outsider gets the FORBIDDEN UI | PENDING (live) | copy + ErrorState exist |
-| UNAUTHENTICATED on save stashes and restores the draft | PENDING (live) | |
+| Claude-created file appears in the dashboard without reload | PASS | `colorful-grouse-361` + local, 2026-10-24: MCP create while browser list open; reactive file link appeared. Screenshot `30-cloud-reactive.png`. |
+| Human save → v2; Claude rereads v2 | PASS | `colorful-grouse-361` + local, 2026-10-24: browser saved v2; MCP read returned v2 with exact human content. |
+| Stale write from a second tab → ConflictPanel; Convex keeps newer | PASS | `colorful-grouse-361` + local, 2026-10-24: first tab saved v3, second tab's stale v2 save showed conflict; MCP confirmed newer v3 content intact. Screenshot `30-cloud-conflict.png`. |
+| History attributes agent vs human | PASS | `colorful-grouse-361` + local, 2026-10-24: recaptured open History route with visible v1 AGENT Avery via Claude and v2/v3 HUMAN Blake; both `30-cloud-history.png` and `30-local-history.png` reopened and visually confirmed. P0 step 6 checks identities. |
+| Signed-out `/w/*` redirects (real-mode proxy) | PASS | `colorful-grouse-361` + local, 2026-10-24: fresh browser context opening workspace redirected to sign-in and returned after authentication. |
+| Outsider gets the FORBIDDEN UI | PASS | `colorful-grouse-361`, 2026-10-24: generated outsider C saw “You don't have access” on A's workspace. Screenshot `30-cloud-forbidden.png`; e2e also verified FORBIDDEN. |
+| UNAUTHENTICATED on save stashes and restores the draft | PASS (fault injection) | `colorful-grouse-361` + local, 2026-10-24: injected coded UNAUTHENTICATED save response; real sign-out/sign-in preserved sessionStorage draft and restored exact text. Natural JWT expiry not induced. Screenshot `30-cloud-restored.png`. |
+| Agent proposes scope → human approves in dashboard → next sync | PASS | `colorful-grouse-361` + local, 2026-10-24: P0 `7-scope` now asserts real MCP scope proposal → authenticated human dashboard data-layer approval → first MCP sync returns exact scope; local/cloud **17/17 passed**. Correlated workspace/proposal IDs and scope values in D11 report; `30-cloud-approved.png` is earlier separate browser approval evidence. |
+
+### Network/auth failure tests
+
+Measured 2026-10-24 on `colorful-grouse-361` and local anonymous Convex. Browser offline Save reached the 15-second timeout, showed “Can't reach Tandem,” and retained the exact draft; reconnect recovered (`30-cloud-network.png`). A targeted UNAUTHENTICATED response exercised save recovery as described above. Cloud P0 tests also measured HTTP 401 for revoked/malformed MCP credentials and revoked OAuth refresh rejection. No automatic cloud demo reset was run.
+
+`CONVEX_AGENT_MODE=anonymous CONVEX_URL=http://127.0.0.1:3212 pnpm test:e2e`: **17 passed, 6 opt-in demo tests skipped** (2.66s). `CONVEX_URL=https://colorful-grouse-361.convex.cloud pnpm --filter @repo/e2e exec vitest run test/p0-slice.e2e.test.ts`: **17 passed** (37.80s), including new scope-sync test. `pnpm --filter @repo/e2e check-types`: exit 0. Earlier local `pnpm test:demo`: **6 passed**; earlier web unit tests: **226 passed**, web typecheck passed. Initial stale cloud deployment: 4 passed, 12 failed; follow-up made no cloud deployment/env/reset changes. Full evidence and cloud cleanup inventory: [D11 report](../../docs/phase-d/30-report.md).
 
 ## Gate 7: deploy artifacts + demo hardening
 
