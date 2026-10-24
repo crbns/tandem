@@ -3,6 +3,7 @@ export type TandemErrorCode =
   | "FORBIDDEN"
   | "FILE_NOT_FOUND"
   | "VERSION_CONFLICT"
+  | "NAME_EXISTS"
   | "APPROVAL_REQUIRED"
   | "INVALID_INPUT";
 
@@ -49,5 +50,37 @@ export function versionConflict(
       current_version: currentVersion,
       expected_version: expectedVersion,
     },
+  );
+}
+
+export function versionAhead(
+  fileId: string,
+  currentVersion: number,
+  expectedVersion: number,
+): TandemError {
+  return new TandemError(
+    "INVALID_INPUT",
+    `expected_version ${expectedVersion} is newer than the file's current version ${currentVersion}. ` +
+      `Use the file.version returned by read_file.`,
+    {
+      file_id: fileId,
+      current_version: currentVersion,
+      expected_version: expectedVersion,
+    },
+  );
+}
+
+export function nameExists(
+  fileId: string,
+  name: string,
+  currentVersion: number,
+): TandemError {
+  // The name is untrusted workspace data, so quote it rather than splicing it into the sentence.
+  return new TandemError(
+    "NAME_EXISTS",
+    `A file named ${JSON.stringify(name)} already exists (file_id ${fileId}, version ${currentVersion}). ` +
+      `Read it with read_file. If it is the same document, merge your changes into it with update_document; ` +
+      `otherwise choose a different name or ask the user.`,
+    { file_id: fileId, name, current_version: currentVersion },
   );
 }

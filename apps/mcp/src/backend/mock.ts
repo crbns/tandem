@@ -3,8 +3,11 @@ import {
   TandemError,
   fileNotFound,
   forbidden,
+  nameExists,
+  versionAhead,
   versionConflict,
 } from "../errors.js";
+import { nameKey, storedName } from "../names.js";
 import type {
   Actor,
   Attribution,
@@ -39,6 +42,7 @@ Goal: ship the Tandem demo for Cal Hacks.
 
 /** In-memory backend for local development and tests. State is lost on restart. */
 export class MockBackend implements TandemBackend {
+  readonly kind = "mock";
   private readonly members = new Map<string, Set<string>>([
     ["ws_demo", new Set(["user_alex", "user_sam"])],
     ["ws_other", new Set(["user_jordan"])],
@@ -73,12 +77,17 @@ export class MockBackend implements TandemBackend {
     input: ListFilesInput,
   ): Promise<FileMetadata[]> {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
+    // No folders in the mock yet, so no folder_id can name a valid folder.
+    if (input.folder_id !== undefined) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "Folders are not supported yet; omit folder_id.",
+        { folder_id: input.folder_id },
+      );
+    }
     const query = input.query?.toLowerCase();
     return [...this.files.values()]
       .filter((f) => f.workspace_id === workspaceId)
-      .filter(
-        (f) => input.folder_id === undefined || f.parent_id === input.folder_id,
-      )
       .filter(
         (f) => query === undefined || f.name.toLowerCase().includes(query),
       )
@@ -103,11 +112,30 @@ export class MockBackend implements TandemBackend {
         { parent_id: input.parent_id },
       );
     }
+    const name = storedName(input.name);
+    const key = nameKey(name);
+    if (!key) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "name must contain at least one visible character.",
+        { name: input.name },
+      );
+    }
+    // No await between the check and the insert, so this is atomic in Node.
+    const existing = [...this.files.values()].find(
+      (f) =>
+        f.workspace_id === workspaceId &&
+        f.parent_id === null &&
+        nameKey(f.name) === key,
+    );
+    if (existing) {
+      throw nameExists(existing.id, existing.name, head(existing).version);
+    }
     const file: StoredFile = {
       id: `file_${randomUUID()}`,
       workspace_id: workspaceId,
       parent_id: null,
-      name: input.name,
+      name,
       mime_type: input.mime_type,
       revisions: [newRevision(actor, 1, input.content)],
     };
@@ -121,8 +149,19 @@ export class MockBackend implements TandemBackend {
   ): Promise<FileMetadata> {
     const file = this.getFile(actor, input.file_id);
     const current = head(file).version;
-    if (input.expected_version !== current) {
-      throw versionConflict(file.id, current, input.expected_version);
+    const expected = input.expected_version;
+    if (!Number.isSafeInteger(expected) || expected < 1) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "expected_version must be a positive integer: the file.version returned by read_file.",
+        { file_id: file.id, expected_version: expected },
+      );
+    }
+    // Fail closed: anything other than an exact match is rejected.
+    if (expected !== current) {
+      throw expected > current
+        ? versionAhead(file.id, current, expected)
+        : versionConflict(file.id, current, expected);
     }
     file.revisions.push(newRevision(actor, current + 1, input.content));
     return toMetadata(file);

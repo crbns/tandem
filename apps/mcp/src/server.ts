@@ -1,15 +1,54 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { bearerToken, type IdentityResolver } from "./auth.js";
+import { authenticate, type IdentityResolver } from "./auth.js";
 import type { TandemBackend } from "./backend/types.js";
 import { createMcpServer } from "./tools.js";
 
 export interface AppOptions {
   backend: TandemBackend;
   identity: IdentityResolver;
+  /**
+   * Browser origins allowed to call /mcp. Requests without an Origin header
+   * (server-side clients like claude.ai, Claude Code, curl) are unaffected;
+   * any other Origin gets 403, which blocks DNS rebinding.
+   */
+  allowedOrigins?: readonly string[];
 }
 
-export function createApp({ backend, identity }: AppOptions): Server {
+/**
+ * Parses TANDEM_ALLOWED_ORIGINS (comma-separated). Each entry is reduced to its
+ * origin (`http://localhost:6274/` becomes `http://localhost:6274`) so it
+ * matches what browsers send; entries that aren't URLs are dropped with a warning.
+ */
+export function parseAllowedOrigins(spec: string): string[] {
+  const origins: string[] = [];
+  for (const entry of spec.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    // Unparseable entries and opaque URLs (e.g. "localhost:6274", parsed as
+    // scheme "localhost:") both end up as "null".
+    let origin = "null";
+    try {
+      origin = new URL(trimmed).origin;
+    } catch {
+      // Fall through to the warning.
+    }
+    if (origin !== "null") {
+      origins.push(origin);
+    } else {
+      console.warn(
+        `TANDEM_ALLOWED_ORIGINS: ignoring invalid entry ${JSON.stringify(trimmed)}; expected an origin like http://localhost:6274.`,
+      );
+    }
+  }
+  return origins;
+}
+
+export function createApp({
+  backend,
+  identity,
+  allowedOrigins = [],
+}: AppOptions): Server {
   return createServer(async (req, res) => {
     try {
       const { pathname } = new URL(req.url ?? "/", "http://localhost");
@@ -21,14 +60,23 @@ export function createApp({ backend, identity }: AppOptions): Server {
         return sendJson(res, 404, { error: "not_found" });
       }
 
-      const token = bearerToken(req.headers.authorization);
-      const actor = token ? await identity.resolve(token) : null;
+      const origin = req.headers.origin;
+      if (origin !== undefined && !allowedOrigins.includes(origin)) {
+        return sendJson(res, 403, {
+          error: { code: "FORBIDDEN", message: "Origin not allowed." },
+        });
+      }
+
+      // Static dev API keys for now; OAuth via the Convex MCP component
+      // (docs/mcp-auth-design.md) will replace this. The challenge isn't Bearer
+      // so OAuth-capable clients don't start discovery against routes that 404.
+      const actor = await authenticate(identity, req.headers["api-key"]);
       if (!actor) {
-        res.setHeader("WWW-Authenticate", 'Bearer realm="tandem"');
+        res.setHeader("WWW-Authenticate", 'ApiKey realm="tandem"');
         return sendJson(res, 401, {
           error: {
             code: "UNAUTHENTICATED",
-            message: "Missing or invalid bearer token.",
+            message: "Missing or invalid api-key header.",
           },
         });
       }

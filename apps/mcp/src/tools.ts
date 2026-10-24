@@ -26,7 +26,9 @@ export function createMcpServer(
         folder_id: z
           .string()
           .optional()
-          .describe("Only list files directly inside this folder."),
+          .describe(
+            "Folder to list. Folders aren't supported yet, so omit this.",
+          ),
         query: z
           .string()
           .optional()
@@ -59,11 +61,14 @@ export function createMcpServer(
       title: "Create document",
       description:
         "Create a new text document in the workspace. It starts at version 1. " +
-        "Check list_files first so you don't create a duplicate of an existing file.",
+        "Check list_files first so you don't create a duplicate of an existing file; " +
+        "a name already used in the same folder of the workspace (case-insensitive, surrounding whitespace ignored) fails with NAME_EXISTS.",
       inputSchema: {
         name: z
           .string()
-          .min(1)
+          .trim()
+          .min(1, "name must contain a visible character")
+          .max(255)
           .describe('File name including extension, e.g. "notes.md".'),
         content: z.string().describe("Full text content of the document."),
         mime_type: z
@@ -152,7 +157,8 @@ async function run(fn: () => Promise<object>): Promise<CallToolResult> {
     return {
       isError: true,
       content: [{ type: "text", text: `${code}: ${message}` }],
-      structuredContent: { error: { code, message, ...details } },
+      // details first so a details key can never override code or message.
+      structuredContent: { error: { ...details, code, message } },
     };
   }
 }
