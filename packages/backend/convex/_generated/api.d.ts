@@ -16,10 +16,14 @@ import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as lib_agent from "../lib/agent.js";
 import type * as lib_auth from "../lib/auth.js";
+import type * as lib_mcpConfig from "../lib/mcpConfig.js";
+import type * as lib_mcpContract from "../lib/mcpContract.js";
 import type * as lib_names from "../lib/names.js";
 import type * as lib_ops from "../lib/ops.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as mcp from "../mcp.js";
+import type * as mcpTools from "../mcpTools.js";
+import type * as oauth from "../oauth.js";
 import type * as seed from "../seed.js";
 import type * as workspaces from "../workspaces.js";
 
@@ -38,10 +42,14 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   "lib/agent": typeof lib_agent;
   "lib/auth": typeof lib_auth;
+  "lib/mcpConfig": typeof lib_mcpConfig;
+  "lib/mcpContract": typeof lib_mcpContract;
   "lib/names": typeof lib_names;
   "lib/ops": typeof lib_ops;
   "lib/validators": typeof lib_validators;
   mcp: typeof mcp;
+  mcpTools: typeof mcpTools;
+  oauth: typeof oauth;
   seed: typeof seed;
   workspaces: typeof workspaces;
 }>;
@@ -72,4 +80,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  mcp: import("@convex-dev/mcp/_generated/component.js").ComponentApi<"mcp">;
+};

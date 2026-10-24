@@ -48,7 +48,7 @@ const PROPOSAL: BackendProposal = {
 /** Answers by function name, records calls, and serves one controllable watch. */
 function fakeConvex(responses: Record<string, unknown | ((args: unknown) => unknown)>) {
   const calls: { name: string; args: unknown }[] = [];
-  const run = async (ref: FunctionReference<"query" | "mutation">, args: unknown) => {
+  const run = async (ref: FunctionReference<"query" | "mutation" | "action">, args: unknown) => {
     const name = getFunctionName(ref);
     calls.push({ name, args });
     const fixture = responses[name];
@@ -75,7 +75,7 @@ function fakeConvex(responses: Record<string, unknown | ((args: unknown) => unkn
       },
     };
   };
-  const client = { query: run, mutation: run, watchQuery } as unknown as ConvexReactClient;
+  const client = { query: run, mutation: run, action: run, watchQuery } as unknown as ConvexReactClient;
   const push = (next: unknown) => {
     result = next;
     listener?.();
@@ -184,8 +184,9 @@ describe("Convex adapter: agent connections", () => {
   it("creates with the pinned args, trimming or omitting the display name", async () => {
     const created: BackendNewConnection = {
       connectionId: "agent_connections_2" as Id<"agent_connections">,
-      token: "tdm_abc",
+      token: "mcp_sk_abc",
       createdAt: 5,
+      mcpUrl: "https://demo.convex.site/mcp",
     };
     const { client, calls } = fakeConvex({ "agentConnections:createAgentConnection": created });
     const tandem = createConvexApi(client);
@@ -207,6 +208,8 @@ describe("Convex adapter: agent connections", () => {
         userName: "Alex",
         client: "claude",
         displayName: null,
+        authKind: "oauth",
+        oauthClientName: "Claude",
         createdAt: 1,
         lastMcpActionAt: 3,
         lastSyncAt: null,
@@ -224,6 +227,8 @@ describe("Convex adapter: agent connections", () => {
       userId: "users_alex",
       userName: "Alex",
       client: "claude",
+      authKind: "oauth",
+      oauthClientName: "Claude",
       createdAt: 1,
       lastMcpActionAt: 3,
     });
@@ -336,12 +341,19 @@ describe("mock agent connections", () => {
     return { api, as: (next: Actor) => (actor = next) };
   };
 
-  it("returns a 256-bit tdm_ token once and never lists it", async () => {
+  it("returns a 256-bit API key once and never lists it", async () => {
     const { api } = await setup();
     const created = await api.createAgentConnection(MOCK_WORKSPACE_ID, { client: "claude", displayName: " Laptop " });
-    expect(created.token).toMatch(/^tdm_[0-9a-f]{64}$/);
+    expect(created.token).toMatch(/^mcp_sk_[0-9a-f]{64}$/);
+    expect(created.mcpUrl).toBe(await api.getMcpServerUrl());
     const listed = (await api.listAgentConnections(MOCK_WORKSPACE_ID)).find((c) => c.id === created.connectionId);
-    expect(listed).toMatchObject({ userId: "user_owner", userName: "Owner", client: "claude", displayName: "Laptop" });
+    expect(listed).toMatchObject({
+      userId: "user_owner",
+      userName: "Owner",
+      client: "claude",
+      displayName: "Laptop",
+      authKind: "api_key",
+    });
     expect(JSON.stringify(await api.listAgentConnections(MOCK_WORKSPACE_ID))).not.toContain(created.token);
   });
 
@@ -372,6 +384,47 @@ describe("mock agent connections", () => {
     await expect(
       api.createAgentConnection(MOCK_WORKSPACE_ID, { client: "copilot" as "other" }),
     ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+
+  it("answers a consent request once, binding an OAuth connection to the chosen workspace", async () => {
+    const { api } = await setup();
+    const request = await api.getConsentRequest("mock_req_1");
+    expect(request).toMatchObject({ status: "pending", suggestedClient: "claude", redirectHost: "claude.ai" });
+    expect(request?.workspaces.map((w) => w.id)).toContain(MOCK_WORKSPACE_ID);
+    const { redirectUrl } = await api.decideConsent("mock_req_1", {
+      approve: true,
+      workspaceId: MOCK_WORKSPACE_ID,
+      client: "claude",
+    });
+    expect(redirectUrl).toBe(`/w/${MOCK_WORKSPACE_ID}/assistants`);
+    expect(await api.getConsentRequest("mock_req_1")).toBeNull();
+    await expect(api.decideConsent("mock_req_1", { approve: false })).rejects.toMatchObject({
+      code: "REQUEST_EXPIRED",
+    });
+    const oauth = (await api.listAgentConnections(MOCK_WORKSPACE_ID)).filter((c) => c.authKind === "oauth");
+    expect(oauth.map((c) => c.userId)).toContain("user_owner");
+  });
+});
+
+describe("Convex adapter: OAuth consent", () => {
+  it("passes only the decision's fields and returns the redirect", async () => {
+    const { client, calls } = fakeConvex({
+      "oauth:decideConsent": { redirectUrl: "https://claude.ai/api/mcp/auth_callback?code=x" },
+      "oauth:getConsentRequest": null,
+    });
+    const tandem = createConvexApi(client);
+    expect(await tandem.getConsentRequest("req_1")).toBeNull();
+    await tandem.decideConsent("req_1", { approve: true, workspaceId: "workspaces_1", client: "claude" });
+    await tandem.decideConsent("req_2", { approve: false });
+    expect(calls.map((c) => c.args)).toEqual([
+      { requestId: "req_1" },
+      { requestId: "req_1", approve: true, workspaceId: "workspaces_1", client: "claude" },
+      { requestId: "req_2", approve: false },
+    ]);
+  });
+
+  it("maps REQUEST_EXPIRED", () => {
+    expect(normalizeError(new ConvexError({ code: "REQUEST_EXPIRED" })).code).toBe("REQUEST_EXPIRED");
   });
 });
 
@@ -407,8 +460,8 @@ describe("approval permission gating", () => {
 
 describe("assistant setup", () => {
   it("builds the Claude Code command against /mcp exactly once", () => {
-    expect(claudeCodeCommand("https://mcp.example.com/", "tdm_x")).toBe(
-      'claude mcp add --transport http tandem https://mcp.example.com/mcp --header "Authorization: Bearer tdm_x"',
+    expect(claudeCodeCommand("https://demo.convex.site/", "mcp_sk_x")).toBe(
+      'claude mcp add --transport http tandem https://demo.convex.site/mcp --header "Authorization: Bearer mcp_sk_x"',
     );
     expect(mcpEndpoint("https://mcp.example.com/mcp")).toBe("https://mcp.example.com/mcp");
     expect(mcpEndpoint("")).toBe("<MCP_URL>/mcp");

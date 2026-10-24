@@ -11,7 +11,7 @@ import {
   withDevAnon,
 } from "../src/auth.js";
 import { MockBackend } from "../src/backend/mock.js";
-import type { Actor } from "../src/backend/types.js";
+import type { Actor, StructuredContext } from "../src/backend/types.js";
 import { TandemError } from "../src/errors.js";
 import { nameKey, storedName } from "../src/names.js";
 import { createApp, parseAllowedOrigins } from "../src/server.js";
@@ -801,12 +801,7 @@ describe("context tools", () => {
 
   interface Synced {
     workspace: { id: string; name: string };
-    context: {
-      goal: string;
-      constraints: { id: string; text: string; status: string }[];
-      decisions: { text: string; source_ids: string[] }[];
-      ownership: { area: string; owner_user_id: string }[];
-    };
+    context: StructuredContext;
     context_version: number;
     pending_proposals: Record<string, unknown>[];
     changed_files: { id: string; name: string; workspace_id: string }[];
@@ -1311,6 +1306,42 @@ describe("context tools", () => {
       ),
     ).not.toContain(constraint.id);
     await alex.close();
+  });
+
+  it("resolves long dashboard questions using their stored value and ignores supplied proposed_value", async () => {
+    const alex = await connect("alex-token", url);
+    try {
+      for (const supplied of [undefined, null, { ignored: true }, "x".repeat(3000)]) {
+        const questionText = `Dashboard question: ${"q".repeat(2100)}`;
+        await backend.applyContextChange(alexHuman, {
+          field: "open_questions",
+          value: questionText,
+        });
+        const active = await sync(alex);
+        const question = active.context.open_questions.at(-1)!;
+        const result = await call(alex, "propose_context_change", {
+          field: "open_questions",
+          operation: "resolve",
+          entry_id: question.id,
+          expected_version: active.context_version,
+          rationale: "Answered",
+          ...(supplied === undefined ? {} : { proposed_value: supplied }),
+        });
+        expect(result.isError).toBeFalsy();
+        expect(result.structuredContent).toMatchObject({
+          proposal: { status: "applied", proposed_value: questionText },
+        });
+        expect((await sync(alex)).context.open_questions.at(-1)).toMatchObject({
+          id: question.id,
+          text: questionText,
+          status: "resolved",
+          resolved_by: { actor_type: "agent" },
+          resolved_at: expect.any(Number),
+        });
+      }
+    } finally {
+      await alex.close();
+    }
   });
 
   it("retains decision identity and history until a superseding proposal is approved", async () => {

@@ -1,7 +1,22 @@
 # MCP auth design: claude.ai connectors on Convex Auth
 
-Status: proposal, 2026-10-23. Updated 2026-10-24: Vultr dropped; `apps/web` deploys to Vercel. Researched against the docs and source linked in [Sources](#sources).
+Status: proposal, 2026-10-23. Updated 2026-10-24: Vultr dropped; `apps/web` deploys to Vercel. **Implemented 2026-10-24 (issue #21); see [Implementation](#implementation-2026-10-24), which overrides the sections below where they differ.** Researched against the docs and source linked in [Sources](#sources).
 Labels: **[verified]** = stated in official docs or read in source. **[unverified]** = inferred, or a vendor claim we haven't tested.
+
+## Implementation (2026-10-24)
+
+What shipped, and where it departs from the proposal below:
+
+- **Endpoint.** `@convex-dev/mcp@0.1.0-alpha.7` serves `/mcp`, `/mcp/oauth/{register,authorize,token,revoke}` and the discovery documents from `packages/backend/convex/http.ts`, with `siteUrl` unset, `deviceFlow: false`, CIMD off and scopes `tandem:read` / `tandem:write`. `convex/mcp.ts` defines all 11 tools (not the PoC's one); `mcp.lint()` is empty.
+- **A grant acts for a connection, not a user.** The component's `userId` for every grant and API key is an `agent_connections` id, not a `users` id. That gives each OAuth sign-in exactly one person and one workspace, so the per-workspace binding, `lastMcpActionAt`/`lastSyncAt` presence and `{ person, agent connection, client }` attribution all keep working through `lib/agent.ts` `requireAgent`. This replaces §2.1's `getUserId: requireHuman`, §3's "grant covers all of the user's workspaces" and §5.9.
+- **Our own consent functions.** We don't export the component's `mcp.api()`. `convex/oauth.ts` has `getConsentRequest` (signed-in only; adds the caller's workspaces and a suggested client from the redirect host) and `decideConsent`. Approval runs in one mutation: it checks the human session and membership of the chosen workspace, inserts the `agent_connections` row (`authKind: "oauth"`, unverified `oauthClientName`), records `agent.connected`, and binds the authorization code to that row through the component's `decideAuthRequest`. If the request expired or was already decided, the whole mutation rolls back. The code is generated in the action; mutations only see its hash.
+- **Tools.** Each tool validates its arguments (the old zod rules), calls exactly one internal mutation in `convex/mcpTools.ts`, and maps the result to the unchanged snake_case contract in `convex/lib/mcpContract.ts`, including `{ error: { code, message, ... } }` tool errors. `returns` isn't declared: the mappers build every field explicitly and are the allowlist. Writes re-check `tandem:write` inside the transaction.
+- **Bearer-token decision.** The `tdm_` tokens and the Node `apps/mcp` Convex backend are removed. The bearer path stays for Claude Code and scripts as component API keys (`mcp_sk_…`), created on the Assistants page by `agentConnections.createAgentConnection`, an action that inserts the connection row and the key's grant in one mutation. Unlike the stock `createApiKey` (§3 Exports), it is scoped to one workspace the caller is a member of and shows on the Assistants page, the same model the dashboard already used for `tdm_` tokens. Keys don't expire; revoke removes them. Old `tdm_` rows still list (as "Old token, no longer works") but can't authenticate. `apps/mcp` stays only as the skill eval's mock server and never deploys.
+- **Revocation.** `revokeAgentConnection` marks the row revoked and deletes every component grant acting for it (OAuth access and refresh tokens, or the API key) in the same transaction, so the next request gets 401 and refresh fails.
+- **Env.** `SITE_URL` (Convex Auth) also places the consent page: `${SITE_URL}/oauth/consent`, overridable with `MCP_CONSENT_URL`. Both are declared in `convex.config.ts` `env`.
+- **Verified.** `convex/agent.test.ts` drives the real HTTP routes with `mcpTest.register(t)`: API-key 401s, the tool contract, DCR → authorize → consent → token → an attributed write → revoke → 401 and refresh refused, denial, wrong-workspace refusal and discovery metadata. `tests/e2e` step 10 runs the same OAuth flow against a live local deployment. **Not yet verified: a real claude.ai connector** (§4 steps 2–5). The demo runs on the Convex dev deployment with the dashboard on Vercel, so that is where to run it: push these functions to the dev deployment, deploy the dashboard, and set `MCP_CONSENT_URL` (or `SITE_URL`) on the dev deployment to the Vercel origin.
+
+## Recommendation
 
 ## Recommendation
 
@@ -135,7 +150,7 @@ PoC acceptance:
 4. Repeat as B in a second claude.ai account and confirm B can't see A-only workspaces.
 5. `revokeConnection`, then the next call returns 401 and Claude asks to reconnect.
 
-Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every agent loads as overriding instructions. The Hosting bullet was updated on 2026-10-24; the rest waits for the PoC, and until then the AGENTS.md MCP server bullet still describes the Node `apps/mcp`. Changes:
+Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every agent loads as overriding instructions. Done 2026-10-24 with the implementation: the MCP server and Hosting bullets now describe the Convex endpoint. The list below is the original plan:
 - **Stack › MCP server:** the endpoint is `@convex-dev/mcp` in Convex HTTP actions at `https://<deployment>.convex.site/mcp`, replacing the Node.js MCP container. Replace "calling the same Convex functions as the dashboard" with "using the same authz helpers as the dashboard (`requireMember`, `requireHuman`)", because MCP tools call `internal*` functions in `convex/mcpTools.ts`, not the dashboard's public functions.
 - **Stack › Hosting:** updated 2026-10-24 to Vercel. Still to remove or rewrite: the Vultr/Docker/Caddy deploy artifacts (`apps/*/deploy/`, `apps/web/Dockerfile`, `apps/mcp/Dockerfile`, the standalone-output and "HSTS is set by Caddy" comments in `apps/web/next.config.js`, Docker comments in `apps/web/lib/api/convex.ts` and `apps/web/app/layout.tsx`) and the Vultr sections in `README.md`, `apps/web/README.md`, `apps/web/STATUS.md` and `apps/mcp/README.md`. Without Caddy, confirm HSTS is still set on the Vercel domain.
 - **Hard rules:** agent attribution is `connectionId` + `clientId` (§2.3); `clientName` is an unverified label.

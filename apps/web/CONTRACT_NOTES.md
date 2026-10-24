@@ -57,7 +57,7 @@ Entries retain backend IDs through list edits. Open questions can be resolved wi
 
 ## Agent connections
 
-- Tokens are `tdm_` + 256 random bits. The backend stores only the SHA-256 hash and returns the plaintext once from `createAgentConnection`; the dialog shows it once with a copy button and a Claude Code command: `claude mcp add --transport http tandem <NEXT_PUBLIC_MCP_URL>/mcp --header "Authorization: Bearer <token>"`. The token lives only in that dialog's state and is gone when it closes.
+- API keys are `mcp_sk_` + 256 random bits, minted by the `createAgentConnection` action. The `@convex-dev/mcp` component stores only the SHA-256 hash; the plaintext comes back once, with `mcpUrl` (`<CONVEX_SITE_URL>/mcp`, from the backend, no build-time env). The dialog shows it once with a copy button and a Claude Code command: `claude mcp add --transport http tandem <mcpUrl> --header "Authorization: Bearer <key>"`. The key lives only in that dialog's state and is gone when it closes. claude.ai connects with OAuth instead: it opens `/oauth/consent?request=<id>`, where the person picks the workspace and assistant (`oauth.getConsentRequest`, `oauth.decideConsent`).
 - Connections are created for the signed-in person only. The list shows **Last MCP action** and **Last sync** as relative times ("never" when unset). There is no "online" state anywhere.
 - Revoke asks for confirmation; history written through the connection is kept.
 

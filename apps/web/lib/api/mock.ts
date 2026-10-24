@@ -1,4 +1,6 @@
 import { TandemApiError } from "./errors";
+
+const MOCK_MCP_URL = "https://mock-deployment.convex.site/mcp";
 import type { TandemApi } from "./tandemApi";
 import {
   AGENT_CLIENTS,
@@ -244,11 +246,14 @@ export function createMockApi({
       userName: CLAUDE.userName,
       client: "claude",
       displayName: "Alex's Claude",
+      authKind: "oauth",
+      oauthClientName: "Claude",
       createdAt: Date.now() - 26 * 60 * MINUTE,
       lastMcpActionAt: Date.now() - 3 * MINUTE,
       lastSyncAt: Date.now() - 12 * MINUTE,
     },
   ];
+  const decidedRequests = new Set<string>();
   const watchers = new Map<string, Set<() => void>>();
   // Async like a backend push, so a watcher never runs inside the write itself.
   const notify = (workspaceId: string) =>
@@ -595,6 +600,11 @@ export function createMockApi({
       notify(workspaceId);
     },
 
+    async getMcpServerUrl() {
+      await delay();
+      return MOCK_MCP_URL;
+    },
+
     async createAgentConnection(workspaceId, { client, displayName }) {
       await delay();
       const userId = signedInUser();
@@ -602,14 +612,14 @@ export function createMockApi({
       if (!(AGENT_CLIENTS as readonly string[]).includes(client)) throw new TandemApiError("INVALID_INPUT");
       const name = displayName?.trim();
       if (name && name.length > 80) throw new TandemApiError("INVALID_INPUT");
-      const token = `tdm_${Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      const token = `mcp_sk_${Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
       const createdAt = Date.now();
       const id = `conn_${nextId++}`;
       connections.push({
-        id, workspaceId, userId, userName: getActor().userName, client, createdAt,
+        id, workspaceId, userId, userName: getActor().userName, client, authKind: "api_key", createdAt,
         ...(name ? { displayName: name } : {}),
       });
-      return { connectionId: id, token, createdAt };
+      return { connectionId: id, token, createdAt, mcpUrl: MOCK_MCP_URL };
     },
 
     async listAgentConnections(workspaceId) {
@@ -630,6 +640,54 @@ export function createMockApi({
       if (!connection) throw new TandemApiError("FORBIDDEN");
       if (connection.userId !== userId) requireAdmin(connection.workspaceId);
       connection.revokedAt ??= Date.now();
+    },
+
+    async getConsentRequest(requestId) {
+      await delay();
+      signedInUser();
+      // Any request id works in mock mode, once; it looks like claude.ai asking.
+      if (decidedRequests.has(requestId)) return null;
+      return {
+        status: "pending",
+        clientName: "Claude",
+        redirectHost: "claude.ai",
+        suggestedClient: "claude",
+        scopes: [
+          { name: "tandem:read", description: "Read this workspace's files, project context and proposals" },
+          {
+            name: "tandem:write",
+            description: "Create and update documents, publish work and propose context changes (never approve them)",
+          },
+        ],
+        workspaces: workspaces
+          .map((w) => ({ id: w.id, name: w.name, role: membersFor(w.id).get(signedInUser()) }))
+          .filter((w): w is { id: string; name: string; role: "owner" | "admin" | "member" } => w.role !== undefined),
+      };
+    },
+
+    async decideConsent(requestId, decision) {
+      await delay();
+      const userId = signedInUser();
+      if (decidedRequests.has(requestId)) throw new TandemApiError("REQUEST_EXPIRED");
+      if (!decision.approve) {
+        decidedRequests.add(requestId);
+        return { redirectUrl: "/" };
+      }
+      if (!membersFor(decision.workspaceId).has(userId)) throw new TandemApiError("FORBIDDEN");
+      decidedRequests.add(requestId);
+      connections.push({
+        id: `conn_${nextId++}`,
+        workspaceId: decision.workspaceId,
+        userId,
+        userName: getActor().userName,
+        client: decision.client,
+        authKind: "oauth",
+        oauthClientName: "Claude",
+        createdAt: Date.now(),
+      });
+      notify(decision.workspaceId);
+      // No assistant to return to in mock mode: show the new connection.
+      return { redirectUrl: `/w/${decision.workspaceId}/assistants` };
     },
 
     watchWorkspace(workspaceId, onChange) {

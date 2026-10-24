@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Loader2Icon, RotateCwIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, Loader2Icon, RotateCwIcon } from "lucide-react";
 import { toast } from "sonner";
 import { normalizeError, useTandemApi, type AgentConnection } from "@/lib/api";
 import { ERROR_COPY } from "@/lib/api/errorCopy";
@@ -59,6 +59,8 @@ export default function AssistantsPage() {
         {seesEveryone && " As an owner or admin you see everyone's connections."}
       </p>
 
+      <ServerUrl />
+
       {resource.status === "loading" && (
         <div className="flex flex-col gap-2" aria-label="Loading connections">
           <Skeleton className="h-16" />
@@ -70,7 +72,7 @@ export default function AssistantsPage() {
 
       {resource.status === "ready" && resource.data.length === 0 && (
         <div className="rounded-md border border-dashed bg-card px-6 py-10 text-center text-sm text-muted-foreground">
-          No assistants are connected yet. Connect one to let it read and save files here.
+          No assistants are connected yet. Add the server URL to your assistant, or create an API key.
         </div>
       )}
 
@@ -103,6 +105,63 @@ function connectionTitle(connection: AgentConnection): string {
   return connection.displayName ?? clientName(connection.client);
 }
 
+function authLabel(connection: AgentConnection): string {
+  if (connection.authKind === "api_key") return "API key";
+  if (connection.authKind === "oauth")
+    return connection.oauthClientName ? `Signed in as “${connection.oauthClientName}” (unverified)` : "Signed in";
+  return "Old token, no longer works";
+}
+
+/** The URL to paste into an assistant, with the two ways to connect. */
+function ServerUrl() {
+  const api = useTandemApi();
+  const [url, setUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.getMcpServerUrl().then(
+      (value) => !cancelled && setUrl(value),
+      () => !cancelled && setUrl(null),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  async function copy() {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <section aria-label="Server URL" className="grid gap-3 rounded-md border bg-card px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="label-caps text-muted-foreground">Server URL</span>
+        <code className="min-w-0 flex-1 break-all font-mono text-xs">{url ?? "…"}</code>
+        <Button variant="outline" size="sm" onClick={copy} disabled={!url}>
+          {copied ? <CheckIcon /> : <CopyIcon />}
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </div>
+      <ul className="grid list-disc gap-1 pl-5 text-muted-foreground">
+        <li>
+          <span className="text-foreground">claude.ai</span>: Settings → Connectors → Add custom connector, paste the
+          URL, then sign in to Tandem and pick this workspace when it asks.
+        </li>
+        <li>
+          <span className="text-foreground">Claude Code and scripts</span>: create an API key and send it as{" "}
+          <code className="font-mono text-xs">Authorization: Bearer</code>.
+        </li>
+      </ul>
+    </section>
+  );
+}
+
 function ConnectionRow({
   connection,
   showPerson,
@@ -131,6 +190,7 @@ function ConnectionRow({
           </div>
           <div className="truncate text-xs text-muted-foreground">
             {clientName(connection.client)}
+            {` · ${authLabel(connection)}`}
             {showPerson && ` · ${connection.userName ?? "A teammate"}`}
             {" · connected "}
             <span title={formatAbsolute(connection.createdAt)}>{formatRelative(connection.createdAt, now)}</span>
@@ -201,8 +261,8 @@ function RevokeDialog({
         <DialogHeader>
           <DialogTitle>Revoke {connection ? connectionTitle(connection) : "this assistant"}?</DialogTitle>
           <DialogDescription>
-            Its token stops working right away, so the assistant can&apos;t read or save files here any more. Everything
-            it already saved stays in history. To reconnect, create a new token.
+            Its sign-in or API key stops working right away, so the assistant can&apos;t read or save files here any
+            more. Everything it already saved stays in history. To reconnect, connect it again.
           </DialogDescription>
         </DialogHeader>
         {error && (

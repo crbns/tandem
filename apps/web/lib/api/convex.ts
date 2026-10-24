@@ -81,6 +81,8 @@ export function toAgentConnection(connection: BackendAgentConnection): AgentConn
     createdAt: connection.createdAt,
     ...optional("userName", connection.userName),
     ...optional("displayName", connection.displayName),
+    ...optional("authKind", connection.authKind),
+    ...optional("oauthClientName", connection.oauthClientName),
     ...optional("lastMcpActionAt", connection.lastMcpActionAt),
     ...optional("lastSyncAt", connection.lastSyncAt),
     ...optional("revokedAt", connection.revokedAt),
@@ -306,9 +308,10 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
         });
         if (stale.some((p) => p.id === proposalId)) throw new TandemApiError("VERSION_CONFLICT");
       }),
+    getMcpServerUrl: () => call(() => convex.query(api.agentConnections.getMcpServerUrl, {})),
     createAgentConnection: (workspaceId, { client, displayName }) =>
       call(() =>
-        convex.mutation(api.agentConnections.createAgentConnection, {
+        convex.action(api.agentConnections.createAgentConnection, {
           workspaceId: workspaceId as Id<"workspaces">,
           client,
           ...(displayName?.trim() ? { displayName: displayName.trim() } : {}),
@@ -327,6 +330,32 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
           connectionId: connectionId as Id<"agent_connections">,
         });
       }),
+    getConsentRequest: (requestId) =>
+      call(async () => {
+        const request = await convex.query(api.oauth.getConsentRequest, { requestId });
+        if (!request) return null;
+        return {
+          status: request.status,
+          suggestedClient: request.suggestedClient,
+          scopes: request.scopes,
+          workspaces: request.workspaces,
+          ...(request.clientName ? { clientName: request.clientName } : {}),
+          ...(request.redirectHost ? { redirectHost: request.redirectHost } : {}),
+        };
+      }),
+    decideConsent: (requestId, decision) =>
+      call(() =>
+        convex.action(api.oauth.decideConsent, {
+          requestId,
+          ...(decision.approve
+            ? {
+                approve: true,
+                workspaceId: decision.workspaceId as Id<"workspaces">,
+                client: decision.client,
+              }
+            : { approve: false }),
+        }),
+      ),
     watchWorkspace: (workspaceId, onChange) => {
       // getWorkspaceInfo carries the newest workspace events; every commit,
       // proposal and decision records one. A bounded (20-row) subscription

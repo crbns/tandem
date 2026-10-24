@@ -4,10 +4,8 @@ import { useState, type FormEvent } from "react";
 import { CheckIcon, CopyIcon, Loader2Icon, PlusIcon } from "lucide-react";
 import { normalizeError, useTandemApi, type AgentClient } from "@/lib/api";
 import { ERROR_COPY } from "@/lib/api/errorCopy";
-import { claudeCodeCommand, mcpEndpoint } from "@/lib/assistants";
+import { claudeCodeCommand } from "@/lib/assistants";
 import { clientName } from "@/lib/actors";
-import { MCP_URL } from "@/lib/config";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,10 +40,10 @@ export function ConnectAssistantDialog({ workspaceId, onCreated }: ConnectAssist
       <DialogTrigger asChild>
         <Button size="sm">
           <PlusIcon />
-          Connect an assistant
+          Create API key
         </Button>
       </DialogTrigger>
-      {/* DialogContent unmounts on close, so the token never survives a reopen. */}
+      {/* DialogContent unmounts on close, so the key never survives a reopen. */}
       <DialogContent className="grid gap-4 sm:max-w-xl">
         <ConnectForm workspaceId={workspaceId} onCreated={onCreated} onDone={() => setOpen(false)} />
       </DialogContent>
@@ -59,18 +57,18 @@ function ConnectForm({ workspaceId, onCreated, onDone }: ConnectAssistantDialogP
   const [displayName, setDisplayName] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(null);
+  const [created, setCreated] = useState<{ token: string; mcpUrl: string } | null>(null);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setCreating(true);
     setError(null);
     try {
-      const created = await api.createAgentConnection(workspaceId, {
+      const result = await api.createAgentConnection(workspaceId, {
         client,
         ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
       });
-      setToken(created.token);
+      setCreated({ token: result.token, mcpUrl: result.mcpUrl });
       onCreated();
     } catch (err) {
       setError(ERROR_COPY[normalizeError(err).code].description);
@@ -79,15 +77,16 @@ function ConnectForm({ workspaceId, onCreated, onDone }: ConnectAssistantDialogP
     }
   }
 
-  if (token) return <TokenReveal client={client} token={token} onDone={onDone} />;
+  if (created) return <TokenReveal client={client} token={created.token} mcpUrl={created.mcpUrl} onDone={onDone} />;
 
   return (
     <form onSubmit={onSubmit} className="grid gap-4">
       <DialogHeader>
-        <DialogTitle>Connect an assistant</DialogTitle>
+        <DialogTitle>Create an API key</DialogTitle>
         <DialogDescription>
-          Your assistant gets its own token for this workspace. It reads and saves files as you, and every save is
-          marked Agent with your name.
+          For assistants you set up with a header, like Claude Code. The key works in this workspace only; the
+          assistant reads and saves files as you, and every save is marked Agent with your name. For claude.ai, add
+          the server URL as a custom connector instead and sign in when it asks.
         </DialogDescription>
       </DialogHeader>
       <div className="grid gap-2">
@@ -117,27 +116,36 @@ function ConnectForm({ workspaceId, onCreated, onDone }: ConnectAssistantDialogP
       <DialogFooter>
         <Button type="submit" disabled={creating}>
           {creating && <Loader2Icon className="animate-spin" />}
-          {creating ? "Creating…" : "Create token"}
+          {creating ? "Creating…" : "Create key"}
         </Button>
       </DialogFooter>
     </form>
   );
 }
 
-function TokenReveal({ client, token, onDone }: { client: AgentClient; token: string; onDone: () => void }) {
-  const endpoint = mcpEndpoint(MCP_URL);
-  const command = claudeCodeCommand(MCP_URL, token);
+function TokenReveal({
+  client,
+  token,
+  mcpUrl,
+  onDone,
+}: {
+  client: AgentClient;
+  token: string;
+  mcpUrl: string;
+  onDone: () => void;
+}) {
+  const command = claudeCodeCommand(mcpUrl, token);
   return (
     <div className="grid gap-4">
       <DialogHeader>
-        <DialogTitle>Copy your token now</DialogTitle>
+        <DialogTitle>Copy your API key now</DialogTitle>
         <DialogDescription>
           Tandem only keeps a fingerprint of it, so this is the only time it&apos;s shown. If you lose it, revoke this
           connection and create a new one.
         </DialogDescription>
       </DialogHeader>
 
-      <CopyField id="assistant-token" label="Token" value={token} />
+      <CopyField id="assistant-token" label="API key" value={token} />
 
       {(client === "claude" || client === "other") && (
         <div className="grid gap-2">
@@ -151,23 +159,13 @@ function TokenReveal({ client, token, onDone }: { client: AgentClient; token: st
 
       <dl className="grid gap-x-4 gap-y-1.5 text-sm sm:grid-cols-[7rem_minmax(0,1fr)]">
         <dt className="label-caps pt-0.5 text-muted-foreground">Server URL</dt>
-        <dd className="break-all font-mono text-xs leading-5">{endpoint}</dd>
+        <dd className="break-all font-mono text-xs leading-5">{mcpUrl}</dd>
         <dt className="label-caps pt-0.5 text-muted-foreground">Header</dt>
-        <dd className="break-all font-mono text-xs leading-5">Authorization: Bearer &lt;token&gt;</dd>
+        <dd className="break-all font-mono text-xs leading-5">Authorization: Bearer &lt;API key&gt;</dd>
       </dl>
 
-      {!MCP_URL && (
-        <Alert variant="warning">
-          <AlertTitle>Server address not configured</AlertTitle>
-          <AlertDescription>
-            This build has no NEXT_PUBLIC_MCP_URL, so replace &lt;MCP_URL&gt; with your Tandem MCP server&apos;s
-            address.
-          </AlertDescription>
-        </Alert>
-      )}
-
       <DialogFooter>
-        <Button onClick={onDone}>I&apos;ve saved the token</Button>
+        <Button onClick={onDone}>I&apos;ve saved the key</Button>
       </DialogFooter>
     </div>
   );

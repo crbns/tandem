@@ -1,16 +1,20 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { components, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
+import { action, internalMutation, mutation, query } from "./_generated/server";
 import {
   humanActor,
   recordWorkspaceEvent,
   requireMembership,
   requireUser,
 } from "./lib/auth";
+import { isAgentClient, revokeConnectionCredentials } from "./lib/agent";
 import {
-  AGENT_CLIENTS,
-  generateAgentToken,
-  hashAgentToken,
-} from "./lib/agent";
+  ALL_MCP_SCOPES,
+  mcpResource,
+  randomSecret,
+  sha256Hex,
+} from "./lib/mcpConfig";
 
 const connectionValidator = v.object({
   connectionId: v.id("agent_connections"),
@@ -18,17 +22,30 @@ const connectionValidator = v.object({
   userName: v.string(),
   client: v.string(),
   displayName: v.union(v.string(), v.null()),
+  /** null for legacy token rows, which no longer authenticate. */
+  authKind: v.union(v.literal("api_key"), v.literal("oauth"), v.null()),
+  /** OAuth only, self-reported by the client: show it as unverified. */
+  oauthClientName: v.union(v.string(), v.null()),
   createdAt: v.number(),
   lastMcpActionAt: v.union(v.number(), v.null()),
   lastSyncAt: v.union(v.number(), v.null()),
   revokedAt: v.union(v.number(), v.null()),
 });
 
+/** The MCP server URL people paste into their assistant. */
+export const getMcpServerUrl = query({
+  args: {},
+  returns: v.string(),
+  handler: async () => mcpResource(),
+});
+
 /**
- * Creates an MCP connection for the signed-in member in one workspace. The
- * plaintext token is returned only here; only its SHA-256 hash is stored.
+ * Creates an API-key connection for the signed-in member in one workspace,
+ * for clients configured with a header (Claude Code, scripts). The key is
+ * returned only here; the MCP component stores only its SHA-256 hash.
+ * claude.ai and other OAuth clients connect through the consent page instead.
  */
-export const createAgentConnection = mutation({
+export const createAgentConnection = action({
   args: {
     workspaceId: v.id("workspaces"),
     client: v.string(),
@@ -38,15 +55,47 @@ export const createAgentConnection = mutation({
     connectionId: v.id("agent_connections"),
     token: v.string(),
     createdAt: v.number(),
+    mcpUrl: v.string(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    connectionId: Id<"agent_connections">;
+    token: string;
+    createdAt: number;
+    mcpUrl: string;
+  }> => {
+    // Generated in the action (real randomness); the mutation sees the hash.
+    const token = randomSecret("mcp_sk_");
+    const created: { connectionId: Id<"agent_connections">; createdAt: number } =
+      await ctx.runMutation(internal.agentConnections.insertApiKeyConnection, {
+        ...args,
+        keyHash: await sha256Hex(token),
+      });
+    return { ...created, token, mcpUrl: mcpResource() };
+  },
+});
+
+export const insertApiKeyConnection = internalMutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    client: v.string(),
+    displayName: v.optional(v.string()),
+    keyHash: v.string(),
+  },
+  returns: v.object({
+    connectionId: v.id("agent_connections"),
+    createdAt: v.number(),
   }),
   handler: async (ctx, args) => {
+    // The caller's session, propagated from createAgentConnection.
     const { user } = await requireMembership(ctx, args.workspaceId);
-    if (!(AGENT_CLIENTS as readonly string[]).includes(args.client))
+    if (!isAgentClient(args.client))
       throw new ConvexError({ code: "INVALID_INPUT", field: "client" });
     const displayName = args.displayName?.trim() || undefined;
     if (displayName !== undefined && displayName.length > 100)
       throw new ConvexError({ code: "INVALID_INPUT", field: "displayName" });
-    const token = generateAgentToken();
     const now = Date.now();
     const actor = humanActor(user);
     const connectionId = await ctx.db.insert("agent_connections", {
@@ -54,11 +103,19 @@ export const createAgentConnection = mutation({
       userId: user._id,
       client: args.client,
       displayName,
-      tokenHash: await hashAgentToken(token),
+      authKind: "api_key",
       updatedBy: actor,
       revision: 1,
       createdAt: now,
       updatedAt: now,
+    });
+    // The key's grant acts for this connection, in this same transaction.
+    await ctx.runMutation(components.mcp.grants.createApiKey, {
+      userId: connectionId,
+      name: displayName ?? `${args.client} API key`,
+      scopes: ALL_MCP_SCOPES,
+      resource: mcpResource(),
+      hash: args.keyHash,
     });
     await recordWorkspaceEvent(ctx, {
       workspaceId: args.workspaceId,
@@ -68,7 +125,7 @@ export const createAgentConnection = mutation({
       summary: `${actor.label} connected a ${args.client} assistant`,
       actor,
     });
-    return { connectionId, token, createdAt: now };
+    return { connectionId, createdAt: now };
   },
 });
 
@@ -109,6 +166,8 @@ export const listAgentConnections = query({
         userName,
         client: connection.client,
         displayName: connection.displayName ?? null,
+        authKind: connection.authKind ?? null,
+        oauthClientName: connection.oauthClientName ?? null,
         createdAt: connection.createdAt,
         lastMcpActionAt: connection.lastMcpActionAt ?? null,
         lastSyncAt: connection.lastSyncAt ?? null,
@@ -136,6 +195,8 @@ export const revokeAgentConnection = mutation({
       membership.role === "owner" || membership.role === "admin";
     if (connection.userId !== user._id && !isManager)
       throw new ConvexError({ code: "FORBIDDEN" });
+    // Also on a repeat call, so no credential can outlive a revoked row.
+    await revokeConnectionCredentials(ctx, connectionId);
     if (connection.revokedAt !== undefined) return null;
     const now = Date.now();
     const actor = humanActor(user);

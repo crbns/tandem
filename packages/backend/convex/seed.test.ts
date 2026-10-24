@@ -1,16 +1,53 @@
 /// <reference types="vite/client" />
+import mcpTest from "@convex-dev/mcp/test";
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { generateAgentToken } from "./lib/agent";
+import { randomSecret } from "./lib/mcpConfig";
 import { DEMO_GOAL, DEMO_SCOPE, DEMO_WORKSPACE_NAME } from "./seed";
 
+declare const process: { env: Record<string, string | undefined> };
+
 const modules = import.meta.glob("./**/*.ts");
+const SITE = "https://tandem-test.convex.site";
+
+beforeAll(() => {
+  process.env.CONVEX_SITE_URL = SITE;
+});
+
+function newTest() {
+  const t = convexTest(schema, modules);
+  mcpTest.register(t);
+  return t;
+}
+type Test = ReturnType<typeof newTest>;
+
+/** get_workspace_info over the real MCP endpoint with an API key, or the HTTP status. */
+async function workspaceInfo(t: Test, apiKey: string) {
+  const res = await t.fetch("/mcp", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "MCP-Protocol-Version": "2025-06-18",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "get_workspace_info", arguments: {} },
+    }),
+  });
+  if (res.status !== 200) return { status: res.status };
+  const body = (await res.json()) as { result: { structuredContent: Record<string, any> } };
+  return { status: 200, info: body.result.structuredContent };
+}
 
 async function setup() {
-  const t = convexTest(schema, modules);
+  const t = newTest();
   const insertUser = (name: string) =>
     t.run((ctx) => ctx.db.insert("users", { name: `${name} (signed up)` }));
   const people = [
@@ -20,7 +57,7 @@ async function setup() {
   ];
   const rebuild = () =>
     t.mutation(internal.seed.rebuildDemoWorkspace, {
-      people: people.map((p) => ({ ...p, token: generateAgentToken() })),
+      people: people.map((p) => ({ ...p, token: randomSecret("mcp_sk_") })),
     });
   const as = (key: "alex" | "blake" | "casey") =>
     t.withIdentity({ subject: `${people.find((p) => p.key === key)!.userId}|session` });
@@ -28,10 +65,11 @@ async function setup() {
 }
 
 describe("seed:rebuildDemoWorkspace", () => {
-  it("builds the demo: members, brief.md v1 by Alex, approved goal and scope, live tokens", async () => {
+  it("builds the demo: members, brief.md v1 by Alex, approved goal and scope, live API keys", async () => {
     const { t, rebuild, as } = await setup();
     const demo = await rebuild();
     expect(demo.workspaceName).toBe(DEMO_WORKSPACE_NAME);
+    expect(demo.mcpUrl).toBe(`${SITE}/mcp`);
 
     const info = await as("blake").query(api.workspaces.getWorkspaceInfo, {
       workspaceId: demo.workspaceId,
@@ -67,11 +105,13 @@ describe("seed:rebuildDemoWorkspace", () => {
     ]);
 
     for (const member of demo.members) {
-      const session = await t.query(api.mcp.verifyToken, { token: member.token });
-      expect(session).toMatchObject({
-        workspaceId: demo.workspaceId,
-        userId: member.userId,
+      expect(member.token).toMatch(/^mcp_sk_/);
+      const { status, info } = await workspaceInfo(t, member.token);
+      expect(status).toBe(200);
+      expect(info).toMatchObject({
+        user: { id: member.userId },
         client: member.client,
+        workspaces: [{ id: demo.workspaceId, is_default: true }],
       });
     }
   });
@@ -95,9 +135,8 @@ describe("seed:rebuildDemoWorkspace", () => {
     expect(workspaces.map((w) => w.id).sort()).toEqual([other, second.workspaceId].sort());
     expect(await t.run((ctx) => ctx.db.get(other))).not.toBeNull();
 
-    await expect(
-      t.query(api.mcp.verifyToken, { token: first.members[0]!.token }),
-    ).rejects.toThrow(/UNAUTHENTICATED/);
+    expect((await workspaceInfo(t, first.members[0]!.token)).status).toBe(401);
+    expect((await workspaceInfo(t, second.members[0]!.token)).status).toBe(200);
 
     const old: Id<"workspaces"> = first.workspaceId;
     const leftovers = await t.run(async (ctx) => [
@@ -118,18 +157,18 @@ describe("seed:rebuildDemoWorkspace", () => {
 
 describe("seed:resetDemo", () => {
   it("refuses bad pins before touching any account", async () => {
-    const t = convexTest(schema, modules);
+    const t = newTest();
     const userId = await t.run((ctx) => ctx.db.insert("users", { name: "Dana" }));
     const dana = t.withIdentity({ subject: `${userId}|session` });
     const workspaceId = await dana.mutation(api.workspaces.createWorkspace, { name: "Dana's" });
-    const { token: danasToken } = await dana.mutation(api.agentConnections.createAgentConnection, {
+    const { token: danasToken } = await dana.action(api.agentConnections.createAgentConnection, {
       workspaceId,
       client: "claude",
     });
-    const same = generateAgentToken();
+    const same = randomSecret("mcp_sk_");
     for (const [args, field] of [
       [{ password: "short" }, "password"],
-      [{ tokens: { blake: "tdm_bad" } }, "tokens.blake"],
+      [{ tokens: { blake: "mcp_sk_bad" } }, "tokens.blake"],
       [{ tokens: { alex: same, casey: same } }, "tokens.casey"],
       [{ tokens: { blake: danasToken } }, "tokens.blake"],
     ] as const) {
@@ -137,6 +176,6 @@ describe("seed:resetDemo", () => {
     }
     const accounts = await t.run((ctx) => ctx.db.query("authAccounts").take(10));
     expect(accounts).toEqual([]);
-    expect(await t.query(api.mcp.verifyToken, { token: danasToken })).toMatchObject({ workspaceId });
+    expect((await workspaceInfo(t, danasToken)).info).toMatchObject({ workspaces: [{ id: workspaceId }] });
   });
 });
