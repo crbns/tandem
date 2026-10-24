@@ -37,12 +37,14 @@ not.
 ## 1. Sync at the start of project work
 
 - At the start of meaningful project work in a conversation, call
-  `sync_workspace` with no arguments (add `workspace_id` only if the user means
-  a non-default workspace; `get_workspace_info` lists them).
+  `sync_workspace` with `detail: "brief"` to orient cheaply (add `workspace_id`
+  only if the user means a non-default workspace; `get_workspace_info` lists
+  them). You get the brief, the `cursor`, compact file metadata and full
+  `recent_work`, without `context`, `pending_proposals` or `events`.
 - Read its `brief` first: goal, scope, active decisions, blockers (open
-  questions and pending approvals) and the newest changes. To orient cheaply,
-  pass `detail: "brief"`: you get the brief, the `cursor` and compact file and
-  work lists, without `context`, `pending_proposals` or `events`.
+  questions and pending approvals) and the newest changes. The brief omits
+  constraints and ownership: before a decision or write that may depend on
+  them, sync in full detail (the default; pass `since` to keep it small).
   Remove files in `deleted_file_ids` from local context: brief mode retains
   every deletion in the event page, even outside its ten newest changes.
 - The full result (the default) also returns `context` (approved goal, scope, decisions and ownership;
@@ -130,8 +132,9 @@ Someone else saved a newer version since you read it.
   content, or material unrelated to the project.
 - If you are unsure whether something should be shared, ask first.
 - Publish authorized findings (facts learned, progress, answers to open
-  questions) that teammates' assistants would need. Major context changes go
-  through section 7.
+  questions) that teammates' assistants would need. Raise team-blocking
+  questions as `open_questions` (section 7) so they show in the brief's
+  blockers. Major context changes go through section 7.
 
 ## 7. Record working context and propose major changes
 

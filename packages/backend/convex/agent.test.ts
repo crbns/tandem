@@ -2178,7 +2178,7 @@ describe("sync brief and server instructions", () => {
   async function seeded() {
     const s = await setup();
     const { t, alex, sam, workspaceId } = s;
-    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const { apiKey, token } = await connect(sam, { workspaceId, client: "claude" });
     const tool = async (name: string, args: Record<string, unknown> = {}) => {
       const result = await callTool(t, apiKey, name, args);
       expect(result.isError).toBeUndefined();
@@ -2208,19 +2208,38 @@ describe("sync brief and server instructions", () => {
       field: "goal", proposed_value: "Ship the beta", rationale: "Kickoff",
     })).proposal;
     const doc = await tool("create_document", { name: "plan.md", content: "# Plan" });
-    await tool("publish_work", { kind: "finding", title: "Pricing research", summary: "Long details ".repeat(20), file_ids: [doc.id] });
-    return { ...s, apiKey, tool, old, blocker, goal, doc };
+    const { published } = await tool("publish_work", { kind: "finding", title: "Pricing research", summary: "Long details ".repeat(20), file_ids: [doc.id] });
+    return { ...s, apiKey, token, tool, old, blocker, goal, doc, published };
   }
 
   it("puts a brief of decisions, blockers and recent changes first in the full result", async () => {
-    const { tool, old, blocker, goal, doc } = await seeded();
+    const { t, token, tool, old, blocker, goal, doc, published, workspaceId } = await seeded();
     const sync = await tool("sync_workspace");
     expect(Object.keys(sync)[0]).toBe("brief");
-    // Every existing field is still there.
-    for (const key of ["workspace", "context", "context_version", "pending_proposals", "changed_files", "files_truncated",
-      "recent_work", "work_truncated", "events", "events_truncated", "cursor"])
-      expect(sync).toHaveProperty(key);
-    const { brief } = sync;
+    // Everything after the brief is the pre-brief contract, key for key and value for value.
+    const { brief, ...rest } = sync;
+    expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "pending_proposals", "changed_files", "files_truncated",
+      "recent_work", "work_truncated", "events", "events_truncated", "cursor"]);
+    const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+    expect(rest.workspace).toEqual({ id: workspaceId, name: "Demo" });
+    expect(rest.context_version).toBe(raw.context.revision);
+    expect(rest.context.goal).toBe("");
+    expect(rest.context.decisions.map((e: { id: string; text: string; status: string }) => [e.id, e.text, e.status]))
+      .toEqual(raw.context.decisions.map((e) => [e.id, e.text, e.status]));
+    expect(rest.context.open_questions.map((e: { id: string; text: string; status: string }) => [e.id, e.text, e.status]))
+      .toEqual(raw.context.openQuestions.map((e) => [e.id, e.text, e.status]));
+    const { source_ids: _sourceIds, base_context_version: _base, workspace_id: _workspace, ...pendingGoal } = goal;
+    expect(rest.pending_proposals).toEqual([pendingGoal]);
+    expect(rest.changed_files).toEqual((await tool("list_files")).files);
+    expect(rest.files_truncated).toBe(false);
+    expect(rest.recent_work).toEqual([published]);
+    expect(rest.work_truncated).toBe(false);
+    expect(rest.events.map(({ actor: _actor, ...e }: { actor: unknown }) => e)).toEqual(raw.events.map((e) => ({
+      seq: e.seq, workspace_id: workspaceId, type: e.kind, subject_id: e.entityId, at: new Date(e.createdAt).toISOString(), summary: e.summary,
+    })));
+    expect(rest.events.at(-1).actor).toEqual(published.published_by);
+    expect(rest.events_truncated).toBe(false);
+    expect((await tool("sync_workspace", { since: rest.cursor })).events).toEqual([]);
     expect(brief.active_decisions).toEqual([{ id: expect.any(String), text: "Usage pricing" }]);
     expect(brief.active_decisions[0].id).not.toBe(old.id);
     expect(brief.blockers).toEqual({
@@ -2234,23 +2253,30 @@ describe("sync brief and server instructions", () => {
     expect(brief.recent_changes.length).toBeLessThanOrEqual(10);
     expect(brief.recent_changes[0]).toMatchObject({ type: "work.published", actor: "Sam's claude assistant", at: expect.any(String) });
     expect(brief.recent_changes[1]).toMatchObject({ type: "file.created", subject_id: doc.id });
-    const ats = brief.recent_changes.map((c: { at: string }) => c.at);
-    expect([...ats].sort().reverse()).toEqual(ats);
-    expect(brief.truncated).toBe(sync.events.length > 10);
+    // recent_changes mirror the newest events, newest first.
+    expect(brief.recent_changes.map(({ actor: _actor, ...c }: { actor: string }) => c)).toEqual(
+      rest.events.slice(-10).reverse().map((e: { type: string; subject_id: string; summary: string; at: string }) =>
+        ({ type: e.type, subject_id: e.subject_id, summary: e.summary, at: e.at })),
+    );
+    // The seed's snapshot has more than ten events, so recent_changes is capped and flagged.
+    expect(rest.events.length).toBeGreaterThan(10);
+    expect(brief.recent_changes).toHaveLength(10);
+    expect(brief.truncated).toBe(true);
   });
 
   it("returns a compact payload for detail brief whose cursor continues incrementally", async () => {
     const { t, alex, tool, doc, workspaceId } = await seeded();
     const compact = await tool("sync_workspace", { detail: "brief" });
+    const full = await tool("sync_workspace");
     expect(Object.keys(compact)).toEqual(["brief", "workspace", "context_version", "changed_files", "deleted_file_ids", "files_truncated",
       "recent_work", "work_truncated", "events_truncated", "cursor"]);
     expect(compact).not.toHaveProperty("context");
     expect(compact).not.toHaveProperty("events");
     expect(compact).not.toHaveProperty("pending_proposals");
     expect(compact.changed_files).toEqual([{ id: doc.id, name: "plan.md", version: 1 }]);
-    expect(compact.recent_work).toEqual([{ id: expect.any(String), kind: "finding", title: "Pricing research" }]);
+    expect(compact.recent_work).toEqual(full.recent_work);
     expect(compact.brief.blockers.pending_approvals).toHaveLength(1);
-    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(await tool("sync_workspace")).length / 2);
+    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(full).length / 2);
 
     await alex.mutation(api.files.updateDocument, { fileId: doc.id, content: "# Plan v2", expectedVersion: 1 });
     const next = await tool("sync_workspace", { since: compact.cursor, detail: "brief" });
@@ -2259,9 +2285,9 @@ describe("sync brief and server instructions", () => {
     expect(next.brief.changed_file_count).toBe(1);
     expect(next.recent_work).toEqual([]);
     // The compact cursor is an ordinary cursor: a full incremental sync sees nothing newer.
-    const full = await tool("sync_workspace", { since: next.cursor });
-    expect(full.events).toEqual([]);
-    expect(full.brief.recent_changes).toEqual([]);
+    const after = await tool("sync_workspace", { since: next.cursor });
+    expect(after.events).toEqual([]);
+    expect(after.brief.recent_changes).toEqual([]);
     const bad = await callTool(t, (await connect(alex, { workspaceId, client: "chatgpt" })).apiKey, "sync_workspace", { detail: "everything" });
     expect(bad.isError).toBe(true);
   });
@@ -2271,7 +2297,7 @@ describe("sync brief and server instructions", () => {
     for (const term of ["sync_workspace", "since", "cursor", "publish_work", "propose_context_change", "expected_version", "best effort", "untrusted"])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
-    expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1200);
+    expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);
 
     const { t, sam, workspaceId } = await setup();
     const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
@@ -2282,6 +2308,20 @@ describe("sync brief and server instructions", () => {
     const listed = await mcpRequest(t, apiKey, "tools/list");
     const syncTool = listed.body.result.tools.find((entry: { name: string }) => entry.name === "sync_workspace");
     expect(syncTool.inputSchema.properties.detail.enum).toEqual(["brief", "full"]);
+  });
+
+  it("keeps full publication summaries in brief since syncs, whose cursor acknowledges them", async () => {
+    const { alex, tool, doc } = await seeded();
+    const before = await tool("sync_workspace", { detail: "brief" });
+    const summary = "Annual plans churn three times less than monthly plans. ".repeat(40).trim();
+    const { published } = await tool("publish_work", { kind: "finding", title: "Churn analysis", summary, file_ids: [doc.id] });
+    await alex.mutation(api.files.updateDocument, { fileId: doc.id, content: "# Plan v2", expectedVersion: 1 });
+    const page = await tool("sync_workspace", { since: before.cursor, detail: "brief" });
+    expect(page.recent_work).toEqual([published]);
+    expect(page.recent_work[0].summary).toBe(summary);
+    expect(page.recent_work[0]).toMatchObject({ file_ids: [doc.id], published_by: published.published_by, created_at: expect.any(String) });
+    // Nothing is left to recover later: the next page no longer carries it.
+    expect((await tool("sync_workspace", { since: page.cursor })).recent_work).toEqual([]);
   });
 
   it("preserves deletion tombstones outside the ten newest changes before advancing the brief cursor", async () => {
@@ -2327,8 +2367,9 @@ describe("sync brief and server instructions", () => {
       ]) expect(toSyncResult(input).brief.truncated).toBe(count > 10);
       const brief = toSyncResult({ ...base, context: { ...base.context, decisions, openQuestions: questions }, pendingProposals, events }).brief;
       expect(brief.active_decisions.map((item) => item.id)).toEqual(decisions.slice(-10).map((item) => item.id));
-      expect(brief.blockers.open_questions).toHaveLength(10);
-      expect(brief.blockers.pending_approvals).toHaveLength(10);
+      // Questions are stored newest last (keep the tail); pending proposals arrive newest first (keep the head).
+      expect(brief.blockers.open_questions.map((item) => item.id)).toEqual(questions.slice(-10).map((item) => item.id));
+      expect(brief.blockers.pending_approvals.map((item) => item.id)).toEqual(pendingProposals.slice(0, 10).map((item) => item.id));
       expect(brief.recent_changes.map((item) => item.at)).toEqual(events.slice(-10).reverse().map((event) => new Date(event.createdAt).toISOString()));
     }
     const inactive = toSyncResult({

@@ -422,7 +422,7 @@ function toSyncBrief(r: SyncRow) {
 
 /**
  * `detail: "full"` keeps the whole contract with `brief` first; `"brief"`
- * drops context, proposals and events and trims files and work to ids.
+ * drops context, proposals and events and trims files to id/name/version.
  */
 export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
   const brief = toSyncBrief(r);
@@ -437,7 +437,8 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
       // Preserve every tombstone even when the brief's ten-event list is capped.
       deleted_file_ids: r.events.filter((e) => e.kind === "file.deleted").map((e) => e.entityId),
       files_truncated: r.filesTruncated,
-      recent_work: r.recentWork.map((w) => ({ id: w.id, kind: w.kind, title: w.title })),
+      // Full publications: the cursor acknowledges them and no tool reads one by id.
+      recent_work: r.recentWork.map(toPublished),
       work_truncated: r.workTruncated,
       events_truncated: r.eventsTruncated,
       cursor,
