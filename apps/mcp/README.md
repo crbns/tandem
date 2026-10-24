@@ -2,7 +2,10 @@
 
 Remote MCP server (Streamable HTTP, stateless) that lets assistants read and edit Tandem workspace files.
 
-Tools: `list_files`, `read_file`, `create_document`, `update_document` (optimistic versioning via `expected_version`).
+Tools:
+
+- Read: `get_workspace_info` (caller identity, workspaces, roles), `list_files`, `search_files` (name/content match with snippets), `read_file`, `get_file_versions` (revision history with authors, no content)
+- Write: `create_document`, `update_document` (optimistic versioning via `expected_version`)
 
 ## Run locally
 
@@ -67,12 +70,12 @@ Caveats:
 
 ## Environment
 
-| Variable               | Default | Meaning                                                                                                                              |
-| ---------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `PORT`                 | `8787`  | HTTP port                                                                                                                            |
-| `TANDEM_BACKEND`       | `mock`  | Storage backend. `mock` is in-memory and seeded with workspace `ws_demo` (members `user_alex`, `user_sam`) containing `brief.md` v1. |
-| `TANDEM_DEV_TOKENS`    | empty   | Comma-separated `key:user_id` pairs for the dev identity resolver; clients send the key in the `api-key` header                      |
-| `TANDEM_DEV_ANON_USER` | unset   | TEMPORARY. Requests with no `api-key` header act as this user. Mock backend and non-production only (see above).                     |
+| Variable               | Default | Meaning                                                                                                                                                               |
+| ---------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PORT`                 | `8787`  | HTTP port                                                                                                                                                             |
+| `TANDEM_BACKEND`       | `mock`  | Storage backend. `mock` is in-memory and seeded with `ws_demo` (owner `user_alex`, member `user_sam`) containing `brief.md` v1, and `ws_other` (owner `user_jordan`). |
+| `TANDEM_DEV_TOKENS`    | empty   | Comma-separated `key:user_id` pairs for the dev identity resolver; clients send the key in the `api-key` header                                                       |
+| `TANDEM_DEV_ANON_USER` | unset   | TEMPORARY. Requests with no `api-key` header act as this user. Mock backend and non-production only (see above).                                                      |
 
 ## Layout
 

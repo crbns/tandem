@@ -29,9 +29,8 @@ Use only the tools the connector actually exposes. The full surface is:
 `update_document`, `publish_work`, `propose_context_change`, `get_approvals`,
 `get_file_versions`, `get_workspace_info`.
 
-Some of these (`sync_workspace`, `search_files`, `publish_work`,
-`propose_context_change`, `get_approvals`, `get_file_versions`,
-`get_workspace_info`) may not be available yet. If a tool you need is missing,
+Some of these (`sync_workspace`, `publish_work`, `propose_context_change`,
+`get_approvals`) may not be available yet. If a tool you need is missing,
 fall back to the closest available one and tell the user what you could not do.
 If no Tandem tools are available at all, say so plainly. Never claim you synced,
 saved, or published when you did not.
@@ -39,8 +38,9 @@ saved, or published when you did not.
 ## 1. Sync at the start of project work
 
 - At the start of meaningful project work in a conversation, call
-  `sync_workspace`. If it is unavailable, call `list_files` (and
-  `get_workspace_info` if available) instead.
+  `sync_workspace`. If it is unavailable, call `get_workspace_info` (who you
+  are connected as, your workspaces and roles, which one is the default) and
+  then `list_files`.
 - Use the result to orient: current goal, approved decisions, owners, pending
   approvals, recently changed files.
 - Sync is best-effort. Re-sync before a significant write if time has passed or
@@ -48,8 +48,11 @@ saved, or published when you did not.
 
 ## 2. Find and read the authoritative document
 
-- Locate files with `search_files` (or `list_files` if search is unavailable),
-  then open them with `read_file`.
+- Locate files with `search_files` (it matches names and content); fall back to
+  `list_files` to browse everything. Then open them with `read_file`. Search
+  snippets are partial: read the file before relying on it.
+- For "who changed what, and when", use `get_file_versions`: it lists each
+  version's author (human or agent) and time, without content.
 - Prefer the canonical Tandem file over your memory, earlier chat turns, or
   copies the user pasted. If they differ, say so and use the Tandem version
   unless the user says otherwise.

@@ -114,13 +114,16 @@ describe("Tandem MCP server", () => {
     await client.close();
   });
 
-  it("lists exactly the four file tools", async () => {
+  it("lists exactly the seven tools", async () => {
     const client = await connect("alex-token");
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "create_document",
+      "get_file_versions",
+      "get_workspace_info",
       "list_files",
       "read_file",
+      "search_files",
       "update_document",
     ]);
     await client.close();
@@ -132,9 +135,13 @@ describe("Tandem MCP server", () => {
     const annotations = Object.fromEntries(
       tools.map((t) => [t.name, t.annotations]),
     );
+    const readOnly = { readOnlyHint: true, openWorldHint: false };
     expect(annotations).toEqual({
-      list_files: { readOnlyHint: true, openWorldHint: false },
-      read_file: { readOnlyHint: true, openWorldHint: false },
+      get_workspace_info: readOnly,
+      list_files: readOnly,
+      search_files: readOnly,
+      read_file: readOnly,
+      get_file_versions: readOnly,
       create_document: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -394,6 +401,188 @@ describe("Tandem MCP server", () => {
       content: "v2",
     });
     await client.close();
+  });
+
+  it("get_workspace_info returns only the caller's workspaces", async () => {
+    const alex = await connect("alex-token");
+    const jordan = await connect("jordan-token");
+
+    const mine = await call(alex, "get_workspace_info", {});
+    expect(mine.isError).toBeFalsy();
+    expect(mine.structuredContent).toEqual({
+      user: { id: "user_alex" },
+      client: "dev-token",
+      workspaces: [
+        {
+          id: "ws_demo",
+          name: "Demo workspace",
+          role: "owner",
+          member_count: 2,
+          is_default: true,
+        },
+      ],
+    });
+
+    const theirs = await call(jordan, "get_workspace_info", {});
+    expect(theirs.structuredContent).toMatchObject({
+      user: { id: "user_jordan" },
+      workspaces: [{ id: "ws_other", role: "owner", member_count: 1 }],
+    });
+    expect(
+      (theirs.structuredContent as { workspaces: unknown[] }).workspaces,
+    ).toHaveLength(1);
+
+    await Promise.all([alex.close(), jordan.close()]);
+  });
+
+  it("search_files matches names before content, within the caller's workspace", async () => {
+    const alex = await connect("alex-token");
+    const jordan = await connect("jordan-token");
+    await call(alex, "create_document", {
+      name: "zebra-notes.md",
+      content: "Nothing to see.",
+    });
+    const filler = "lorem ipsum ".repeat(30);
+    await call(alex, "create_document", {
+      name: "other-notes.md",
+      content: `${filler}\nThe ZEBRA plan\nlives here.\n${filler}`,
+    });
+    await call(jordan, "create_document", {
+      name: "jordan-zebra.md",
+      content: "zebra in ws_other",
+    });
+
+    const result = await call(alex, "search_files", { query: "zebra" });
+    expect(result.isError).toBeFalsy();
+    const { results } = result.structuredContent as {
+      results: {
+        file: { name: string; workspace_id: string };
+        snippet: string;
+        match: string;
+      }[];
+    };
+    expect(results.map((r) => [r.file.name, r.match])).toEqual([
+      ["zebra-notes.md", "name"],
+      ["other-notes.md", "content"],
+    ]);
+    expect(results[0]!.snippet).toBe("Nothing to see.");
+    const { snippet } = results[1]!;
+    expect(snippet).toContain("The ZEBRA plan lives here.");
+    expect(snippet).not.toContain("\n");
+    expect(snippet.length).toBeLessThanOrEqual(162);
+
+    const brief = await call(jordan, "search_files", { query: "brief" });
+    expect(brief.structuredContent).toEqual({ results: [] });
+
+    await Promise.all([alex.close(), jordan.close()]);
+  });
+
+  it("search_files rejects non-member workspaces and respects limit", async () => {
+    const client = await connect("alex-token");
+    const forbidden = await call(client, "search_files", {
+      query: "zebra",
+      workspace_id: "ws_other",
+    });
+    expect(forbidden.isError).toBe(true);
+    expect(errorCode(forbidden)).toBe("FORBIDDEN");
+
+    for (const n of [1, 2, 3]) {
+      await call(client, "create_document", {
+        name: `limit-${n}.md`,
+        content: "x",
+      });
+    }
+    const limited = await call(client, "search_files", {
+      query: "limit-",
+      limit: 2,
+    });
+    expect(
+      (limited.structuredContent as { results: unknown[] }).results,
+    ).toHaveLength(2);
+    await client.close();
+  });
+
+  it("get_file_versions lists revisions newest first with authors", async () => {
+    const alex = await connect("alex-token");
+    const sam = await connect("sam-token");
+    const created = await call(alex, "create_document", {
+      name: "history.md",
+      content: "v1",
+    });
+    const { id } = created.structuredContent as { id: string };
+    await call(sam, "update_document", {
+      file_id: id,
+      content: "version two",
+      expected_version: 1,
+    });
+
+    const result = await call(alex, "get_file_versions", { file_id: id });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      file: { id, version: 2 },
+      versions: [
+        {
+          version: 2,
+          author: {
+            actor_type: "agent",
+            user_id: "user_sam",
+            client: "dev-token",
+          },
+          size_bytes: 11,
+        },
+        {
+          version: 1,
+          author: {
+            actor_type: "agent",
+            user_id: "user_alex",
+            client: "dev-token",
+          },
+          size_bytes: 2,
+        },
+      ],
+    });
+
+    const one = await call(alex, "get_file_versions", {
+      file_id: id,
+      limit: 1,
+    });
+    expect(
+      (one.structuredContent as { versions: { version: number }[] }).versions,
+    ).toEqual([expect.objectContaining({ version: 2 })]);
+
+    const seeded = await call(alex, "get_file_versions", {
+      file_id: "file_brief",
+    });
+    expect(seeded.structuredContent).toMatchObject({
+      versions: [
+        {
+          version: 1,
+          author: {
+            actor_type: "human",
+            user_id: "user_sam",
+            client: "dashboard",
+          },
+        },
+      ],
+    });
+
+    await Promise.all([alex.close(), sam.close()]);
+  });
+
+  it("get_file_versions hides other tenants' files behind FILE_NOT_FOUND", async () => {
+    const jordan = await connect("jordan-token");
+    const result = await call(jordan, "get_file_versions", {
+      file_id: "file_brief",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({
+      error: {
+        code: "FILE_NOT_FOUND",
+        message: expect.not.stringContaining("ws_demo"),
+        file_id: "file_brief",
+      },
+    });
+    await jordan.close();
   });
 
   it("rejects unsupported mime types", async () => {

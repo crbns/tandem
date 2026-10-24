@@ -12,11 +12,21 @@ import type {
   Attribution,
   CreateDocumentInput,
   FileMetadata,
+  FileVersions,
   FileWithContent,
   ListFilesInput,
+  SearchFilesInput,
+  SearchResult,
   TandemBackend,
   UpdateDocumentInput,
+  WorkspaceRole,
+  WorkspaceSummary,
 } from "./types.js";
+
+interface StoredWorkspace {
+  name: string;
+  members: Map<string, WorkspaceRole>;
+}
 
 interface Revision {
   version: number;
@@ -41,17 +51,30 @@ Goal: ship the Tandem demo for Cal Hacks.
 
 /** In-memory backend for local development and tests. State is lost on restart. */
 export class MockBackend implements TandemBackend {
-  private readonly members = new Map<string, Set<string>>([
-    ["ws_demo", new Set(["user_alex", "user_sam"])],
-    ["ws_other", new Set(["user_jordan"])],
+  // Insertion order matters: an actor's first workspace is their default.
+  private readonly workspaces = new Map<string, StoredWorkspace>([
+    [
+      "ws_demo",
+      {
+        name: "Demo workspace",
+        members: new Map([
+          ["user_alex", "owner"],
+          ["user_sam", "member"],
+        ]),
+      },
+    ],
+    [
+      "ws_other",
+      { name: "Other workspace", members: new Map([["user_jordan", "owner"]]) },
+    ],
   ]);
   private readonly files = new Map<string, StoredFile>();
 
   constructor() {
     const seededBy: Attribution = {
-      actor_type: "agent",
-      user_id: "user_alex",
-      client: "seed",
+      actor_type: "human",
+      user_id: "user_sam",
+      client: "dashboard",
     };
     this.files.set("file_brief", {
       id: "file_brief",
@@ -68,6 +91,19 @@ export class MockBackend implements TandemBackend {
         },
       ],
     });
+  }
+
+  async listWorkspaces(actor: Actor): Promise<WorkspaceSummary[]> {
+    const mine = [...this.workspaces].filter(([, ws]) =>
+      ws.members.has(actor.user_id),
+    );
+    return mine.map(([id, ws], i) => ({
+      id,
+      name: ws.name,
+      role: ws.members.get(actor.user_id)!,
+      member_count: ws.members.size,
+      is_default: i === 0,
+    }));
   }
 
   async listFiles(
@@ -92,9 +128,59 @@ export class MockBackend implements TandemBackend {
       .map(toMetadata);
   }
 
+  async searchFiles(
+    actor: Actor,
+    input: SearchFilesInput,
+  ): Promise<SearchResult[]> {
+    const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
+    const query = input.query.toLowerCase();
+    const results: SearchResult[] = [];
+    for (const f of this.files.values()) {
+      if (f.workspace_id !== workspaceId) continue;
+      const content = head(f).content;
+      const nameMatch = f.name.toLowerCase().includes(query);
+      const at = content.toLowerCase().indexOf(query);
+      if (!nameMatch && at === -1) continue;
+      results.push({
+        file: toMetadata(f),
+        snippet:
+          at === -1
+            ? snippet(content, 0, 0)
+            : snippet(content, at, query.length),
+        match: nameMatch ? "name" : "content",
+      });
+    }
+    return results
+      .sort(
+        (a, b) =>
+          Number(b.match === "name") - Number(a.match === "name") ||
+          b.file.updated_at.localeCompare(a.file.updated_at),
+      )
+      .slice(0, input.limit);
+  }
+
   async readFile(actor: Actor, fileId: string): Promise<FileWithContent> {
     const file = this.getFile(actor, fileId);
     return { file: toMetadata(file), content: head(file).content };
+  }
+
+  async getFileVersions(
+    actor: Actor,
+    fileId: string,
+    limit: number,
+  ): Promise<FileVersions> {
+    const file = this.getFile(actor, fileId);
+    const versions = file.revisions
+      .slice()
+      .reverse()
+      .slice(0, limit)
+      .map((r) => ({
+        version: r.version,
+        created_at: r.created_at,
+        author: r.created_by,
+        size_bytes: Buffer.byteLength(r.content, "utf8"),
+      }));
+    return { file: toMetadata(file), versions };
   }
 
   async createDocument(
@@ -153,8 +239,8 @@ export class MockBackend implements TandemBackend {
     workspaceId: string | undefined,
   ): string {
     if (workspaceId === undefined) {
-      const first = [...this.members].find(([, users]) =>
-        users.has(actor.user_id),
+      const first = [...this.workspaces].find(([, ws]) =>
+        ws.members.has(actor.user_id),
       );
       if (!first) {
         throw new TandemError(
@@ -164,18 +250,37 @@ export class MockBackend implements TandemBackend {
       }
       return first[0];
     }
-    if (!this.members.get(workspaceId)?.has(actor.user_id))
-      throw forbidden(workspaceId);
+    if (!this.isMember(actor, workspaceId)) throw forbidden(workspaceId);
     return workspaceId;
   }
 
   private getFile(actor: Actor, fileId: string): StoredFile {
     // Another tenant's file looks exactly like a missing one, so ids can't be probed.
     const file = this.files.get(fileId);
-    if (!file || !this.members.get(file.workspace_id)?.has(actor.user_id))
+    if (!file || !this.isMember(actor, file.workspace_id))
       throw fileNotFound(fileId);
     return file;
   }
+
+  private isMember(actor: Actor, workspaceId: string): boolean {
+    return (
+      this.workspaces.get(workspaceId)?.members.has(actor.user_id) ?? false
+    );
+  }
+}
+
+const SNIPPET_CHARS = 160;
+
+/** ~SNIPPET_CHARS of `content` centred on [at, at+length), whitespace collapsed. */
+function snippet(content: string, at: number, length: number): string {
+  const lead = Math.max(0, Math.floor((SNIPPET_CHARS - length) / 2));
+  const start = Math.max(
+    0,
+    Math.min(at - lead, content.length - SNIPPET_CHARS),
+  );
+  const end = start + SNIPPET_CHARS;
+  const text = content.slice(start, end).replace(/\s+/g, " ").trim();
+  return (start > 0 ? "…" : "") + text + (end < content.length ? "…" : "");
 }
 
 function nameKey(name: string): string {
