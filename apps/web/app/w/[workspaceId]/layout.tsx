@@ -6,33 +6,37 @@ import { useSession } from "@/lib/auth/useSession";
 import { isSigningOut } from "@/lib/auth/signOutIntent";
 import { useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
+import { WorkspaceFilesContext } from "@/lib/api/useWorkspace";
 import { AppShell } from "@/components/shell/AppShell";
 import { FullPageSpinner } from "@/components/common/FullPageSpinner";
 
 function WorkspaceShell({ workspaceId, children }: { workspaceId: string; children: ReactNode }) {
   const api = useTandemApi();
   const pathname = usePathname();
-  const loadShell = useCallback(async () => {
-    const [workspaces, fileCount] = await Promise.all([
-      api.listWorkspaces(),
-      api.listFiles(workspaceId).then(
-        (files) => files.length,
-        () => null, // the count is decoration; never block the shell on it
-      ),
-    ]);
-    return { name: workspaces.find((w) => w.id === workspaceId)?.name ?? "Workspace", fileCount };
+  const loadName = useCallback(async () => {
+    const workspaces = await api.listWorkspaces();
+    return workspaces.find((w) => w.id === workspaceId)?.name ?? "Workspace";
   }, [api, workspaceId]);
-  const { resource, reload } = useResource(loadShell);
+  const { resource, reload } = useResource(loadName);
+  const loadFiles = useCallback(() => api.listFiles(workspaceId), [api, workspaceId]);
+  const files = useResource(loadFiles);
+  const { reload: reloadFiles } = files;
   // Navigation (e.g. after creating a file) refreshes the rail's count.
-  useEffect(() => reload(), [pathname, reload]);
+  useEffect(() => {
+    reload();
+    reloadFiles();
+  }, [pathname, reload, reloadFiles]);
   // The name is cosmetic: a failed lookup falls back instead of blocking the app.
-  const name = resource.status === "ready" ? resource.data.name : "Workspace";
-  const fileCount = resource.status === "ready" ? resource.data.fileCount : null;
+  const name = resource.status === "ready" ? resource.data : "Workspace";
+  // The count is decoration too; a failed listing just hides it.
+  const fileCount = files.resource.status === "ready" ? files.resource.data.length : null;
 
   return (
-    <AppShell workspaceId={workspaceId} workspaceName={name} fileCount={fileCount}>
-      {children}
-    </AppShell>
+    <WorkspaceFilesContext.Provider value={files}>
+      <AppShell workspaceId={workspaceId} workspaceName={name} fileCount={fileCount}>
+        {children}
+      </AppShell>
+    </WorkspaceFilesContext.Provider>
   );
 }
 

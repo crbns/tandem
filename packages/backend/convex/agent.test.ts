@@ -240,6 +240,16 @@ describe("agent connections", () => {
         workspaceId,
       }),
     ).toHaveLength(2);
+    // Every member sees the workspace-wide activity, without people or auth.
+    const activity = await sam.query(api.agentConnections.listAgentActivity, {
+      workspaceId,
+    });
+    expect(activity.map((a) => a.client).sort()).toEqual(["chatgpt", "claude"]);
+    expect(Object.keys(activity[0]!).sort()).toEqual([
+      "client",
+      "lastMcpActionAt",
+      "lastSyncAt",
+    ]);
     // A member can't revoke someone else's connection.
     expect(
       await errorData(
@@ -248,6 +258,16 @@ describe("agent connections", () => {
         }),
       ),
     ).toMatchObject({ code: "FORBIDDEN" });
+    // A revoked connection drops out of the activity for everyone.
+    await alex.mutation(api.agentConnections.revokeAgentConnection, {
+      connectionId: alexConn.connectionId,
+    });
+    for (const member of [sam, alex]) {
+      const live = await member.query(api.agentConnections.listAgentActivity, {
+        workspaceId,
+      });
+      expect(live.map((a) => a.client)).toEqual(["claude"]);
+    }
   });
 
   it("refuses connections for a workspace the caller isn't in, and bad clients", async () => {

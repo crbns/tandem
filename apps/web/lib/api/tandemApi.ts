@@ -5,6 +5,7 @@ import type {
   PublishedWorkPage,
   Task,
   WorkspaceMember,
+  AgentActivity,
   AgentClient,
   AgentConnection,
   ConsentRequest,
@@ -110,6 +111,8 @@ export interface TandemApi {
   ): Promise<NewAgentConnection>;
   /** The caller's own connections; owners/admins see everyone's. Never includes tokens. */
   listAgentConnections(workspaceId: string): Promise<AgentConnection[]>;
+  /** Every unrevoked connection in the workspace, for any member; no people or credentials. */
+  listAgentActivity(workspaceId: string): Promise<AgentActivity[]>;
   /** Also deletes its OAuth tokens or API key, so the next MCP call gets 401. */
   revokeAgentConnection(connectionId: string): Promise<void>;
   /** An assistant's pending OAuth request, or null when it expired or doesn't exist. */

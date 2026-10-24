@@ -1,9 +1,20 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { createContext, useCallback, useContext, useEffect } from "react";
 import { useTandemApi } from "./index";
 import { useResource } from "./useResource";
-import type { Workspace } from "./types";
+import type { FileSummary, Workspace } from "./types";
+
+export type WorkspaceFiles = ReturnType<typeof useResource<FileSummary[]>>;
+
+/** The workspace layout's file list (it backs the rail's count), shared so pages don't refetch it. */
+export const WorkspaceFilesContext = createContext<WorkspaceFiles | null>(null);
+
+export function useWorkspaceFiles(): WorkspaceFiles {
+  const files = useContext(WorkspaceFilesContext);
+  if (!files) throw new Error("useWorkspaceFiles must be used inside the workspace layout");
+  return files;
+}
 
 /** The signed-in person's role here; `undefined` while loading, `null` if unknown. */
 export function useWorkspaceRole(workspaceId: string): Workspace["role"] | null | undefined {

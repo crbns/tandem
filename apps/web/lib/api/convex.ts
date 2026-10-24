@@ -480,6 +480,17 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         });
         return connections.map(toAgentConnection);
       }),
+    listAgentActivity: (workspaceId) =>
+      call(async () => {
+        const activity = await convex.query(api.agentConnections.listAgentActivity, {
+          workspaceId: workspaceId as Id<"workspaces">,
+        });
+        return activity.map(({ client, lastMcpActionAt, lastSyncAt }) => ({
+          client,
+          ...(lastMcpActionAt !== null ? { lastMcpActionAt } : {}),
+          ...(lastSyncAt !== null ? { lastSyncAt } : {}),
+        }));
+      }),
     revokeAgentConnection: (connectionId) =>
       call(async () => {
         await convex.mutation(api.agentConnections.revokeAgentConnection, {
