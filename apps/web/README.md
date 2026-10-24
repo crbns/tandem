@@ -40,7 +40,6 @@ Sign in with a user Person 2 seeded. Convex Auth secrets (`JWT_PRIVATE_KEY`, `JW
 | `NEXT_PUBLIC_CONVEX_URL` | real mode | Inlined at **build** time |
 | `NEXT_PUBLIC_DEFAULT_WORKSPACE_ID` | no | Skip workspace lookup after sign-in |
 | `NEXT_PUBLIC_USE_MOCKS` | no | `true` = in-memory backend + fake session. Forced to `false` in the Docker image |
-| `NEXT_PUBLIC_MCP_URL` | no | Public base URL of the MCP server (e.g. `https://mcp.<domain>`). Used in the "Connect an assistant" setup command; inlined at **build** time |
 
 ## Scripts
 

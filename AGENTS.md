@@ -40,8 +40,8 @@ Supabase and Railway were dropped. Don't reintroduce them.
 
 - **Backend:** Convex (`packages/backend/convex`): database, Convex Auth, file storage, reactive queries for dashboard realtime, and scheduled functions/actions for the outbox and LLM context extraction. Enforce authorization inside every query, mutation, and action. Serve binaries through authorized HTTP actions, not shareable storage URLs.
 - **Web:** Next.js + React (`apps/web`), wrapped in `ConvexClientProvider`. Needs `NEXT_PUBLIC_CONVEX_URL`, which is inlined at build time.
-- **MCP server:** Node.js + TypeScript MCP SDK, calling the same Convex functions as the dashboard.
-- **Hosting:** Vercel hosts the web dashboard. Vultr was dropped; don't reintroduce it. The planned MCP endpoint is `@convex-dev/mcp` in Convex HTTP actions at `https://<deployment>.convex.site/mcp`, so it needs no separate host (`docs/mcp-auth-design.md`, pending its PoC). If the PoC fails, the §6 fallback needs a host for `apps/mcp` (undecided). Convex Cloud hosts the backend (`pnpm --filter @repo/backend deploy` with `CONVEX_DEPLOY_KEY`).
+- **MCP server:** `@convex-dev/mcp` (pinned `0.1.0-alpha.7`) in Convex HTTP actions at `https://<deployment>.convex.site/mcp` (`convex/mcp.ts`). It is also the OAuth 2.1 authorization server; the consent page is `apps/web/app/oauth/consent`, where the person picks the workspace. Every grant and API key acts for one `agent_connections` row, and tools call `internal` functions in `convex/mcpTools.ts` that use the same core helpers as the dashboard (`convex/lib/ops.ts`). Tool handlers have no `ctx.auth`; identity comes only from the component-verified credential. `apps/mcp` is a mock-backed eval harness that never deploys.
+- **Hosting:** Vercel hosts the web dashboard. Vultr was dropped; don't reintroduce it. The MCP server needs no separate host: it ships with the Convex deployment (`siteUrl` unset, so its URL is `CONVEX_SITE_URL` + `/mcp`; see `docs/mcp-auth-design.md`). Convex Cloud hosts the backend (`pnpm --filter @repo/backend deploy` with `CONVEX_DEPLOY_KEY`). Set `SITE_URL` on the deployment to the Vercel production domain, which also places the consent page.
 
 Core tables: users, workspaces, workspace_members, agent_connections, files, folders, file_revisions, structured_context, context_proposals, approvals, workspace_events, outbox_events, sync_cursors, storage_objects.
 
@@ -50,6 +50,8 @@ Core tables: users, workspaces, workspace_members, agent_connections, files, fol
 - **P0:** one workspace with two members and authz; remote MCP working in at least two native clients; one shared text doc with CRUD and version conflict; dashboard with files, editor, revisions, and the approved goal; a skill-led sync demo with an honest fallback.
 - **P1:** decision approval screen, context extraction from published work, realtime file events and revision diffs, folders, PDF/image preview, invites.
 - **P2:** don't build these now (broad binary previews, office editors, search ranking, CRDT co-editing, enterprise permissions).
+
+**Reviews:** review workers check functionality: tests and type checks pass, flows work end to end, and real clients can connect and use the tools. For the MVP, don't run auth/security audits or ask for security hardening.
 
 Client limits as of Oct 2026: Claude remote MCP connectors work on all plans and are the primary test target. ChatGPT full write MCP is Business/Enterprise/Edu beta only (Pro is read-only, Plus isn't viable). Gemini custom MCP apps have eligibility limits.
 

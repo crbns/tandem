@@ -19,9 +19,11 @@ You need two pieces in each client:
 
 > **Status:** Claude Code (skill install, the connector with the dev `api-key`
 > header, auto-sync in fresh chats, `update_document`, and `VERSION_CONFLICT`
-> recovery) was measured by the eval harness on 2026-10-23. On claude.ai web, adding the connector and tool discovery were
-> checked by hand against the no-auth dev tunnel. Everything else is still
-> marked **to verify**. Results live in `COMPATIBILITY.md`.
+> recovery) was measured by the eval harness against the mock server on
+> 2026-10-23. On claude.ai web, adding the connector and tool discovery were
+> checked by hand against the old no-auth dev tunnel. The real server is now
+> `<deployment>.convex.site/mcp` with OAuth and API keys; connecting native
+> clients to it is still **to verify**. Results live in `COMPATIBILITY.md`.
 
 ## Build the skill zip
 
@@ -45,9 +47,11 @@ target.
 
 1. Open **Settings → Connectors**.
 2. Choose **Add custom connector**.
-3. Name: `Tandem`. URL: `https://<tandem-mcp-host>/mcp` (replace with the
-   deployed MCP server host).
-4. Complete the OAuth sign-in with your Tandem account.
+3. Name: `Tandem`. URL: the server URL on your workspace's **Assistants**
+   page, `https://<deployment>.convex.site/mcp`.
+4. Complete the OAuth sign-in: Tandem opens its consent page, where you sign
+   in, pick the workspace and the assistant, and choose **Allow**. The
+   connection then shows on the Assistants page, where you can revoke it.
 5. In a new chat, open the tools/connectors menu and confirm the Tandem tools
    are listed and enabled.
 
@@ -69,16 +73,18 @@ The exact menu labels may differ by plan or app version. *(to verify)*
 
 ### a. Add the connector
 
-With the current dev server (static `api-key` header; the eval measured header auth via `--mcp-config`, not this `claude mcp add` command):
+Create an API key on the workspace's **Assistants** page (it is shown once,
+with this command filled in):
 
 ```sh
-claude mcp add --transport http tandem https://<tandem-mcp-host>/mcp \
-  --header "api-key: <your-dev-token>"
+claude mcp add --transport http tandem https://<deployment>.convex.site/mcp \
+  --header "Authorization: Bearer <API key>"
 ```
 
-Once OAuth lands *(to verify)*: drop `--header` and run `/mcp` inside Claude
-Code to authenticate. Either way, check that the `mcp__tandem__*` tools are
-listed.
+Or *(to verify)* drop `--header` and run `/mcp` inside Claude Code to sign in
+with OAuth instead. Either way, check that the `mcp__tandem__*` tools are
+listed. (The eval measured header auth against the mock server via
+`--mcp-config`, not this command.)
 
 ### b. Install the skill
 
