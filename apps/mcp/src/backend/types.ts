@@ -18,7 +18,7 @@ export interface Attribution {
   client: string;
 }
 
-export type WorkspaceRole = "owner" | "member";
+export type WorkspaceRole = "owner" | "admin" | "member";
 
 export interface WorkspaceSummary {
   id: string;
@@ -181,7 +181,7 @@ export interface ContextProposal {
   status: ProposalStatus;
   proposed_by: Attribution;
   created_at: string;
-  /** Set once a human owner decides; agents can never decide. */
+  /** Set once a human owner or admin decides; agents can never decide. */
   decided_by?: { user_id: string; actor_type: "human" };
   decided_at?: string;
   decision_note?: string;
@@ -221,7 +221,7 @@ export interface WorkspaceEvent {
   seq: number;
   workspace_id: string;
   type: WorkspaceEventType;
-  /** The file, proposal, or published work the event is about (the workspace for a direct owner change). */
+  /** The file, proposal, or published work the event is about (the workspace for a direct human change). */
   subject_id: string;
   actor: Attribution;
   at: string;
@@ -345,7 +345,7 @@ export interface TandemBackend {
   publishWork(actor: Actor, input: PublishWorkInput): Promise<PublishedWork>;
   /**
    * Human decision on a proposal; not exposed over MCP. Agents get FORBIDDEN;
-   * an unknown or other-tenant proposal gets INVALID_INPUT; a non-owner gets
+   * an unknown or other-tenant proposal gets INVALID_INPUT; a member without owner/admin role gets
    * FORBIDDEN; an already decided proposal gets INVALID_INPUT. Approving applies
    * proposed_value (context_version + 1). Either way it sets decided_by and
    * decided_at and appends context.approved or context.rejected.
@@ -358,7 +358,7 @@ export interface TandemBackend {
   ): Promise<ContextProposal>;
   /**
    * Direct context change; not exposed over MCP. Agents ALWAYS get
-   * APPROVAL_REQUIRED (they must use proposeContextChange). Human owners apply
+   * APPROVAL_REQUIRED (they must use proposeContextChange). Human owners and admins apply
    * the value like an approved proposal; human members get FORBIDDEN.
    */
   applyContextChange(

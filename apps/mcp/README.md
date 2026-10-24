@@ -8,13 +8,13 @@ Tools:
 - Sync: `sync_workspace` (approved context, pending proposal summaries, changed files, events, and an opaque `cursor`; pass it back as `since` for incremental syncs). It only records the last sync time.
 - Write: `create_document`, `update_document` (optimistic versioning via `expected_version`), `propose_context_change` (creates a pending proposal, never changes context), `publish_work` (records an authorized deliverable or finding)
 
-Approving or rejecting proposals is not an MCP tool: humans do it in the dashboard (`TandemBackend.decideProposal`, owners only). `TandemBackend.applyContextChange` always throws `APPROVAL_REQUIRED` for agents.
+Approving or rejecting proposals is not an MCP tool: humans do it in the dashboard (`TandemBackend.decideProposal`, owners and admins only). `TandemBackend.applyContextChange` always throws `APPROVAL_REQUIRED` for agents.
 
 ## Data model
 
 Documented as the `TandemBackend` contract in `src/backend/types.ts`:
 
-- **StructuredContext** per workspace, versioned by `context_version`: goal, scope, constraints, approved decisions, ownership, open questions. Only a human owner's decision changes it.
+- **StructuredContext** per workspace, versioned by `context_version`: goal, scope, constraints, approved decisions, ownership, open questions. Only a human owner or admin can change it.
 - **ContextProposal**: a pending change to one field (`goal`, `scope`, `constraints`, `decisions`, `ownership`) with rationale, source file ids, and who proposed and decided it.
 - **PublishedWork**: a deliverable or finding with title, summary, and file ids.
 - **WorkspaceEvent**: per-workspace monotonic `seq` for file, context, and publish changes. Summaries are short metadata, never document content. The sync cursor is base64url JSON of the workspace id and last seq.
@@ -97,7 +97,7 @@ Caveats:
 | `HOST`                   | `127.0.0.1` | Interface to bind. Use `0.0.0.0` only inside a container.                                                                                              |
 | `NODE_ENV`               | unset       | Must be exactly `development` or `test` for dev anon mode. The `dev` script sets `development`.                                                        |
 | `TANDEM_ALLOWED_ORIGINS` | empty       | Comma-separated browser origins allowed to call `/mcp`. Any other `Origin` gets `403`; requests without `Origin` are unaffected. Trailing `/` is OK.   |
-| `TANDEM_BACKEND`         | `mock`      | Storage backend. `mock` is in-memory and seeded with `ws_demo` (owner `user_alex`, member `user_sam`) containing `brief.md` v1 and project context, and `ws_other` (owner `user_jordan`).                   |
+| `TANDEM_BACKEND`         | `mock`      | Storage backend. `mock` is in-memory and seeded with `ws_demo` (owner `user_alex`, admin `user_taylor`, member `user_sam`) containing `brief.md` v1 and project context, and `ws_other` (owner `user_jordan`).                   |
 | `TANDEM_DEV_TOKENS`      | empty       | Comma-separated `key:user_id` pairs (split on the first `:`); clients send the key in the `api-key` header. Generate keys with `openssl rand -hex 24`. |
 | `TANDEM_DEV_ANON_USER`   | unset       | TEMPORARY. Requests with no `api-key` header act as this user. Mock backend and `NODE_ENV=development`/`test` only (see above).                        |
 

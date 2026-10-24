@@ -101,6 +101,7 @@ export class MockBackend implements TandemBackend {
       members: new Map([
         ["user_alex", "owner"],
         ["user_sam", "member"],
+        ["user_taylor", "admin"],
       ]),
       context: {
         goal: "Ship a working Tandem demo at Cal Hacks 13.0: two teammates, each in their own assistant, editing one canonical brief without losing work.",
@@ -476,7 +477,7 @@ export class MockBackend implements TandemBackend {
     if (actor.actor_type !== "human") {
       throw new TandemError(
         "FORBIDDEN",
-        "Only a human workspace owner can approve or reject proposals, in the Tandem dashboard.",
+        "Only a human workspace owner or admin can approve or reject proposals, in the Tandem dashboard.",
         { proposal_id: proposalId },
       );
     }
@@ -490,7 +491,7 @@ export class MockBackend implements TandemBackend {
         },
       );
     }
-    this.requireOwner(actor, proposal.workspace_id);
+    this.requireContextManager(actor, proposal.workspace_id);
     if (proposal.status !== "pending") {
       throw new TandemError(
         "INVALID_INPUT",
@@ -528,14 +529,14 @@ export class MockBackend implements TandemBackend {
   ): Promise<{ context: StructuredContext; context_version: number }> {
     if (actor.actor_type !== "human") throw approvalRequired(input.field);
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
-    this.requireOwner(actor, workspaceId);
+    this.requireContextManager(actor, workspaceId);
     this.applyToContext(workspaceId, input.field, input.value, actor, []);
     this.appendEvent(
       workspaceId,
       "context.approved",
       workspaceId,
       attribution(actor),
-      `${input.field} changed by owner`,
+      `${input.field} changed by human`,
     );
     const ws = this.workspaces.get(workspaceId)!;
     return {
@@ -691,13 +692,12 @@ export class MockBackend implements TandemBackend {
     this.connections.set(k, connection);
   }
 
-  private requireOwner(actor: Actor, workspaceId: string): void {
-    if (
-      this.workspaces.get(workspaceId)?.members.get(actor.user_id) !== "owner"
-    ) {
+  private requireContextManager(actor: Actor, workspaceId: string): void {
+    const role = this.workspaces.get(workspaceId)?.members.get(actor.user_id);
+    if (role !== "owner" && role !== "admin") {
       throw new TandemError(
         "FORBIDDEN",
-        "Only a workspace owner can change the approved context.",
+        "Only a workspace owner or admin can change the approved context.",
         { workspace_id: workspaceId },
       );
     }

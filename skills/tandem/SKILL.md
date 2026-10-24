@@ -129,7 +129,7 @@ Someone else saved a newer version since you read it.
   - `ownership`: `{ area, owner_user_id }` for one area; the owner must be a
     workspace member.
 - It returns a `proposal` with `status: "pending"` and changes nothing. Tell
-  the user it awaits a human owner's approval in the dashboard and has not
+  the user it awaits a human owner or admin's approval in the dashboard and has not
   taken effect. Use `get_approvals` (default `status: "pending"`; also
   `"approved"`, `"rejected"`, `"all"`) to check when asked.
 - Until approved, treat the current approved context as authoritative.

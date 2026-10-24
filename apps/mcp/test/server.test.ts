@@ -17,7 +17,7 @@ import { nameKey, storedName } from "../src/names.js";
 import { createApp, parseAllowedOrigins } from "../src/server.js";
 
 const DEV_TOKENS =
-  "alex-token:user_alex,sam-token:user_sam,jordan-token:user_jordan";
+  "alex-token:user_alex,sam-token:user_sam,jordan-token:user_jordan,taylor-token:user_taylor";
 
 let server: Server;
 let mcpUrl: URL;
@@ -484,7 +484,7 @@ describe("Tandem MCP server", () => {
           id: "ws_demo",
           name: "Demo workspace",
           role: "owner",
-          member_count: 2,
+          member_count: 3,
           is_default: true,
         },
       ],
@@ -1102,7 +1102,56 @@ describe("context tools", () => {
     await alex.close();
   });
 
-  it("only human owners decide, and agents can't change context directly", async () => {
+  it("get_workspace_info reports the admin role", async () => {
+    const admin = await connect("taylor-token", url);
+    const result = await call(admin, "get_workspace_info", {});
+    expect(result.structuredContent).toMatchObject({
+      user: { id: "user_taylor" },
+      workspaces: [{ id: "ws_demo", role: "admin", member_count: 3 }],
+    });
+    await admin.close();
+  });
+
+  it("human admins can approve, reject, and apply context changes", async () => {
+    const alex = await connect("alex-token", url);
+    const admin: Actor = { ...alexHuman, user_id: "user_taylor" };
+    const proposal = await propose(alex, {
+      field: "goal",
+      proposed_value: "Ship with admin approval.",
+    });
+    await expect(
+      backend.decideProposal(
+        { ...admin, actor_type: "agent" },
+        proposal.id,
+        "approve",
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const approved = await backend.decideProposal(
+      admin,
+      proposal.id,
+      "approve",
+    );
+    expect(approved).toMatchObject({
+      status: "approved",
+      decided_by: { user_id: "user_taylor", actor_type: "human" },
+    });
+    expect((await sync(alex)).context.goal).toBe("Ship with admin approval.");
+    const rejected = await propose(alex, {
+      field: "goal",
+      proposed_value: "Rejected.",
+    });
+    expect(
+      await backend.decideProposal(admin, rejected.id, "reject"),
+    ).toMatchObject({ status: "rejected" });
+    const direct = await backend.applyContextChange(admin, {
+      field: "goal",
+      value: "Applied by admin.",
+    });
+    expect(direct.context.goal).toBe("Applied by admin.");
+    await alex.close();
+  });
+
+  it("only human owners and admins decide, and agents can't change context directly", async () => {
     const alex = await connect("alex-token", url);
     const proposal = await propose(alex, {
       field: "scope",
@@ -1438,7 +1487,11 @@ describe("Origin allowlist", () => {
 });
 
 describe("MockBackend", () => {
-  const alex: Actor = { user_id: "user_alex", client: "test", actor_type: "agent" };
+  const alex: Actor = {
+    user_id: "user_alex",
+    client: "test",
+    actor_type: "agent",
+  };
 
   async function expectCode(promise: Promise<unknown>, code: string) {
     const err = await promise.catch((e: unknown) => e);
