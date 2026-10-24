@@ -9,6 +9,7 @@ import { RestoreRevisionDialog } from "@/components/history/RestoreRevisionDialo
 import { useResource } from "@/lib/api/useResource";
 import { belongsToWorkspace, isMarkdown } from "@/lib/files";
 import { formatAbsolute } from "@/lib/time";
+import { BinaryPreview } from "@/components/files/BinaryPreview";
 import { FileHeader } from "@/components/files/FileHeader";
 import { RevisionList } from "@/components/history/RevisionList";
 import { MarkdownPreview } from "@/components/editor/MarkdownPreview";
@@ -210,14 +211,14 @@ export default function HistoryPage() {
             selected={current.version}
             onSelect={setSelected}
           />
-          <RevisionContentLoader
+          {file.content === null ? <BinaryPreview key={current.version} file={file} version={current.version} /> : <RevisionContentLoader
             key={current.version}
             fileId={fileId}
             revision={current}
             previous={previous}
             head={head}
             file={file}
-          />
+          />}
         </div>
       )}
     </div>

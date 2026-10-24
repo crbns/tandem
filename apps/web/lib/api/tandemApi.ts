@@ -39,6 +39,9 @@ export interface TandemApi {
     workspaceId: string,
     input: CreateFileInput,
   ): Promise<{ id: string; version: number }>;
+  /** Pending finalization may still commit later; it is not a failed upload. */
+  uploadFile(workspaceId: string, file: File, options?: { fileId: string; expectedVersion: number }): Promise<{ id: string; version: number; pending?: false } | { pending: true }>;
+  getFileBlob(fileId: string, version?: number): Promise<Blob>;
   readFile(fileId: string): Promise<FileDetail>;
   /** Rejects with VERSION_CONFLICT when `expectedVersion` isn't the head. */
   updateFileContent(

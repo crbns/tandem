@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./convex/lib/binaries.js": "./convex/lib/binaries.ts",
     "./convex/*": "./convex/*"
   },
   "scripts": {
