@@ -6,7 +6,14 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { randomSecret } from "./lib/mcpConfig";
-import { DEMO_GOAL, DEMO_SCOPE, DEMO_WORKSPACE_NAME } from "./seed";
+import {
+  DEMO_CONSTRAINT,
+  DEMO_DECISION,
+  DEMO_GOAL,
+  DEMO_OPEN_QUESTION,
+  DEMO_SCOPE,
+  DEMO_WORKSPACE_NAME,
+} from "./seed";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -91,7 +98,12 @@ describe("seed:rebuildDemoWorkspace", () => {
     const approvals = await as("alex").query(api.context.getApprovals, {
       workspaceId: demo.workspaceId,
     });
-    expect(approvals.map((p) => [p.field, p.status]).sort()).toEqual([
+    expect(
+      approvals
+        .filter((p) => p.field === "goal" || p.field === "scope")
+        .map((p) => [p.field, p.status])
+        .sort(),
+    ).toEqual([
       ["goal", "approved"],
       ["scope", "approved"],
     ]);
@@ -100,9 +112,9 @@ describe("seed:rebuildDemoWorkspace", () => {
       workspaceId: demo.workspaceId,
       paginationOpts: { numItems: 10, cursor: null },
     });
-    expect(files.page.map((f) => [f.name, f.version, f.updatedBy.label])).toEqual([
-      ["brief.md", 1, "Alex"],
-    ]);
+    expect(
+      files.page.filter((f) => f.name === "brief.md").map((f) => [f.version, f.updatedBy.label]),
+    ).toEqual([[1, "Alex"]]);
 
     for (const member of demo.members) {
       expect(member.token).toMatch(/^mcp_sk_/);
@@ -114,6 +126,49 @@ describe("seed:rebuildDemoWorkspace", () => {
         workspaces: [{ id: demo.workspaceId, is_default: true }],
       });
     }
+  });
+
+  it("seeds the story: folders, history, context, tasks and one pending agent proposal", async () => {
+    const { t, rebuild, as } = await setup();
+    const demo = await rebuild();
+
+    const files = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("files")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", demo.workspaceId)).collect();
+      return Promise.all(rows.map(async (f) => {
+        const folder = f.parentId ? await ctx.db.get(f.parentId) : null;
+        return [`${folder ? `${folder.name}/` : ""}${f.name}`, f.version, f.updatedBy.label];
+      }));
+    });
+    expect(files.sort()).toEqual([
+      ["brief.md", 1, "Alex"],
+      ["requirements/setup-checklist.md", 1, "Blake"],
+      ["research/interview-notes.md", 2, "Blake"],
+      ["research/support-tickets.md", 1, "Casey"],
+    ]);
+    // proposal.md is created live in the demo.
+    expect(files.some(([name]) => String(name).includes("proposal"))).toBe(false);
+
+    const context = await as("alex").query(api.workspaces.getWorkspaceContext, {
+      workspaceId: demo.workspaceId,
+    });
+    expect(context?.decisions.map((d) => d.text)).toEqual([DEMO_DECISION]);
+    expect(context?.constraints.map((c) => c.text)).toEqual([DEMO_CONSTRAINT]);
+    expect(context?.openQuestions.map((q) => q.text)).toEqual([DEMO_OPEN_QUESTION]);
+    expect(context?.ownership).toHaveLength(1);
+
+    const tasks = await as("blake").query(api.tasks.listTasks, { workspaceId: demo.workspaceId });
+    expect(tasks.map((task) => task.status).sort()).toEqual(["done", "in_progress", "open"]);
+
+    const approvals = await as("alex").query(api.context.getApprovals, {
+      workspaceId: demo.workspaceId,
+    });
+    const pending = approvals.filter((p) => p.status === "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      field: "decision",
+      createdBy: { type: "agent", label: "Casey's Gemini", userName: "Casey" },
+    });
   });
 
   it("a rebuild replaces only the demo workspace and revokes its old tokens", async () => {

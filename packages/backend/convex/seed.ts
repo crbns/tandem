@@ -1,7 +1,9 @@
 // Demo seed (issue #22). One internal entry point rebuilds the demo from
 // scratch: Alex (owner), Blake and Casey (members) as Password users, one
-// workspace with brief.md v1 and an approved goal and scope, and one agent
-// connection per member. proposal.md is left out: Claude creates it live.
+// workspace with brief.md v1, an approved goal and scope, research and
+// requirements files, working context, three tasks, one pending proposal from
+// Casey's Gemini, and one agent connection per member. proposal.md is left
+// out: Claude creates it live.
 //
 //   npx convex run seed:resetDemo '{}'      (or scripts/demo-reset.mjs)
 //
@@ -27,7 +29,7 @@ import {
 } from "./_generated/server";
 import { MIN_PASSWORD_LENGTH } from "./auth";
 import { decideProposalCore } from "./context";
-import { revokeConnectionCredentials } from "./lib/agent";
+import { agentActor, revokeConnectionCredentials } from "./lib/agent";
 import {
   ALL_MCP_SCOPES,
   API_KEY_PATTERN,
@@ -36,7 +38,15 @@ import {
   sha256Hex,
 } from "./lib/mcpConfig";
 import { type Actor, humanActor, recordWorkspaceEvent } from "./lib/auth";
-import { createDocumentCore, proposeContextChangeCore } from "./lib/ops";
+import { ensureFolderPathCore } from "./lib/fs";
+import {
+  claimTaskCore,
+  completeTaskCore,
+  createDocumentCore,
+  createTaskCore,
+  proposeContextChangeCore,
+  updateDocumentCore,
+} from "./lib/ops";
 
 export const DEMO_WORKSPACE_NAME = "Onboarding refresh";
 
@@ -112,6 +122,73 @@ ${DEMO_GOAL}
 ## Next step
 
 Draft proposal.md: milestones, owners, and how we measure success.
+`;
+
+export const DEMO_DECISION =
+  'First value means "first project created", not "first teammate invited".';
+export const DEMO_CONSTRAINT = "Launch before the January 15 billing cycle.";
+export const DEMO_OPEN_QUESTION =
+  "Do the how-to guides live in the app or in the existing help center?";
+/** Casey's Gemini proposes this; it contradicts the approved scope on purpose. */
+export const DEMO_PENDING_DECISION =
+  "Move the three how-to guides to a new help-center platform before launch.";
+
+const DEMO_SUPPORT_TICKETS = `# Support tickets: first 30 days
+
+Pulled by Casey from the last quarter's new accounts (412 tickets).
+
+## Top setup questions
+
+1. How do I invite my team? (31%)
+2. Where do I create my first project? (22%)
+3. Why can't I see my teammate's work? (14%)
+4. How do I connect my calendar? (9%)
+
+## Notes
+
+- Most tickets arrive on day 2 or 3, after the welcome email.
+- Customers who invite a teammate in week one file half as many tickets.
+`;
+
+const DEMO_INTERVIEW_NOTES_V1 = `# Customer interview notes
+
+Five interviews with accounts that signed up last month.
+
+## What slowed them down
+
+- The checklist hides behind the profile menu.
+- Nobody read the second welcome email.
+`;
+
+const DEMO_INTERVIEW_NOTES_V2 = `# Customer interview notes
+
+Six interviews with accounts that signed up last month.
+
+## What slowed them down
+
+- The checklist hides behind the profile menu.
+- Nobody read the second welcome email.
+- Two teams didn't know a project could be shared until a teammate asked.
+
+## Quotes
+
+- "I created a project on day one and then waited a week for my team."
+`;
+
+const DEMO_SETUP_CHECKLIST = `# Requirements: in-app setup checklist
+
+Owner: Blake. Uses the existing checklist component; no new engineering.
+
+## Steps
+
+1. Create your first project.
+2. Invite one teammate.
+3. Connect one tool (calendar or Slack).
+
+## Done when
+
+- The checklist shows on first sign-in, not behind the profile menu.
+- Each step links to its how-to guide.
 `;
 
 const SEED_ACTOR: Actor = { type: "system", label: "Demo seed" };
@@ -374,6 +451,7 @@ export const rebuildDemoWorkspace = internalMutation({
         token,
       });
     }
+    await seedStory(ctx, workspaceId, brief._id, cast, members);
     return {
       workspaceId,
       mcpUrl: mcpResource(),
@@ -383,6 +461,81 @@ export const rebuildDemoWorkspace = internalMutation({
     };
   },
 });
+
+/**
+ * Everything after the approved goal and scope: research and requirements in
+ * folders (one file with history to diff), a decision, an owner, a
+ * constraint, an open question, three tasks in each state, and one pending
+ * decision from Casey's Gemini that conflicts with the approved scope.
+ */
+async function seedStory(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  briefId: Id<"files">,
+  cast: { person: (typeof DEMO_PEOPLE)[number]; user: Doc<"users"> }[],
+  members: { key: string; connectionId: Id<"agent_connections"> }[],
+) {
+  const user = (key: string) => cast.find((c) => c.person.key === key)!.user;
+  const alex = user("alex");
+  const blake = humanActor(user("blake"));
+  const casey = humanActor(user("casey"));
+  const owner = humanActor(alex);
+
+  const research = await ensureFolderPathCore(ctx, { workspaceId, path: "research", actor: casey });
+  const requirements = await ensureFolderPathCore(ctx, { workspaceId, path: "requirements", actor: blake });
+  const tickets = await createDocumentCore(ctx, {
+    workspaceId, parentId: research.folder._id, name: "support-tickets.md",
+    mimeType: "text/markdown", content: DEMO_SUPPORT_TICKETS, actor: casey,
+  });
+  const notes = await createDocumentCore(ctx, {
+    workspaceId, parentId: research.folder._id, name: "interview-notes.md",
+    mimeType: "text/markdown", content: DEMO_INTERVIEW_NOTES_V1, actor: blake,
+  });
+  await updateDocumentCore(ctx, {
+    file: notes, content: DEMO_INTERVIEW_NOTES_V2, expectedVersion: 1, actor: blake,
+  });
+  await createDocumentCore(ctx, {
+    workspaceId, parentId: requirements.folder._id, name: "setup-checklist.md",
+    mimeType: "text/markdown", content: DEMO_SETUP_CHECKLIST, actor: blake,
+  });
+
+  const approved = [
+    { field: "decision", proposedValue: DEMO_DECISION, sourceFileIds: [tickets._id] },
+    { field: "ownership", proposedValue: "Welcome email sequence", ownerUserId: user("blake")._id, sourceFileIds: [briefId] },
+    { field: "constraint", proposedValue: DEMO_CONSTRAINT, sourceFileIds: [briefId] },
+    { field: "open_question", proposedValue: DEMO_OPEN_QUESTION, sourceFileIds: [briefId] },
+  ] as const;
+  for (const change of approved) {
+    const proposal = await proposeContextChangeCore(ctx, {
+      workspaceId, ...change, rationale: "Agreed in the kickoff.", actor: owner,
+    });
+    if (proposal.status === "pending") await decideProposalCore(ctx, proposal, "approved", alex);
+  }
+
+  const emails = await createTaskCore(ctx, {
+    workspaceId, title: "Draft the welcome email sequence",
+    description: "Three emails over the first week, each pointing at one checklist step.", actor: owner,
+  });
+  await claimTaskCore(ctx, { task: emails, expectedVersion: emails.version, userId: user("blake")._id, actor: blake });
+  await createTaskCore(ctx, {
+    workspaceId, title: "Write the three how-to guides",
+    description: "Invite your team, create a project, connect your tools.", actor: owner,
+  });
+  const pull = await createTaskCore(ctx, {
+    workspaceId, title: "Pull the top setup questions from support",
+    description: "Summarize in research/support-tickets.md.", actor: owner,
+  });
+  const claimed = await claimTaskCore(ctx, { task: pull, expectedVersion: pull.version, userId: user("casey")._id, actor: casey });
+  await completeTaskCore(ctx, { task: claimed, expectedVersion: claimed.version, userId: user("casey")._id, actor: casey });
+
+  const caseyConnection = await ctx.db.get(members.find((m) => m.key === "casey")!.connectionId);
+  if (!caseyConnection) throw new ConvexError({ code: "INVALID_INPUT" });
+  await proposeContextChangeCore(ctx, {
+    workspaceId, field: "decision", proposedValue: DEMO_PENDING_DECISION,
+    rationale: "Support tickets cluster around guides customers can't find.",
+    sourceFileIds: [tickets._id], actor: agentActor(caseyConnection, user("casey")),
+  });
+}
 
 async function upsertPasswordUser(
   ctx: ActionCtx,
