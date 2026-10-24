@@ -1,4 +1,4 @@
-# Web dashboard service for the Vultr Docker Compose stack.
+# Optional self-hosted web dashboard service; production uses Vercel.
 # There is no root compose file yet: merge this `web` service into it when one
 # exists. Paths below are relative to THIS file (apps/web/deploy/), so the build
 # context `../../..` is the repo root, which the Dockerfile needs for `turbo prune`.

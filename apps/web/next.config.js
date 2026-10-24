@@ -25,7 +25,7 @@ const nextConfig = {
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
-  // Self-contained server bundle for the Docker image deployed to Vultr.
+  // Self-contained server bundle for the optional Docker image.
   output: "standalone",
   outputFileTracingRoot: repoRoot,
   turbopack: { root: repoRoot },

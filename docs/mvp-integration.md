@@ -11,7 +11,7 @@ This document describes the integration boundary between the dashboard, MCP serv
 | Mock MCP (`apps/mcp`)               | Stateless Streamable HTTP over `MockBackend` (dev tokens), for the skill eval only                     | No, in-memory                                                                        |
 | Backend (`packages/backend/convex`) | Workspace membership, files, revisions, workspace context, proposals, approvals                        | Dashboard functions are authenticated; MCP tools call internal functions with the component-verified principal |
 
-The dashboard supports sign-in, workspace selection and first-workspace creation, file listing and creation, text editing with optimistic version checks, revision history, and the approved goal. It uses bounded one-shot Convex calls through `TandemApi`; file lists refresh on window focus. The MCP server exposes the full tool surface in AGENTS.md.
+The dashboard supports sign-in, workspace selection and first-workspace creation, file listing and creation, text editing with optimistic version checks, revision history, and the approved goal. It uses bounded one-shot Convex calls through `TandemApi` and a reactive `getWorkspaceInfo` subscription that refreshes lists after workspace events. Lists also refresh on window focus. The MCP server exposes the full tool surface in AGENTS.md.
 
 ## Shared data and naming
 
@@ -33,7 +33,7 @@ Convex is the source of truth. Use the backend functions under `packages/backend
 | File history             | `api.files.getFileVersions`          | Bounded by `limit` (maximum 100)                                                       |
 | Propose context change   | `api.context.proposeContextChange`   | Goal, scope, decisions, constraints, ownership, or open question; approval is separate. Ownership takes `ownerUserId` (a current member, re-checked on approval) with the area as `proposedValue` |
 | Read proposals/approvals | `api.context.getApprovals`           | Returns proposals, optionally filtered by status                                       |
-| Approve/reject proposal  | `api.context.decideContextProposal`  | Human-only workflow; check backend role enforcement before exposing in UI              |
+| Approve/reject proposal  | `api.context.decideContextProposal`  | Human owner/admin only; enforced in backend and exposed in the approvals UI              |
 
 Convex uses camelCase fields and table IDs. The MCP tool contract uses snake_case (`workspace_id`, `file_id`, `expected_version`, `updated_at`, `updated_by`). Keep that translation in `convex/lib/mcpContract.ts`; don't change public tool argument names independently. A version conflict must surface as MCP error code `VERSION_CONFLICT`, preserving the current and expected versions so the assistant can reread and reconcile.
 
@@ -47,7 +47,25 @@ Every MCP credential acts for one `agent_connections` row: the component's grant
 
 Each tool calls exactly one internal mutation in `convex/mcpTools.ts`, which checks the connection, membership and (for writes) the `tandem:write` scope, then writes with `{ type: "agent", userId, agentConnectionId, client, label }` attribution through the same core helpers as the dashboard (`convex/lib/ops.ts`). There is no agent function for deciding proposals, and `decideContextProposal` rejects agent-bound identities itself. `workspace_events` carry a per-workspace `seq` assigned in the writing transaction; `syncWorkspace` pages by it. `createDocument` (dashboard and MCP) rejects a duplicate name in the same folder (`nameKey`: trimmed, case-folded) with `NAME_EXISTS`, and `updateDocument` returns `VERSION_CONFLICT` with `currentVersion`/`expectedVersion` for any mismatch. Local setup: [`docs/local-dev.md`](local-dev.md). Design and decisions: [`docs/mcp-auth-design.md`](mcp-auth-design.md).
 
+## Required before MCP can use shared Convex data
+
+These integration prerequisites are implemented. `apps/mcp` is not a deployment adapter; the Convex HTTP endpoint uses internal mutations directly.
+
+| Prerequisite | Code evidence |
+|---|---|
+| Trusted workspace-scoped identity and presence | `lib/agent.ts`, `mcpTools.ts`: component-verified connection, membership, `lastMcpActionAt` / `lastSyncAt` |
+| Shared document writes and attribution | `lib/ops.ts`: dashboard and MCP use the same core helpers; writes include the agent actor |
+| Ordered incremental sync | `lib/auth.ts`, `lib/ops.ts`, `mcpTools.ts`: transactional event sequences and per-connection `sync_cursors` |
+| Context model and approvals | `lib/mcpContract.ts`, `context.ts`: singular backend fields mapped to public names, stable entry IDs, human-only approval and stale checks |
+| Publish and workspace discovery | `mcpTools.ts`, `schema.ts`: `published_work`, `work.published` events, member count and one connection-bound default workspace |
+| Errors, history and binary reads | `lib/mcpContract.ts`, `mcpTools.ts`: coded errors; history metadata and UTF-8 sizes; binaries return a dashboard-view message |
+| Dashboard mapping and UI | `apps/web/lib/api/convex.ts`, approvals and assistants routes: actor names/clients, proposals and connection management |
+
 ## Still open
 
-1. **Live claude.ai check.** The demo runs on the Convex dev deployment (`/mcp` at `https://<dev>.convex.site/mcp`) with the dashboard on Vercel; connect a claude.ai custom connector there once this branch is deployed to both. Until then, the OAuth flow is verified by `convex/agent.test.ts` and step 10 of the e2e test, not by claude.ai itself.
-2. **Human approval stays explicit.** Agents may propose goal, scope, major decision, or ownership changes. Only a permitted human may approve or reject them. Ordinary published findings must not silently mutate those fields.
+- Native-client verification is separate from code coverage. This cleanup did not connect claude.ai, ChatGPT or Gemini. See the Phase D client reports for measured results.
+- Search inspects the newest 200 files plus bounded filename-index hits. It does not guarantee substring matches across every older file's content (`searchFilesCore`).
+- The skill eval starts a fresh mock process per trial; it has no external MCP URL/key mode or isolated live seed setup (`skills/tandem/eval/run.mjs`).
+- Optional decision notes are not stored by `decideContextProposal`; its arguments are `proposalId` and `decision`.
+
+Agents may propose goal, scope, major decision or ownership changes. Only a permitted human may approve them. Published findings do not directly replace approved context.

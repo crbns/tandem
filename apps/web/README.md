@@ -3,7 +3,7 @@
 Next.js (App Router) dashboard where people sign in, browse workspace files, edit Markdown/text with version-aware saves, and read revision history. It talks to Convex directly through one-shot queries and mutations, plus one small reactive subscription that tells lists to refetch when something lands in the workspace. The same Convex functions back the MCP server, so permission checks, `expectedVersion` locking, and revision inserts live in the backend, not here.
 
 - Gate status: [`STATUS.md`](STATUS.md)
-- Backend contract and requests for Person 2: [`CONTRACT_NOTES.md`](CONTRACT_NOTES.md)
+- Backend contract: [`CONTRACT_NOTES.md`](CONTRACT_NOTES.md)
 
 ## Run locally
 
@@ -31,13 +31,14 @@ NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=      # optional
 NEXT_PUBLIC_USE_MOCKS=false
 ```
 
-Sign in with a user Person 2 seeded. Convex Auth secrets (`JWT_PRIVATE_KEY`, `JWKS`, `SITE_URL`) live in the Convex deployment's env, not here.
+Sign in with an existing account or create one. Convex Auth secrets (`JWT_PRIVATE_KEY`, `JWKS`, `SITE_URL`) live in the Convex deployment's env, not here.
 
 ## Environment
 
 | Variable | Required | Notes |
 |---|---|---|
 | `NEXT_PUBLIC_CONVEX_URL` | real mode | Inlined at **build** time |
+| `NEXT_PUBLIC_CONVEX_SITE_URL` | no | Override HTTP actions origin for local binary previews |
 | `NEXT_PUBLIC_DEFAULT_WORKSPACE_ID` | no | Skip workspace lookup after sign-in |
 | `NEXT_PUBLIC_USE_MOCKS` | no | `true` = in-memory backend + fake session. Forced to `false` in the Docker image |
 
@@ -58,27 +59,13 @@ proxy.ts                 Convex Auth route protection (Next 16's name for middle
 lib/api/                 TandemApi interface, Convex + mock adapters, error normalization
 lib/editor/saveMachine   pure save/conflict reducer: never discards a draft, never auto-retries
 components/              shell, file table, editor, conflict panel, history, approvals, assistant connections
-deploy/                  compose + Caddy snippets for Vultr
+deploy/                  optional container self-hosting examples
 ```
 
-## Deploy to Vultr
+## Deployment
 
-The image builds from the **repo root** (it runs `turbo prune web --docker`). `NEXT_PUBLIC_*` values are baked in at build time, so rebuild after changing them.
+Vercel hosts the dashboard. Use `apps/web` as the project root and set `NEXT_PUBLIC_CONVEX_URL` to the Convex Cloud deployment URL. Set `NEXT_PUBLIC_USE_MOCKS=false`. Public env values are embedded at build time; rebuild after changing them.
 
-Local build check:
+Convex Cloud hosts the backend and `/mcp` endpoint. Set the deployment's `SITE_URL` to the dashboard origin. The MCP OAuth consent page lives at `/oauth/consent` on that dashboard. See [local setup](../../docs/local-dev.md) and [demo seed instructions](../../docs/demo-seed.md).
 
-```bash
-docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud -t tandem-web .
-```
-
-There's no root `docker-compose.yml` or `Caddyfile` yet. `deploy/compose.web.yml` and `deploy/Caddyfile.web` hold the `web` service and site block: merge them into the root files when they exist. Until then, use the snippet directly.
-
-On the Vultr instance (run these yourself):
-
-1. SSH in and `cd` to the checkout, then `git pull`.
-2. Put `NEXT_PUBLIC_CONVEX_URL` (production Convex URL) and optionally `NEXT_PUBLIC_DEFAULT_WORKSPACE_ID` in the root `.env`.
-3. `docker compose up -d --build web`. Until the root compose file exists, use `docker compose -f apps/web/deploy/compose.web.yml --env-file .env up -d --build web` from the repo root. The container healthcheck hits `/api/health`, which doesn't depend on Convex.
-4. Add a DNS A record for the web domain (e.g. `app.<domain>`) pointing at the instance IP, and set `WEB_DOMAIN` for Caddy.
-5. Ask Person 2 to confirm Convex Auth's `SITE_URL` in the Convex deployment env matches the production web URL (`https://app.<domain>`).
-
-Seed/reset of demo data is owned by Person 2 (`packages/backend`). Their reset instructions will be linked here once they exist.
+`Dockerfile` and `deploy/` are optional container examples, separate from the Vercel deployment. Their build has not been verified in this cleanup.

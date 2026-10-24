@@ -26,7 +26,7 @@ All arguments use camelCase; timestamps are epoch milliseconds; Record IDs are C
 | `proposeContextChange(workspaceId, input)` | `context:proposeContextChange` | `{ workspaceId, field, proposedValue?, rationale, sourceFileIds, operation?, entryId?, supersedes?, expectedVersion?, ownerUserId? }` → `{ id, status: "pending" \| "applied" }` |
 | `listProposals(workspaceId, status?)` | `context:getApprovals` | `{ workspaceId, status? }` → newest 100 proposals; any member |
 | `decideProposal(proposal, decision)` | `context:decideContextProposal` (+ `context:getApprovals` with `status: "stale"` after an approval) | `{ proposalId, decision }` → null |
-| `createAgentConnection(workspaceId, input)` | `agentConnections:createAgentConnection` | `{ workspaceId, client, displayName? }` → `{ connectionId, token, createdAt }` |
+| `createAgentConnection(workspaceId, input)` | `agentConnections:createAgentConnection` | `{ workspaceId, client, displayName? }` → `{ connectionId, token, createdAt, mcpUrl }` |
 | `listAgentConnections(workspaceId)` | `agentConnections:listAgentConnections` | `{ workspaceId }` → caller's own; owner/admin see all. Never a token or hash |
 | `revokeAgentConnection(connectionId)` | `agentConnections:revokeAgentConnection` | `{ connectionId }` → null; the connection's person or an owner/admin |
 | `watchWorkspace(workspaceId, onChange)` | `workspaces:getWorkspaceInfo` (reactive `watchQuery`) | fires `onChange` when the newest of `recentEvents` changes |
@@ -46,6 +46,7 @@ The identity plate (`components/common/ActorBadge.tsx`) renders an agent write a
 ## Approvals
 
 - Every member can read proposals; only owner/admin humans see Approve/Reject (`lib/proposals.ts` `canDecideProposals`). The backend enforces this independently: `decideContextProposal` calls `requireHumanSession` (agent-bound identities get `APPROVAL_REQUIRED`) and rejects non-owner/admin members with `FORBIDDEN`.
+- **Revision checks.** Proposals store `contextRevision`. Approval rejects missing revision metadata as stale; legacy goal/scope proposals without `baseValue` compare the current revision. New goal/scope proposals compare the field value, so unrelated context edits do not invalidate them (`convex/context.ts`, `decideProposalCore`).
 - **Stale approvals.** Goal/scope proposals record the value they were based on. When that field changed since, the backend marks the proposal `stale` and returns `null` instead of throwing. The adapter therefore re-reads `getApprovals({ status: "stale" })` after an approval and rejects with `VERSION_CONFLICT` if the proposal is there; the approvals screen shows it as contested (ochre) with an explanation. If the backend later throws `VERSION_CONFLICT` or `PROPOSAL_STALE` directly, that maps to the same code and the extra read becomes a no-op. A decision proposal with `supersedes` also becomes stale when its target is no longer active.
 - `PROPOSAL_ALREADY_DECIDED` and `PROPOSAL_NOT_FOUND` map to the dashboard's `PROPOSAL_DECIDED` ("Already decided").
 

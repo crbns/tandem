@@ -1,6 +1,6 @@
 # Web dashboard: gate status
 
-Person 3's checklist from the build brief. `PASS` = verified in this repo; `PENDING (live)` = blocked on Person 2's Convex functions.
+Person 3's checklist from the build brief. `PASS` = verified in this repo; `PENDING (live)` = a live check still needs recorded evidence; backend functions already exist.
 
 > **Backend state (Oct 24):** `packages/backend/convex` ships files, workspaces/invites, context proposals/approvals and `agentConnections`, all with Convex Auth and coded `ConvexError`s. The dashboard's Convex adapter calls every one of them through `TandemApi` (see `CONTRACT_NOTES.md`); mock mode implements the same interface. Rows below marked PASS (mock / unit) were verified against the mock and adapter unit tests; live-deployment checks still need a seeded Convex deployment.
 
@@ -10,7 +10,7 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 |---|---|---|
 | Dev server runs; `/` redirects signed-in and signed-out (mock) | PASS | `/` → `/sign-in` signed out; → `/w/<id>` signed in |
 | Sign-in/out in mock mode | PASS | bad password shows "Email or password is incorrect."; sign-out returns to `/sign-in`; `/w/*` signed out → `/sign-in?next=…` |
-| Real-mode providers + proxy compile | PASS (typecheck) | Functional check is `PENDING (live)`: no Convex Auth config yet |
+| Real-mode providers + proxy compile | PASS (typecheck) | Convex Auth config exists (`convex/auth.ts`, `auth.config.ts`); browser sign-in still needs live evidence |
 | Typecheck + lint | PASS | |
 
 ## Gate 2: API layer + mock adapter
@@ -20,7 +20,7 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | Tests pass | PASS | `pnpm --filter web test`: errors + mock API suites |
 | Function mapping in `CONTRACT_NOTES.md` | PASS | rewritten Oct 24 to match the generated API (issue #12) |
 | Convex adapter mapping (fixtures typed from generated API) | PASS | `convexAdapter.test.ts`, `approvalsAndConnections.test.ts` |
-| Convex adapter against a live deployment | PENDING (live) | needs a seeded deployment + `.env.local` |
+| Convex adapter against a live deployment | PENDING (live) | Adapter exists; live verification needs a seeded deployment + `.env.local` |
 
 ## Gate 3: file list
 
@@ -84,8 +84,8 @@ The backend functions exist; these need a seeded deployment (dev `NEXT_PUBLIC_CO
 | Check | Status | Notes |
 |---|---|---|
 | Production build passes | PASS | `next build` in real mode (placeholder Convex URL) and mock mode; standalone server at `.next/standalone/apps/web/server.js` |
-| Docker image builds | SKIPPED | Docker isn't installed on this machine. Run the `docker build` command in `README.md` on a machine that has it |
-| Compose + Caddy snippets, README deploy steps | PASS | `deploy/compose.web.yml`, `deploy/Caddyfile.web` (no root compose/Caddyfile exist yet) |
+| Docker image builds | SKIPPED | Docker isn't installed on this machine. Optional self-hosted artifact; Vercel is the dashboard host |
+| Hosting documentation | DONE (code review) | Vercel for web; Convex Cloud for backend + MCP. `deploy/` contains optional container examples |
 | Friendly copy for every error code | PASS | `lib/api/errorCopy.ts` |
 | Dev mock controls hidden in production | PASS | the image forces `NEXT_PUBLIC_USE_MOCKS=false`; controls only render when the mock API is mounted |
 | Seed-reset instructions link | PASS | `pnpm demo:reset`: [docs/demo-seed.md](../../docs/demo-seed.md). `pnpm test:demo` runs the P0 slice on the seeded workspace (6/6 on a local deployment) |
