@@ -4,6 +4,7 @@ import {
   nextjsMiddlewareRedirect,
 } from "@convex-dev/auth/nextjs/server";
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
+import { safeNext } from "./lib/safeNext";
 
 const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 
@@ -15,8 +16,13 @@ let authProxy: ReturnType<typeof convexAuthNextjsMiddleware> | null = null;
 function getAuthProxy() {
   authProxy ??= convexAuthNextjsMiddleware(async (request, { convexAuth }) => {
     const signedIn = await convexAuth.isAuthenticated();
-    if (isSignInPage(request) && signedIn) {
-      return nextjsMiddlewareRedirect(request, "/");
+    // GET only: right after sign-in/sign-up, Convex Auth's cache-invalidation
+    // server action POSTs to /sign-in; redirecting that POST makes the client
+    // land on the wrong page. The page itself then replaces to ?next=.
+    if (isSignInPage(request) && signedIn && request.method === "GET") {
+      // Honor ?next= (e.g. an invite link or a deep link).
+      const next = safeNext(request.nextUrl.searchParams.get("next"), request.nextUrl.origin);
+      return nextjsMiddlewareRedirect(request, next);
     }
     if (isProtectedRoute(request) && !signedIn) {
       const next = encodeURIComponent(request.nextUrl.pathname);
