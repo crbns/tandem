@@ -2,12 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { FileSummary } from "@/lib/api/types";
+import { FolderIcon } from "lucide-react";
+import type { FileSummary, FolderSummary } from "@/lib/api/types";
 import { displayId } from "@/lib/files";
+import { folderHref } from "@/lib/folders";
 import { formatAbsolute, formatRelative } from "@/lib/time";
 import { useNow } from "@/lib/useNow";
 import { ActorBadge } from "@/components/common/ActorBadge";
 import { FileActions } from "./FileActions";
+import { FolderActions } from "./FolderActions";
 import { CustodyStrip } from "@/components/files/CustodyStrip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -32,6 +35,8 @@ function Header() {
 
 interface FileTableProps {
   workspaceId: string;
+  /** Shown first; a click (or Enter) opens the folder. */
+  folders?: FolderSummary[];
   files: FileSummary[];
   selectedId?: string;
   onSelect?: (fileId: string) => void;
@@ -39,10 +44,11 @@ interface FileTableProps {
 }
 
 /**
- * The file register. Selecting a row (click or focus) shows its custody record;
- * the name link, a double click, or Enter opens the file.
+ * The file register. Folder rows come first and open on click. Selecting a file
+ * row (click or focus) shows its custody record; the name link, a double click,
+ * or Enter opens the file.
  */
-export function FileTable({ workspaceId, files, selectedId, onSelect, onChanged }: FileTableProps) {
+export function FileTable({ workspaceId, folders = [], files, selectedId, onSelect, onChanged }: FileTableProps) {
   const router = useRouter();
   const now = useNow();
 
@@ -50,6 +56,43 @@ export function FileTable({ workspaceId, files, selectedId, onSelect, onChanged 
     <Table>
       <Header />
       <TableBody>
+        {folders.map((folder) => {
+          const href = folderHref(workspaceId, folder.id);
+          return (
+            <TableRow
+              key={folder.id}
+              tabIndex={0}
+              className="cursor-pointer outline-none focus-visible:bg-accent"
+              onClick={() => router.push(href)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && e.target === e.currentTarget) router.push(href);
+              }}
+            >
+              <TableCell className="label-caps hidden text-muted-foreground xl:table-cell">Folder</TableCell>
+              <TableCell className="w-full min-w-40 max-w-0">
+                <Link
+                  href={href}
+                  className="flex items-center gap-2 font-semibold hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <FolderIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="truncate">{folder.name}</span>
+                </Link>
+                <span className="mt-1 flex items-center gap-3 text-xs md:hidden">
+                  <ActorBadge actor={folder.updatedBy} />
+                </span>
+              </TableCell>
+              <TableCell className="hidden sm:table-cell" />
+              <TableCell className="hidden md:table-cell">
+                <ActorBadge actor={folder.updatedBy} />
+              </TableCell>
+              <TableCell className="text-right text-muted-foreground" title={formatAbsolute(folder.updatedAt)}>
+                {formatRelative(folder.updatedAt, now)}
+              </TableCell>
+              <TableCell><FolderActions folder={folder} onChanged={onChanged} /></TableCell>
+            </TableRow>
+          );
+        })}
         {files.map((file) => {
           const href = fileHref(workspaceId, file.id);
           const selected = file.id === selectedId;

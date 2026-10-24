@@ -7,6 +7,7 @@ import { HistoryIcon } from "lucide-react";
 import { TandemApiError, useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
 import { belongsToWorkspace, isTextMimeType } from "@/lib/files";
+import { folderTrail } from "@/lib/folders";
 import { BinaryPreview } from "@/components/files/BinaryPreview";
 import { useWorkspaceRefresh } from "@/lib/api/useWorkspace";
 import { FileEditor } from "@/components/editor/FileEditor";
@@ -27,6 +28,14 @@ export default function FilePage() {
   const { resource, refreshing, reload } = useResource(load);
   useWorkspaceRefresh(workspaceId, reload);
   const fileHref = `/w/${workspaceId}/files/${fileId}`;
+  // The folder trail for the breadcrumbs; refetched when the file moves.
+  const parentId = resource.status === "ready" ? resource.data.parentId : null;
+  const loadTrail = useCallback(
+    async () => (parentId ? folderTrail(await api.listDirectory(workspaceId, parentId)) : []),
+    [api, workspaceId, parentId],
+  );
+  const { resource: trail, reload: reloadTrail } = useResource(loadTrail);
+  useWorkspaceRefresh(workspaceId, reloadTrail);
 
   if (resource.status === "loading") {
     return (
@@ -49,7 +58,13 @@ export default function FilePage() {
   const file = resource.data;
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4">
-      <FileHeader workspaceId={workspaceId} fileId={file.id} name={file.name} mimeType={file.mimeType} />
+      <FileHeader
+        workspaceId={workspaceId}
+        fileId={file.id}
+        name={file.name}
+        mimeType={file.mimeType}
+        folders={trail.status === "ready" ? trail.data : []}
+      />
       <FileActions file={file} onChanged={reload} redirectAfterDelete />
       {isTextMimeType(file.mimeType) && file.content !== null ? (
         // Keyed by id so a different file always starts a fresh save machine.

@@ -1,14 +1,14 @@
 # Tandem MCP mock server (eval harness)
 
-> **Not the real MCP server.** Tandem's MCP server is `@convex-dev/mcp` in the Convex deployment, at `https://<deployment>.convex.site/mcp`, with OAuth and API keys (`packages/backend/convex/mcp.ts`, setup in [`docs/local-dev.md`](../../docs/local-dev.md)). This package is an in-memory mock with the same 11 tools, used by the skill eval (`skills/tandem/eval`) and for local tool experiments. It never talks to Convex and never deploys.
+> **Not the real MCP server.** Tandem's MCP server is `@convex-dev/mcp` in the Convex deployment, at `https://<deployment>.convex.site/mcp`, with OAuth and API keys (`packages/backend/convex/mcp.ts`, setup in [`docs/local-dev.md`](../../docs/local-dev.md)). This package is an in-memory mock with the same 14 tools, used by the skill eval (`skills/tandem/eval`) and for local tool experiments. It never talks to Convex and never deploys.
 
 Stateless Streamable HTTP server over `MockBackend`.
 
 Tools:
 
-- Read: `get_workspace_info` (caller identity, workspaces, roles, the default workspace's `members` as `{ user_id, name, role }` for ownership proposals, and this connection's `last_synced_at` / `last_action_at`), `list_files`, `search_files` (name/content match with snippets), `read_file`, `get_file_versions` (revision history with authors, no content), `get_approvals` (context proposals by status, newest first)
+- Read: `get_workspace_info` (caller identity, workspaces, roles, the default workspace's `members` as `{ user_id, name, role }` for ownership proposals, and this connection's `last_synced_at` / `last_action_at`), `list_files` (a folder's folders and files, or a flattened subtree with `recursive`; every entry has a `path`), `search_files` (name/content match with snippets), `read_file` (by `file_id` or `path`), `get_file_versions` (revision history with authors, no content), `get_approvals` (context proposals by status, newest first)
 - Sync: `sync_workspace` (approved context, pending proposal summaries, changed files, events, and an opaque `cursor`; pass it back as `since` for incremental syncs). It only records the last sync time.
-- Write: `create_document`, `update_document` (optimistic versioning via `expected_version`), `propose_context_change` (creates a pending proposal, never changes context), `publish_work` (records an authorized deliverable or finding)
+- Write: `create_document` (in a folder via `parent_id` or `folder_path`), `update_document` (optimistic versioning via `expected_version`), `create_folder` (idempotent `mkdir -p`), `move_file` (versioned like an edit), `move_folder` (checked by `expected_revision`), `propose_context_change` (creates a pending proposal, never changes context), `publish_work` (records an authorized deliverable or finding)
 
 Approving or rejecting proposals is not an MCP tool: humans do it in the dashboard (`TandemBackend.decideProposal`, owners and admins only). `TandemBackend.applyContextChange` always throws `APPROVAL_REQUIRED` for agents.
 

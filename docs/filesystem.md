@@ -83,6 +83,8 @@ New module `convex/folders.ts` (membership-checked like `files.ts`):
 - `moveFolder({ folderId, parentId: Id | null, expectedRevision })` → `FolderRow`.
 - `deleteFolder({ folderId, expectedRevision })` → `{ deletedFiles, deletedFolders }`.
 - `files.moveFile({ fileId, parentId: Id | null, expectedVersion })` → `{ version }`.
+- `files.finalizeUpload` gains optional `parentId` (new uploads only) so "Upload"
+  lands in the current folder.
 
 `workspaces.createFolder` stays as a thin wrapper over `createFolderCore` so
 existing callers (seed, tests) keep working.

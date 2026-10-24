@@ -5,24 +5,21 @@ import { ConvexError } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { type Actor, recordWorkspaceEvent } from "./auth";
-import { MAX_NAME_LENGTH, nameKey, storedName } from "./names";
+import {
+  assertNameFree,
+  checkFileVersion,
+  insertMetadataRevision,
+  requireParentFolder,
+  requireValidName,
+  toFileMetadata,
+} from "./fs";
+import { nameKey } from "./names";
+
+export { toFileMetadata };
 
 type ReadCtx = QueryCtx | MutationCtx;
 
 export type ContextField = Doc<"context_proposals">["field"];
-
-export function toFileMetadata(file: Doc<"files">) {
-  return {
-    id: file._id,
-    workspaceId: file.workspaceId,
-    parentId: file.parentId ?? null,
-    name: file.name,
-    mimeType: file.mimeType,
-    version: file.version,
-    updatedAt: file.updatedAt,
-    updatedBy: file.updatedBy,
-  };
-}
 
 /**
  * Loads a file by an untrusted id string. Missing, malformed and other-tenant
@@ -75,33 +72,11 @@ export async function createDocumentCore(
   },
 ): Promise<Doc<"files">> {
   const { workspaceId, parentId, actor } = args;
-  if (parentId) {
-    const folder = await ctx.db.get(parentId);
-    if (!folder || folder.workspaceId !== workspaceId)
-      throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
-  }
-  const name = storedName(args.name);
-  const key = nameKey(name);
-  if (!key || name.length > MAX_NAME_LENGTH)
-    throw new ConvexError({ code: "INVALID_NAME" });
-  // Convex has no unique indexes: reading this index range in the same
+  await requireParentFolder(ctx, workspaceId, parentId);
+  const { name, key } = requireValidName(args.name);
+  // Convex has no unique indexes: reading the name-key ranges in the same
   // mutation as the insert makes concurrent creates of one name conflict.
-  const existing = await ctx.db
-    .query("files")
-    .withIndex("by_workspace_and_parent_and_name_key", (q) =>
-      q
-        .eq("workspaceId", workspaceId)
-        .eq("parentId", parentId)
-        .eq("nameKey", key),
-    )
-    .first();
-  if (existing)
-    throw new ConvexError({
-      code: "NAME_EXISTS",
-      fileId: existing._id,
-      name: existing.name,
-      currentVersion: existing.version,
-    });
+  await assertNameFree(ctx, workspaceId, parentId, key);
   const now = Date.now();
   const fileId = await ctx.db.insert("files", {
     workspaceId,
@@ -215,26 +190,10 @@ export async function renameFileCore(
 ) {
   const { file, actor, expectedVersion } = args;
   checkFileVersion(file, expectedVersion);
-  const name = storedName(args.name);
-  const key = nameKey(name);
-  if (!key || name.length > MAX_NAME_LENGTH)
-    throw new ConvexError({ code: "INVALID_NAME" });
-  const existing = await ctx.db
-    .query("files")
-    .withIndex("by_workspace_and_parent_and_name_key", (q) =>
-      q
-        .eq("workspaceId", file.workspaceId)
-        .eq("parentId", file.parentId)
-        .eq("nameKey", key),
-    )
-    .first();
-  if (existing && existing._id !== file._id)
-    throw new ConvexError({
-      code: "NAME_EXISTS",
-      fileId: existing._id,
-      name: existing.name,
-      currentVersion: existing.version,
-    });
+  const { name, key } = requireValidName(args.name);
+  await assertNameFree(ctx, file.workspaceId, file.parentId, key, {
+    fileId: file._id,
+  });
   const now = Date.now();
   const version = file.version + 1;
   await ctx.db.patch(file._id, {
@@ -245,19 +204,7 @@ export async function renameFileCore(
     updatedAt: now,
     updatedBy: actor,
   });
-  const blob = file.storageId
-    ? await ctx.db.system.get("_storage", file.storageId)
-    : null;
-  if (file.content !== undefined || file.storageId)
-    await ctx.db.insert("file_revisions", {
-      workspaceId: file.workspaceId,
-      fileId: file._id,
-      version,
-      content: file.content ?? "",
-      ...(file.storageId ? { storageId: file.storageId, mimeType: file.mimeType, size: blob?.size } : {}),
-      actor,
-      createdAt: now,
-    });
+  await insertMetadataRevision(ctx, file, version, actor, now);
   await recordWorkspaceEvent(ctx, {
     workspaceId: file.workspaceId,
     kind: "file.renamed",
@@ -298,19 +245,6 @@ export async function deleteFileCore(
     summary: `Deleted ${file.name}`,
     actor,
   });
-}
-
-function checkFileVersion(file: Doc<"files">, expectedVersion: number) {
-  if (file.deletedAt !== undefined)
-    throw new ConvexError({ code: "FILE_NOT_FOUND" });
-  if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)
-    throw new ConvexError({ code: "INVALID_INPUT" });
-  if (file.version !== expectedVersion)
-    throw new ConvexError({
-      code: "VERSION_CONFLICT",
-      currentVersion: file.version,
-      expectedVersion,
-    });
 }
 
 const MAX_OWNER_AREA_LENGTH = 200;

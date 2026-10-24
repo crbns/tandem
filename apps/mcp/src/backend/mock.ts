@@ -3,13 +3,18 @@ import {
   TandemError,
   approvalRequired,
   fileNotFound,
+  folderNameExists,
+  folderNotFound,
+  folderTooDeep,
   forbidden,
+  invalidPath,
   nameExists,
+  pathNotFound,
   versionAhead,
   versionConflict,
 } from "../errors.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
-import { nameKey, storedName } from "../names.js";
+import { MAX_NAME_LENGTH, isValidName, nameKey, storedName } from "../names.js";
 import type {
   Actor,
   AgentConnection,
@@ -20,16 +25,23 @@ import type {
   ContextField,
   ContextProposal,
   CreateDocumentInput,
+  CreateFolderInput,
+  CreateFolderResult,
   FileMetadata,
+  FolderMetadata,
   FileVersions,
   FileWithContent,
   GetApprovalsInput,
   ListFilesInput,
+  ListFilesResult,
+  MoveFileInput,
+  MoveFolderInput,
   Ownership,
   ProposeContextChangeInput,
   ProposedValue,
   PublishWorkInput,
   PublishedWork,
+  ReadFileInput,
   SearchFilesInput,
   SearchResult,
   StructuredContext,
@@ -91,6 +103,21 @@ interface StoredFile {
   revisions: Revision[];
 }
 
+interface StoredFolder {
+  id: string;
+  workspace_id: string;
+  parent_id: string | null;
+  name: string;
+  revision: number;
+  updated_at: string;
+}
+
+/** Where a path points (docs/filesystem.md `resolvePath`). */
+type Resolved =
+  | { kind: "root" }
+  | { kind: "folder"; folder: StoredFolder }
+  | { kind: "file"; file: StoredFile };
+
 const SEED_BRIEF = `# Project brief
 
 Goal: ship the Tandem demo for Cal Hacks.
@@ -99,6 +126,11 @@ Goal: ship the Tandem demo for Cal Hacks.
 /** Max files and events per sync_workspace call. */
 const SYNC_LIMIT = 50;
 const SYNC_WORK_LIMIT = 20;
+const SYNC_FOLDER_LIMIT = 200;
+/** Max folders and max files per list_files call. */
+const LIST_LIMIT = 500;
+/** Max nested folders below the root. */
+const MAX_FOLDER_DEPTH = 32;
 
 /** In-memory backend for local development and tests. State is lost on restart. */
 export class MockBackend implements TandemBackend {
@@ -106,6 +138,7 @@ export class MockBackend implements TandemBackend {
   // Insertion order matters: an actor's first workspace is their default.
   private readonly workspaces = new Map<string, StoredWorkspace>();
   private readonly files = new Map<string, StoredFile>();
+  private readonly folders = new Map<string, StoredFolder>();
   // Insertion order is creation order, so reversing gives newest first.
   private readonly proposals = new Map<string, ContextProposal>();
   private readonly published = new Map<string, PublishedWork>();
@@ -247,23 +280,47 @@ export class MockBackend implements TandemBackend {
   async listFiles(
     actor: Actor,
     input: ListFilesInput,
-  ): Promise<FileMetadata[]> {
+  ): Promise<ListFilesResult> {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
-    // No folders in the mock yet, so no folder_id can name a valid folder.
-    if (input.folder_id !== undefined) {
-      throw new TandemError(
-        "INVALID_INPUT",
-        "Folders are not supported yet; omit folder_id.",
-        { folder_id: input.folder_id },
-      );
-    }
+    const folder = this.folderArg(workspaceId, input.folder_id, input.path, {
+      id: "folder_id",
+      path: "path",
+    });
+    const parentId = folder?.id ?? null;
     const query = input.query?.toLowerCase();
-    return [...this.files.values()]
-      .filter((f) => f.workspace_id === workspaceId)
+    const subtree = query !== undefined || input.recursive === true;
+    const inScope = (p: string | null) =>
+      subtree ? this.isWithin(p, parentId) : p === parentId;
+    const nameMatches = (name: string) =>
+      query === undefined || name.toLowerCase().includes(query);
+
+    const folders = [...this.folders.values()]
       .filter(
-        (f) => query === undefined || f.name.toLowerCase().includes(query),
+        (f) =>
+          f.workspace_id === workspaceId &&
+          inScope(f.parent_id) &&
+          nameMatches(f.name),
       )
-      .map(toMetadata);
+      .map((f) => this.toFolderMetadata(f));
+    const files = [...this.files.values()]
+      .filter(
+        (f) =>
+          f.workspace_id === workspaceId &&
+          inScope(f.parent_id) &&
+          nameMatches(f.name),
+      )
+      .map((f) => this.toMetadata(f));
+    // Immediate children sort by name; a flattened subtree by path.
+    const order = (a: { name: string; path: string }, b: typeof a) =>
+      subtree ? a.path.localeCompare(b.path) : a.name.localeCompare(b.name);
+    folders.sort(order);
+    files.sort(order);
+    return {
+      folder: { id: parentId, path: this.folderPath(parentId) },
+      folders: folders.slice(0, LIST_LIMIT),
+      files: files.slice(0, LIST_LIMIT),
+      truncated: folders.length > LIST_LIMIT || files.length > LIST_LIMIT,
+    };
   }
 
   async searchFiles(
@@ -280,7 +337,7 @@ export class MockBackend implements TandemBackend {
       const at = content.toLowerCase().indexOf(query);
       if (!nameMatch && at === -1) continue;
       results.push({
-        file: toMetadata(f),
+        file: this.toMetadata(f),
         snippet:
           at === -1
             ? snippet(content, 0, 0)
@@ -297,9 +354,30 @@ export class MockBackend implements TandemBackend {
       .slice(0, input.limit);
   }
 
-  async readFile(actor: Actor, fileId: string): Promise<FileWithContent> {
-    const file = this.getFile(actor, fileId);
-    return { file: toMetadata(file), content: head(file).content };
+  async readFile(actor: Actor, input: ReadFileInput): Promise<FileWithContent> {
+    if ((input.file_id === undefined) === (input.path === undefined)) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "Pass exactly one of file_id or path.",
+      );
+    }
+    let file: StoredFile;
+    if (input.file_id !== undefined) {
+      file = this.getFile(actor, input.file_id);
+    } else {
+      const workspaceId = this.resolveWorkspace(actor, undefined);
+      const found = this.resolvePath(workspaceId, input.path!);
+      if (found?.kind !== "file") {
+        throw pathNotFound(
+          input.path!,
+          found
+            ? "That path is a folder; call list_files with it to see its contents."
+            : "Call list_files to browse folders, or search_files to find the file.",
+        );
+      }
+      file = found.file;
+    }
+    return { file: this.toMetadata(file), content: head(file).content };
   }
 
   async getFileVersions(
@@ -318,7 +396,7 @@ export class MockBackend implements TandemBackend {
         author: r.created_by,
         size_bytes: Buffer.byteLength(r.content, "utf8"),
       }));
-    return { file: toMetadata(file), versions };
+    return { file: this.toMetadata(file), versions };
   }
 
   async createDocument(
@@ -326,37 +404,21 @@ export class MockBackend implements TandemBackend {
     input: CreateDocumentInput,
   ): Promise<FileMetadata> {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
-    // No folders in the mock yet, so no parent_id can name a valid folder.
-    if (input.parent_id !== undefined) {
-      throw new TandemError(
-        "INVALID_INPUT",
-        "Folders are not supported yet; omit parent_id.",
-        { parent_id: input.parent_id },
-      );
-    }
-    const name = storedName(input.name);
-    const key = nameKey(name);
-    if (!key || name.length > 255) {
-      throw new TandemError(
-        "INVALID_INPUT",
-        "name must contain 1–255 visible characters.",
-        { name: input.name },
-      );
-    }
-    // No await between the check and the insert, so this is atomic in Node.
-    const existing = [...this.files.values()].find(
-      (f) =>
-        f.workspace_id === workspaceId &&
-        f.parent_id === null &&
-        nameKey(f.name) === key,
+    const parent = this.folderArg(
+      workspaceId,
+      input.parent_id,
+      input.folder_path,
+      { id: "parent_id", path: "folder_path" },
+      "Create it first with create_folder.",
     );
-    if (existing) {
-      throw nameExists(existing.id, existing.name, head(existing).version);
-    }
+    const parentId = parent?.id ?? null;
+    const name = validName(input.name);
+    // No await between the check and the insert, so this is atomic in Node.
+    this.checkNameFree(workspaceId, parentId, name);
     const file: StoredFile = {
       id: `file_${randomUUID()}`,
       workspace_id: workspaceId,
-      parent_id: null,
+      parent_id: parentId,
       name,
       mime_type: input.mime_type,
       revisions: [newRevision(actor, 1, input.content)],
@@ -370,7 +432,7 @@ export class MockBackend implements TandemBackend {
       `${truncate(file.name, 80)} created`,
     );
     this.touch(actor, "last_action_at");
-    return toMetadata(file);
+    return this.toMetadata(file);
   }
 
   async updateDocument(
@@ -378,21 +440,11 @@ export class MockBackend implements TandemBackend {
     input: UpdateDocumentInput,
   ): Promise<FileMetadata> {
     const file = this.getFile(actor, input.file_id);
-    const current = head(file).version;
-    const expected = input.expected_version;
-    if (!Number.isSafeInteger(expected) || expected < 1) {
-      throw new TandemError(
-        "INVALID_INPUT",
-        "expected_version must be a positive integer: the file.version returned by read_file.",
-        { file_id: file.id, expected_version: expected },
-      );
-    }
-    // Fail closed: anything other than an exact match is rejected.
-    if (expected !== current) {
-      throw expected > current
-        ? versionAhead(file.id, current, expected)
-        : versionConflict(file.id, current, expected);
-    }
+    const current = checkVersion(
+      file,
+      input.expected_version,
+      "update_document",
+    );
     file.revisions.push(newRevision(actor, current + 1, input.content));
     this.appendEvent(
       file.workspace_id,
@@ -402,7 +454,138 @@ export class MockBackend implements TandemBackend {
       `${truncate(file.name, 80)} updated to v${current + 1}`,
     );
     this.touch(actor, "last_action_at");
-    return toMetadata(file);
+    return this.toMetadata(file);
+  }
+
+  async createFolder(
+    actor: Actor,
+    input: CreateFolderInput,
+  ): Promise<CreateFolderResult> {
+    const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
+    const segments = parsePath(input.path);
+    if (segments.length === 0) {
+      throw invalidPath(input.path, "the root folder always exists");
+    }
+    if (segments.length > MAX_FOLDER_DEPTH) throw folderTooDeep(input.path);
+    // Walk the existing prefix first and validate the rest before writing, so a
+    // failure leaves nothing half-created (one mutation in Convex).
+    let parent: StoredFolder | null = null;
+    let i = 0;
+    for (; i < segments.length; i++) {
+      const child = this.childByKey(
+        workspaceId,
+        parent?.id ?? null,
+        nameKey(segments[i]!),
+      );
+      if (!child) break;
+      if (child.kind === "file") {
+        throw nameExists(
+          child.file.id,
+          child.file.name,
+          head(child.file).version,
+        );
+      }
+      parent = child.folder;
+    }
+    if (i === segments.length) {
+      this.touch(actor, "last_action_at");
+      return { folder: this.toFolderMetadata(parent!), created: false };
+    }
+    const names = segments.slice(i).map((s) => validName(s));
+    for (const name of names) {
+      parent = this.insertFolder(actor, workspaceId, parent?.id ?? null, name);
+    }
+    this.touch(actor, "last_action_at");
+    return { folder: this.toFolderMetadata(parent!), created: true };
+  }
+
+  async moveFile(actor: Actor, input: MoveFileInput): Promise<FileMetadata> {
+    const file = this.getFile(actor, input.file_id);
+    const current = checkVersion(file, input.expected_version, "move_file");
+    const dest = this.destinationArg(file.workspace_id, input);
+    const parentId = dest?.id ?? null;
+    const name =
+      input.new_name === undefined ? file.name : validName(input.new_name);
+    this.checkNameFree(file.workspace_id, parentId, name, file.id);
+    file.parent_id = parentId;
+    file.name = name;
+    // Same content, new head revision: a move is versioned like an edit.
+    file.revisions.push(newRevision(actor, current + 1, head(file).content));
+    this.appendEvent(
+      file.workspace_id,
+      "file.moved",
+      file.id,
+      attribution(actor),
+      `Moved ${truncate(name, 80)} to ${truncate(this.folderPath(parentId), 120)}`,
+    );
+    this.touch(actor, "last_action_at");
+    return this.toMetadata(file);
+  }
+
+  async moveFolder(
+    actor: Actor,
+    input: MoveFolderInput,
+  ): Promise<FolderMetadata> {
+    const folder = this.getFolder(actor, input.folder_id);
+    const expected = input.expected_revision;
+    if (!Number.isSafeInteger(expected) || expected < 1) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "expected_revision must be a positive integer: the folder's revision from list_files or sync_workspace.",
+        { folder_id: folder.id, expected_revision: expected },
+      );
+    }
+    if (expected !== folder.revision) {
+      throw expected > folder.revision
+        ? new TandemError(
+            "INVALID_INPUT",
+            `expected_revision ${expected} is newer than the folder's current revision ${folder.revision}. ` +
+              `Use the revision returned by list_files.`,
+            {
+              folder_id: folder.id,
+              current_revision: folder.revision,
+              expected_revision: expected,
+            },
+          )
+        : new TandemError(
+            "VERSION_CONFLICT",
+            `Folder ${folder.id} is at revision ${folder.revision}, not ${expected}; someone else changed it. ` +
+              `Call list_files to see where it is now, then retry move_folder with expected_revision=${folder.revision}.`,
+            {
+              folder_id: folder.id,
+              current_revision: folder.revision,
+              expected_revision: expected,
+            },
+          );
+    }
+    const dest = this.destinationArg(folder.workspace_id, input);
+    const parentId = dest?.id ?? null;
+    if (this.isWithin(parentId, folder.id)) {
+      throw new TandemError(
+        "INVALID_MOVE",
+        "A folder can't be moved into itself or one of its own subfolders. Choose a destination outside it.",
+        { folder_id: folder.id, to_folder_id: parentId },
+      );
+    }
+    if (this.depthOf(parentId) + this.heightOf(folder) > MAX_FOLDER_DEPTH) {
+      throw folderTooDeep(this.folderPath(parentId));
+    }
+    const name =
+      input.new_name === undefined ? folder.name : validName(input.new_name);
+    this.checkNameFree(folder.workspace_id, parentId, name, folder.id);
+    folder.parent_id = parentId;
+    folder.name = name;
+    folder.revision += 1;
+    folder.updated_at = new Date().toISOString();
+    this.appendEvent(
+      folder.workspace_id,
+      "folder.moved",
+      folder.id,
+      attribution(actor),
+      `Moved folder ${truncate(name, 80)} to ${truncate(this.folderPath(parentId), 120)}`,
+    );
+    this.touch(actor, "last_action_at");
+    return this.toFolderMetadata(folder);
   }
 
   async syncWorkspace(actor: Actor, input: SyncInput): Promise<SyncResult> {
@@ -418,7 +601,7 @@ export class MockBackend implements TandemBackend {
     if (input.since === undefined) {
       changed = [...this.files.values()]
         .filter((f) => f.workspace_id === workspaceId)
-        .map(toMetadata);
+        .map((f) => this.toMetadata(f));
       events = ws.events.slice(-SYNC_LIMIT);
       eventsTruncated = ws.events.length > SYNC_LIMIT;
       cursorSeq = headSeq;
@@ -434,7 +617,7 @@ export class MockBackend implements TandemBackend {
           .filter((e) => e.type.startsWith("file."))
           .map((e) => e.subject_id),
       );
-      changed = [...fileIds].map((id) => toMetadata(this.files.get(id)!));
+      changed = [...fileIds].map((id) => this.toMetadata(this.files.get(id)!));
     }
     changed.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
 
@@ -446,6 +629,10 @@ export class MockBackend implements TandemBackend {
       .reverse()
       .map((e) => this.published.get(e.subject_id)!)
       .slice(0, SYNC_WORK_LIMIT + 1);
+    const folders = [...this.folders.values()]
+      .filter((f) => f.workspace_id === workspaceId)
+      .map((f) => this.toFolderMetadata(f))
+      .sort((a, b) => a.path.localeCompare(b.path));
     this.touch(actor, "last_synced_at");
     return {
       workspace: { id: workspaceId, name: ws.name },
@@ -475,6 +662,8 @@ export class MockBackend implements TandemBackend {
         ),
       changed_files: changed.slice(0, SYNC_LIMIT),
       files_truncated: changed.length > SYNC_LIMIT,
+      folders: folders.slice(0, SYNC_FOLDER_LIMIT),
+      folders_truncated: folders.length > SYNC_FOLDER_LIMIT,
       recent_work: structuredClone(work.slice(0, SYNC_WORK_LIMIT)),
       work_truncated: work.length > SYNC_WORK_LIMIT,
       events: structuredClone(events),
@@ -974,6 +1163,224 @@ export class MockBackend implements TandemBackend {
     return workspaceId;
   }
 
+  /**
+   * The folder named by an id or a path argument (null for the root or when
+   * both are omitted). `names` are the tool's argument names, for messages.
+   */
+  private folderArg(
+    workspaceId: string,
+    id: string | undefined,
+    path: string | undefined,
+    names: { id: string; path: string },
+    missingHint = "Call list_files to browse the folders that exist.",
+  ): StoredFolder | null {
+    if (id !== undefined && path !== undefined) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        `Pass ${names.id} or ${names.path}, not both.`,
+      );
+    }
+    if (id !== undefined) {
+      // Another workspace's folder looks exactly like a missing one.
+      const folder = this.folders.get(id);
+      if (folder?.workspace_id !== workspaceId) throw folderNotFound(id);
+      return folder;
+    }
+    if (path === undefined) return null;
+    const found = this.resolvePath(workspaceId, path);
+    if (!found) throw pathNotFound(path, missingHint);
+    if (found.kind === "file") {
+      throw pathNotFound(path, "That path is a file, not a folder.");
+    }
+    return found.kind === "folder" ? found.folder : null;
+  }
+
+  /** A move's destination: exactly one of to_folder_id and to_folder_path. */
+  private destinationArg(
+    workspaceId: string,
+    input: { to_folder_id?: string; to_folder_path?: string },
+  ): StoredFolder | null {
+    if (
+      input.to_folder_id === undefined &&
+      input.to_folder_path === undefined
+    ) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        'Pass to_folder_id or to_folder_path ("/" for the workspace root).',
+      );
+    }
+    return this.folderArg(
+      workspaceId,
+      input.to_folder_id,
+      input.to_folder_path,
+      { id: "to_folder_id", path: "to_folder_path" },
+      "Create it first with create_folder.",
+    );
+  }
+
+  /** Resolves `path` segment by segment by nameKey; null if nothing is there. */
+  private resolvePath(workspaceId: string, path: string): Resolved | null {
+    let at: Resolved = { kind: "root" };
+    for (const segment of parsePath(path)) {
+      if (at.kind === "file") return null;
+      const parentId = at.kind === "folder" ? at.folder.id : null;
+      const child = this.childByKey(workspaceId, parentId, nameKey(segment));
+      if (!child) return null;
+      at = child;
+    }
+    return at;
+  }
+
+  /** The file or folder using `key` in a folder (one namespace per folder). */
+  private childByKey(
+    workspaceId: string,
+    parentId: string | null,
+    key: string,
+    exceptId?: string,
+  ): Exclude<Resolved, { kind: "root" }> | undefined {
+    for (const folder of this.folders.values()) {
+      if (
+        folder.workspace_id === workspaceId &&
+        folder.parent_id === parentId &&
+        folder.id !== exceptId &&
+        nameKey(folder.name) === key
+      )
+        return { kind: "folder", folder };
+    }
+    for (const file of this.files.values()) {
+      if (
+        file.workspace_id === workspaceId &&
+        file.parent_id === parentId &&
+        file.id !== exceptId &&
+        nameKey(file.name) === key
+      )
+        return { kind: "file", file };
+    }
+    return undefined;
+  }
+
+  /** Throws NAME_EXISTS if another file or folder in the folder uses `name`. */
+  private checkNameFree(
+    workspaceId: string,
+    parentId: string | null,
+    name: string,
+    selfId?: string,
+  ): void {
+    const taken = this.childByKey(workspaceId, parentId, nameKey(name), selfId);
+    if (taken?.kind === "folder") {
+      throw folderNameExists(taken.folder.id, taken.folder.name);
+    }
+    if (taken?.kind === "file") {
+      throw nameExists(
+        taken.file.id,
+        taken.file.name,
+        head(taken.file).version,
+      );
+    }
+  }
+
+  private insertFolder(
+    actor: Actor,
+    workspaceId: string,
+    parentId: string | null,
+    name: string,
+  ): StoredFolder {
+    const folder: StoredFolder = {
+      id: `folder_${randomUUID()}`,
+      workspace_id: workspaceId,
+      parent_id: parentId,
+      name,
+      revision: 1,
+      updated_at: new Date().toISOString(),
+    };
+    this.folders.set(folder.id, folder);
+    this.appendEvent(
+      workspaceId,
+      "folder.created",
+      folder.id,
+      attribution(actor),
+      `Created folder ${truncate(this.folderPath(folder.id), 120)}`,
+    );
+    return folder;
+  }
+
+  private getFolder(actor: Actor, folderId: string): StoredFolder {
+    const folder = this.folders.get(folderId);
+    if (!folder || !this.isMember(actor, folder.workspace_id))
+      throw folderNotFound(folderId);
+    return folder;
+  }
+
+  /** True if `folderId` is `ancestorId` or below it (everything is within the root, null). */
+  private isWithin(
+    folderId: string | null,
+    ancestorId: string | null,
+  ): boolean {
+    if (ancestorId === null) return true;
+    for (let at = folderId; at !== null; at = this.folders.get(at)!.parent_id) {
+      if (at === ancestorId) return true;
+    }
+    return false;
+  }
+
+  /** Folders from the root down to and including `folderId`; 0 for the root. */
+  private depthOf(folderId: string | null): number {
+    let depth = 0;
+    for (let at = folderId; at !== null; at = this.folders.get(at)!.parent_id) {
+      depth++;
+    }
+    return depth;
+  }
+
+  /** Levels in the subtree rooted at `folder`, counting itself. */
+  private heightOf(folder: StoredFolder): number {
+    let below = 0;
+    for (const child of this.folders.values()) {
+      if (child.parent_id === folder.id) {
+        below = Math.max(below, this.heightOf(child));
+      }
+    }
+    return below + 1;
+  }
+
+  /** "/" for the root, otherwise "/a/b" with no trailing slash. */
+  private folderPath(folderId: string | null): string {
+    const names: string[] = [];
+    for (let at = folderId; at !== null;) {
+      const folder = this.folders.get(at)!;
+      names.unshift(folder.name);
+      at = folder.parent_id;
+    }
+    return `/${names.join("/")}`;
+  }
+
+  private toMetadata(file: StoredFile): FileMetadata {
+    const latest = head(file);
+    const parentPath = this.folderPath(file.parent_id);
+    return {
+      id: file.id,
+      workspace_id: file.workspace_id,
+      parent_id: file.parent_id,
+      name: file.name,
+      path: `${parentPath === "/" ? "" : parentPath}/${file.name}`,
+      mime_type: file.mime_type,
+      version: latest.version,
+      updated_at: latest.created_at,
+      updated_by: latest.created_by,
+    };
+  }
+
+  private toFolderMetadata(folder: StoredFolder): FolderMetadata {
+    return {
+      id: folder.id,
+      parent_id: folder.parent_id,
+      name: folder.name,
+      path: this.folderPath(folder.id),
+      revision: folder.revision,
+      updated_at: folder.updated_at,
+    };
+  }
+
   private getFile(actor: Actor, fileId: string): StoredFile {
     // Another tenant's file looks exactly like a missing one, so ids can't be probed.
     const file = this.files.get(fileId);
@@ -1049,16 +1456,70 @@ function newRevision(actor: Actor, version: number, content: string): Revision {
   };
 }
 
-function toMetadata(file: StoredFile): FileMetadata {
-  const latest = head(file);
-  return {
-    id: file.id,
-    workspace_id: file.workspace_id,
-    parent_id: file.parent_id,
-    name: file.name,
-    mime_type: file.mime_type,
-    version: latest.version,
-    updated_at: latest.created_at,
-    updated_by: latest.created_by,
-  };
+/**
+ * Checks `expected` against the file's head version and returns it. Fail
+ * closed: anything other than an exact match is rejected without writing.
+ */
+function checkVersion(
+  file: StoredFile,
+  expected: number,
+  tool: "update_document" | "move_file",
+): number {
+  const current = head(file).version;
+  if (!Number.isSafeInteger(expected) || expected < 1) {
+    throw new TandemError(
+      "INVALID_INPUT",
+      "expected_version must be a positive integer: the file.version returned by read_file.",
+      { file_id: file.id, expected_version: expected },
+    );
+  }
+  if (expected !== current) {
+    throw expected > current
+      ? versionAhead(file.id, current, expected)
+      : versionConflict(file.id, current, expected, tool);
+  }
+  return current;
+}
+
+/**
+ * Segments of a path (docs/filesystem.md): the leading "/" is optional and one
+ * trailing "/" is ignored, so "/" is the root ([]). Empty, "." and ".."
+ * segments throw INVALID_PATH.
+ */
+function parsePath(path: string): string[] {
+  if (path === "") throw invalidPath(path, "it is empty");
+  const body = path.startsWith("/") ? path.slice(1) : path;
+  if (body === "") return [];
+  const segments = (body.endsWith("/") ? body.slice(0, -1) : body).split("/");
+  for (const segment of segments) {
+    if (!nameKey(segment)) throw invalidPath(path, "it has an empty segment");
+    const trimmed = segment.trim();
+    if (trimmed === "." || trimmed === "..") {
+      throw invalidPath(path, `"." and ".." segments aren't supported`);
+    }
+  }
+  return segments;
+}
+
+/** The stored form of a new file or folder name, or INVALID_INPUT. */
+function validName(raw: string): string {
+  const name = storedName(raw);
+  if (isValidName(name)) return name;
+  if (!nameKey(name) || name.length > MAX_NAME_LENGTH) {
+    throw new TandemError(
+      "INVALID_INPUT",
+      "name must contain 1–255 visible characters.",
+      { name: raw },
+    );
+  }
+  if (name.includes("/")) {
+    throw new TandemError(
+      "INVALID_INPUT",
+      'A name can\'t contain "/". To put a file in a folder, pass folder_path (create the folder first with create_folder).',
+      { name: raw },
+    );
+  }
+  throw new TandemError("INVALID_INPUT", 'A name can\'t be "." or "..".', {
+    name: raw,
+  });
 }

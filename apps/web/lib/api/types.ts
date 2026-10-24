@@ -52,6 +52,32 @@ export interface FileSummary {
   updatedBy: Actor;
   /** Optional: actor type of each recent version, oldest first, head last. */
   custody?: ActorType[];
+  /** `/specs/api.md`; set by directory listings (docs/filesystem.md). */
+  path?: string;
+}
+
+/** A folder in the workspace tree. `parentId` null is the workspace root. */
+export interface FolderSummary {
+  id: string;
+  workspaceId: string;
+  parentId: string | null;
+  name: string;
+  /** `/specs/api`; no trailing slash. */
+  path: string;
+  /** Optimistic-lock counter for rename, move and delete. */
+  revision: number;
+  updatedAt: number;
+  updatedBy: Actor;
+}
+
+/** One folder's immediate children, as the directory browser shows them. */
+export interface DirectoryListing {
+  /** `null` at the workspace root. */
+  folder: FolderSummary | null;
+  /** Root first; the root itself is implied. */
+  breadcrumbs: { id: string; name: string }[];
+  folders: FolderSummary[];
+  files: FileSummary[];
 }
 
 export interface FileDetail extends FileSummary {
@@ -72,7 +98,12 @@ export interface CreateFileInput {
   mimeType: string;
   /** Required by the shared contract (MCP's createDocument requires it too). */
   content: string;
+  /** Folder to create it in; omitted or null is the workspace root. */
+  parentId?: string | null;
 }
+
+/** A new version of an existing binary, or a new file in a folder (null = root). */
+export type UploadTarget = { fileId: string; expectedVersion: number } | { parentId: string | null };
 
 /**
  * The approved project context: changes to it need a human's approval, so the

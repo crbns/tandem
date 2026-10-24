@@ -41,7 +41,7 @@ For Claude web and Claude desktop, test each separately:
 2. Follow OAuth to Tandem, sign in as a test member, select the disposable
    workspace/assistant and allow access. Record any administrator restriction.
 3. Enable the connector in the chat tools menu. Expand tool discovery and
-   record all exposed tool names; the expected surface is the eleven tools
+   record all exposed tool names; the expected surface is the fourteen tools
    listed in `SKILL.md`.
 4. Open Settings → Capabilities → Skills, enable skills, upload
    `dist/tandem-skill.zip`, and enable `tandem`. Record missing menus or plan

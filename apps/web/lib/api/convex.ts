@@ -15,6 +15,7 @@ import type {
   ContextProposal,
   FileDetail,
   FileSummary,
+  FolderSummary,
   ProjectContext,
   Revision,
 } from "./types";
@@ -90,8 +91,25 @@ export function toAgentConnection(connection: BackendAgentConnection): AgentConn
   };
 }
 
-function toFileSummary(file: BackendFileMetadata): FileSummary {
+type BackendListing = FunctionReturnType<typeof api.folders.listDirectory>;
+type BackendFolder = BackendListing["folders"][number];
+
+function toFolderSummary(folder: BackendFolder): FolderSummary {
   return {
+    id: folder.id,
+    workspaceId: folder.workspaceId,
+    parentId: folder.parentId ?? null,
+    name: folder.name,
+    path: folder.path,
+    revision: folder.revision,
+    updatedAt: folder.updatedAt,
+    updatedBy: toActor(folder.updatedBy),
+  };
+}
+
+function toFileSummary(file: BackendFileMetadata & { path?: string }): FileSummary {
+  return {
+    ...(file.path !== undefined ? { path: file.path } : {}),
     id: file.id,
     workspaceId: file.workspaceId,
     parentId: file.parentId ?? null,
@@ -193,15 +211,54 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         }
         throw new TandemApiError("LIST_LIMIT_EXCEEDED");
       }),
-    createFile: async (workspaceId, input) => {
+    createFile: async (workspaceId, { parentId, ...input }) => {
       const file = await call(() =>
         convex.mutation(api.files.createDocument, {
           workspaceId: workspaceId as Id<"workspaces">,
           ...input,
+          ...(parentId ? { parentId: parentId as Id<"folders"> } : {}),
         }),
       );
       return { id: file.id, version: file.version };
     },
+    moveFile: (fileId, parentId, expectedVersion) => call(async () => {
+      const { version } = await convex.mutation(api.files.moveFile, {
+        fileId: fileId as Id<"files">, parentId: parentId as Id<"folders"> | null, expectedVersion,
+      });
+      return { version };
+    }),
+    listDirectory: (workspaceId, folderId) => call(async () => {
+      const listing = await convex.query(api.folders.listDirectory, {
+        workspaceId: workspaceId as Id<"workspaces">,
+        ...(folderId ? { folderId: folderId as Id<"folders"> } : {}),
+      });
+      return {
+        folder: listing.folder ? toFolderSummary(listing.folder) : null,
+        breadcrumbs: listing.breadcrumbs.map(({ id, name }) => ({ id, name })),
+        folders: listing.folders.map(toFolderSummary),
+        files: listing.files.map(toFileSummary),
+      };
+    }),
+    listFolderTree: (workspaceId) => call(async () => {
+      const folders = await convex.query(api.folders.listFolderTree, { workspaceId: workspaceId as Id<"workspaces"> });
+      return folders.map(toFolderSummary);
+    }),
+    createFolder: (workspaceId, { name, parentId }) => call(async () => toFolderSummary(await convex.mutation(api.folders.createFolder, {
+      workspaceId: workspaceId as Id<"workspaces">, name,
+      ...(parentId ? { parentId: parentId as Id<"folders"> } : {}),
+    }))),
+    renameFolder: (folderId, name, expectedRevision) => call(async () => toFolderSummary(await convex.mutation(api.folders.renameFolder, {
+      folderId: folderId as Id<"folders">, name, expectedRevision,
+    }))),
+    moveFolder: (folderId, parentId, expectedRevision) => call(async () => toFolderSummary(await convex.mutation(api.folders.moveFolder, {
+      folderId: folderId as Id<"folders">, parentId: parentId as Id<"folders"> | null, expectedRevision,
+    }))),
+    deleteFolder: (folderId, expectedRevision) => call(async () => {
+      const { deletedFiles, deletedFolders } = await convex.mutation(api.folders.deleteFolder, {
+        folderId: folderId as Id<"folders">, expectedRevision,
+      });
+      return { deletedFiles, deletedFolders };
+    }),
     renameFile: async (fileId, name, expectedVersion) => {
       const file = await call(() => convex.mutation(api.files.renameFile, { fileId: fileId as Id<"files">, name, expectedVersion }));
       return { version: file.version };
@@ -209,7 +266,7 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
     deleteFile: async (fileId, expectedVersion) => {
       await call(() => convex.mutation(api.files.deleteFile, { fileId: fileId as Id<"files">, expectedVersion }));
     },
-    uploadFile: async (workspaceId, file, options) => {
+    uploadFile: async (workspaceId, file, target) => {
       try {
         // A late URL creates no file and cannot continue this timed-out chain.
         const uploadUrl = await call(() => convex.mutation(api.files.generateUploadUrl, { workspaceId: workspaceId as Id<"workspaces"> }), UPLOAD_MUTATION_TIMEOUT_MS);
@@ -238,7 +295,8 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         try {
           return await Promise.race([convex.mutation(api.files.finalizeUpload, {
             workspaceId: workspaceId as Id<"workspaces">, storageId, name: file.name,
-            ...(options ? { fileId: options.fileId as Id<"files">, expectedVersion: options.expectedVersion } : {}),
+            ...(target && "fileId" in target ? { fileId: target.fileId as Id<"files">, expectedVersion: target.expectedVersion } : {}),
+            ...(target && "parentId" in target && target.parentId ? { parentId: target.parentId as Id<"folders"> } : {}),
           }).then((uploaded) => ({ id: uploaded.id, version: uploaded.version })), pending]);
         } finally {
           clearTimeout(timer);

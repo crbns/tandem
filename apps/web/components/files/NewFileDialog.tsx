@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Loader2Icon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 import { normalizeError, useTandemApi } from "@/lib/api";
-import { CREATE_ERROR_COPY, ERROR_COPY } from "@/lib/api/errorCopy";
+import { CREATE_ERROR_COPY, describeError } from "@/lib/api/errorCopy";
 import { parseNewFileName } from "@/lib/files";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 
-export function NewFileDialog({ workspaceId }: { workspaceId: string }) {
+/** Creates a text file inside `parentId` (omitted or null = the workspace root). */
+export function NewFileDialog({ workspaceId, parentId = null }: { workspaceId: string; parentId?: string | null }) {
   const api = useTandemApi();
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -58,13 +59,13 @@ export function NewFileDialog({ workspaceId }: { workspaceId: string }) {
         name: parsed.name,
         mimeType: parsed.mimeType,
         content,
+        ...(parentId ? { parentId } : {}),
       });
       toast.success(`Created ${parsed.name} (version 1)`);
       if (thisAttempt === attempt.current) router.push(`/w/${workspaceId}/files/${id}`);
     } catch (err) {
       if (thisAttempt !== attempt.current) return;
-      const { code } = normalizeError(err);
-      setError(CREATE_ERROR_COPY[code] ?? ERROR_COPY[code].description);
+      setError(describeError(normalizeError(err), CREATE_ERROR_COPY));
       setCreating(false);
     }
   }

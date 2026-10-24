@@ -4,7 +4,7 @@ import { useId, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { normalizeError, useTandemApi } from "@/lib/api";
 import type { FileSummary } from "@/lib/api/types";
-import { ERROR_COPY } from "@/lib/api/errorCopy";
+import { describeError } from "@/lib/api/errorCopy";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { MoveDialog } from "./MoveDialog";
 
 export function FileActions({
   file,
@@ -30,6 +31,7 @@ export function FileActions({
   const router = useRouter();
   const inputId = useId();
   const [action, setAction] = useState<"rename" | "delete" | null>(null);
+  const [moving, setMoving] = useState(false);
   const [name, setName] = useState(file.name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,13 +56,9 @@ export function FileActions({
       if (action === "delete" && redirectAfterDelete)
         router.push(`/w/${file.workspaceId}`);
     } catch (err) {
-      const { code } = normalizeError(err);
-      if (code === "VERSION_CONFLICT") onChanged?.();
-      setError(
-        code === "VERSION_CONFLICT"
-          ? "The file changed. Review it and try again."
-          : ERROR_COPY[code].description,
-      );
+      const normalized = normalizeError(err);
+      if (normalized.code === "VERSION_CONFLICT") onChanged?.();
+      setError(describeError(normalized, { VERSION_CONFLICT: "The file changed. Review it and try again." }));
     } finally {
       setBusy(false);
     }
@@ -83,11 +81,27 @@ export function FileActions({
       <Button
         variant="outline"
         size="sm"
+        onClick={() => setMoving(true)}
+        aria-label={`Move ${file.name}`}
+      >
+        Move…
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
         onClick={() => open("delete")}
         aria-label={`Delete ${file.name}`}
       >
         Delete
       </Button>
+      <MoveDialog
+        workspaceId={file.workspaceId}
+        item={{ kind: "file", id: file.id, name: file.name, parentId: file.parentId }}
+        open={moving}
+        onOpenChange={setMoving}
+        onMove={(parentId) => api.moveFile(file.id, parentId, file.version)}
+        onChanged={onChanged}
+      />
       <Dialog
         open={action !== null}
         onOpenChange={(next) => {

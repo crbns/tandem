@@ -121,6 +121,11 @@ export default defineSchema({
     workspaceId: v.id("workspaces"),
     parentId: v.optional(v.id("folders")),
     name: v.string(),
+    // Collision key shared with files (lib/names.ts). Absent on legacy rows,
+    // which are keyed by nameKey(name) on read, and on soft-deleted folders.
+    nameKey: v.optional(v.string()),
+    deletedAt: v.optional(v.number()),
+    deletedBy: v.optional(actor),
     createdBy: actor,
     updatedBy: actor,
     revision: v.number(),
@@ -128,7 +133,17 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_workspace_and_parent", ["workspaceId", "parentId"])
-    .index("by_workspace", ["workspaceId"]),
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_and_parent_and_name_key", [
+      "workspaceId",
+      "parentId",
+      "nameKey",
+    ])
+    .index("by_workspace_and_deleted_at_and_parent", [
+      "workspaceId",
+      "deletedAt",
+      "parentId",
+    ]),
 
   files: defineTable({
     workspaceId: v.id("workspaces"),

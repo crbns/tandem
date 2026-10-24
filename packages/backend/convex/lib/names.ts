@@ -12,6 +12,20 @@ export function storedName(name: string): string {
 }
 
 /**
+ * Whether a new file or folder name (already `storedName`) is allowed:
+ * 1–255 chars, no "/", and not "." or "..". Legacy rows are not re-checked.
+ */
+export function isValidName(name: string): boolean {
+  return (
+    nameKey(name) !== "" &&
+    name.length <= MAX_NAME_LENGTH &&
+    !name.includes("/") &&
+    name !== "." &&
+    name !== ".."
+  );
+}
+
+/**
  * Collision key: NFKC, strip zero-width characters, trim, collapse internal
  * whitespace, case-fold (uppercase then lowercase, so "ß" and "SS" collide).
  */

@@ -13,7 +13,7 @@ import {
 import { MockBackend } from "../src/backend/mock.js";
 import type { Actor, StructuredContext } from "../src/backend/types.js";
 import { TandemError } from "../src/errors.js";
-import { nameKey, storedName } from "../src/names.js";
+import { isValidName, nameKey, storedName } from "../src/names.js";
 import { createApp, parseAllowedOrigins } from "../src/server.js";
 
 const DEV_TOKENS =
@@ -164,15 +164,18 @@ describe("Tandem MCP server", () => {
     await client.close();
   });
 
-  it("lists exactly the eleven tools", async () => {
+  it("lists exactly the fourteen tools", async () => {
     const client = await connect("alex-token");
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "create_document",
+      "create_folder",
       "get_approvals",
       "get_file_versions",
       "get_workspace_info",
       "list_files",
+      "move_file",
+      "move_folder",
       "propose_context_change",
       "publish_work",
       "read_file",
@@ -207,6 +210,9 @@ describe("Tandem MCP server", () => {
       sync_workspace: idempotentWrite,
       create_document: write,
       update_document: idempotentWrite,
+      create_folder: idempotentWrite,
+      move_file: idempotentWrite,
+      move_folder: idempotentWrite,
       propose_context_change: write,
       publish_work: write,
     });
@@ -348,32 +354,6 @@ describe("Tandem MCP server", () => {
     await Promise.all([jordan.close(), alex.close()]);
   });
 
-  it("rejects parent_id until folders exist", async () => {
-    const client = await connect("alex-token");
-    const result = await call(client, "create_document", {
-      name: "nested.md",
-      content: "x",
-      parent_id: "file_brief",
-    });
-    expect(result.isError).toBe(true);
-    expect(errorCode(result)).toBe("INVALID_INPUT");
-    expect((result.content[0] as { text: string }).text).toContain(
-      "omit parent_id",
-    );
-    await client.close();
-  });
-
-  it("rejects folder_id on list_files until folders exist", async () => {
-    const client = await connect("alex-token");
-    const result = await call(client, "list_files", { folder_id: "folder_x" });
-    expect(result.isError).toBe(true);
-    expect(errorCode(result)).toBe("INVALID_INPUT");
-    expect((result.content[0] as { text: string }).text).toContain(
-      "omit folder_id",
-    );
-    await client.close();
-  });
-
   it("rejects duplicate names in the same workspace", async () => {
     const alex = await connect("alex-token");
     const jordan = await connect("jordan-token");
@@ -399,6 +379,7 @@ describe("Tandem MCP server", () => {
         error: {
           code: "NAME_EXISTS",
           message: expect.stringContaining('"dupe.md"'),
+          kind: "file",
           file_id: file.id,
           name: "dupe.md",
           current_version: 2,
@@ -1751,6 +1732,434 @@ describe("context tools", () => {
   });
 });
 
+describe("file system", () => {
+  interface Folder {
+    id: string;
+    parent_id: string | null;
+    name: string;
+    path: string;
+    revision: number;
+  }
+  interface File {
+    id: string;
+    parent_id: string | null;
+    name: string;
+    path: string;
+    version: number;
+  }
+  interface Listing {
+    folder: { id: string | null; path: string };
+    folders: Folder[];
+    files: File[];
+    truncated: boolean;
+  }
+
+  async function ok<T>(client: Client, name: string, args: Record<string, unknown>) {
+    const result = await call(client, name, args);
+    expect(result.isError, text(result)).toBeFalsy();
+    return result.structuredContent as T;
+  }
+
+  async function mkdir(client: Client, path: string) {
+    return ok<{ folder: Folder; created: boolean }>(client, "create_folder", {
+      path,
+    });
+  }
+
+  it("create_folder makes missing parents and is idempotent", async () => {
+    const alex = await connect("alex-token");
+    const first = await mkdir(alex, "/specs/api");
+    expect(first).toEqual({
+      created: true,
+      folder: {
+        id: expect.any(String),
+        parent_id: expect.any(String),
+        name: "api",
+        path: "/specs/api",
+        revision: 1,
+        updated_at: expect.any(String),
+      },
+    });
+
+    // Same folder by nameKey, without the leading slash, with a trailing one.
+    const again = await mkdir(alex, "SPECS/Api/");
+    expect(again).toEqual({ created: false, folder: first.folder });
+    const parent = await mkdir(alex, "/specs");
+    expect(parent.created).toBe(false);
+    expect(first.folder.parent_id).toBe(parent.folder.id);
+
+    const root = await ok<Listing>(alex, "list_files", {});
+    expect(root.folder).toEqual({ id: null, path: "/" });
+    expect(root.folders.map((f) => f.path)).toEqual(["/specs"]);
+    expect(root.files.map((f) => f.path)).toEqual(["/brief.md"]);
+
+    const snapshot = await ok<{
+      folders: Folder[];
+      folders_truncated: boolean;
+      events: { type: string; subject_id: string; summary: string }[];
+    }>(alex, "sync_workspace", {});
+    expect(snapshot.folders.map((f) => f.path)).toEqual(["/specs", "/specs/api"]);
+    expect(snapshot.folders_truncated).toBe(false);
+    expect(
+      snapshot.events.filter((e) => e.type === "folder.created"),
+    ).toEqual([
+      expect.objectContaining({ subject_id: parent.folder.id, summary: "Created folder /specs" }),
+      expect.objectContaining({ subject_id: first.folder.id, summary: "Created folder /specs/api" }),
+    ]);
+
+    const jordan = await connect("jordan-token");
+    const other = await mkdir(jordan, "/specs/api");
+    expect(other.created).toBe(true);
+    expect(other.folder.id).not.toBe(first.folder.id);
+    await Promise.all([alex.close(), jordan.close()]);
+  });
+
+  it("rejects bad paths, the root, and paths through a file", async () => {
+    const alex = await connect("alex-token");
+    for (const path of ["/a//b", "/a/../b", "./a", "//", ""]) {
+      const result = await call(alex, "create_folder", { path });
+      expect(result.isError).toBe(true);
+      // "" fails the schema's min(1) before reaching the backend.
+      if (path !== "") expect(errorCode(result)).toBe("INVALID_PATH");
+    }
+    expect(errorCode(await call(alex, "create_folder", { path: "/" }))).toBe(
+      "INVALID_PATH",
+    );
+
+    const through = await call(alex, "create_folder", { path: "/brief.md/x" });
+    expect(through.structuredContent).toMatchObject({
+      error: { code: "NAME_EXISTS", kind: "file", file_id: "file_brief" },
+    });
+    const deep = Array.from({ length: 33 }, (_, i) => `d${i}`).join("/");
+    expect(errorCode(await call(alex, "create_folder", { path: deep }))).toBe(
+      "FOLDER_TOO_DEEP",
+    );
+    const root = await ok<Listing>(alex, "list_files", {});
+    expect(root.folders).toEqual([]);
+    await alex.close();
+  });
+
+  it("creates documents in folders by folder_path or parent_id and reads them by path", async () => {
+    const alex = await connect("alex-token");
+    const sam = await connect("sam-token");
+    const { folder } = await mkdir(alex, "/specs/api");
+
+    const byPath = await ok<File>(alex, "create_document", {
+      name: "endpoints.md",
+      content: "GET /files",
+      folder_path: "/specs/api",
+    });
+    expect(byPath).toMatchObject({
+      parent_id: folder.id,
+      name: "endpoints.md",
+      path: "/specs/api/endpoints.md",
+      version: 1,
+    });
+    const byId = await ok<File>(alex, "create_document", {
+      name: "auth.md",
+      content: "OAuth",
+      parent_id: folder.id,
+    });
+    expect(byId.path).toBe("/specs/api/auth.md");
+
+    // The same name in another folder is fine; in the same folder it isn't.
+    await ok(alex, "create_document", { name: "endpoints.md", content: "root" });
+    const dupe = await call(alex, "create_document", {
+      name: "ENDPOINTS.md",
+      content: "x",
+      folder_path: "specs/api",
+    });
+    expect(dupe.structuredContent).toMatchObject({
+      error: { code: "NAME_EXISTS", kind: "file", file_id: byPath.id },
+    });
+    // Files and folders share one namespace per folder.
+    const clash = await call(alex, "create_document", { name: "Specs", content: "x" });
+    expect(clash.structuredContent).toMatchObject({
+      error: { code: "NAME_EXISTS", kind: "folder", name: "specs" },
+    });
+
+    const read = await ok<{ file: File; content: string }>(sam, "read_file", {
+      path: "SPECS/api/endpoints.md",
+    });
+    expect(read).toMatchObject({
+      file: { id: byPath.id, path: "/specs/api/endpoints.md" },
+      content: "GET /files",
+    });
+    const byFileId = await ok<{ file: File }>(sam, "read_file", { file_id: byPath.id });
+    expect(byFileId.file.path).toBe("/specs/api/endpoints.md");
+
+    const search = await ok<{ results: { file: File }[] }>(sam, "search_files", {
+      query: "OAuth",
+    });
+    expect(search.results.map((r) => r.file.path)).toEqual(["/specs/api/auth.md"]);
+
+    for (const [args, code] of [
+      [{ path: "/specs/api/missing.md" }, "PATH_NOT_FOUND"],
+      [{ path: "/specs/api" }, "PATH_NOT_FOUND"],
+      [{ path: "/specs//api" }, "INVALID_PATH"],
+      [{}, "INVALID_INPUT"],
+      [{ file_id: byPath.id, path: "/specs/api/endpoints.md" }, "INVALID_INPUT"],
+    ] as const) {
+      expect(errorCode(await call(sam, "read_file", args))).toBe(code);
+    }
+
+    for (const [args, code] of [
+      [{ folder_path: "/drafts" }, "PATH_NOT_FOUND"],
+      [{ folder_path: "/specs/api/endpoints.md" }, "PATH_NOT_FOUND"],
+      [{ parent_id: "folder_missing" }, "FOLDER_NOT_FOUND"],
+      [{ parent_id: folder.id, folder_path: "/specs" }, "INVALID_INPUT"],
+    ] as const) {
+      const result = await call(alex, "create_document", {
+        name: "new.md",
+        content: "x",
+        ...args,
+      });
+      expect(errorCode(result)).toBe(code);
+    }
+    expect(
+      text(await call(alex, "create_document", { name: "new.md", content: "x", folder_path: "/drafts" })),
+    ).toContain("create_folder");
+    const slash = await call(alex, "create_document", { name: "a/b.md", content: "x" });
+    expect(errorCode(slash)).toBe("INVALID_INPUT");
+    expect(text(slash)).toContain("folder_path");
+    await Promise.all([alex.close(), sam.close()]);
+  });
+
+  it("hides other workspaces' folders behind FOLDER_NOT_FOUND", async () => {
+    const alex = await connect("alex-token");
+    const jordan = await connect("jordan-token");
+    const { folder } = await mkdir(alex, "/private");
+    for (const [name, args] of [
+      ["list_files", { folder_id: folder.id }],
+      ["create_document", { name: "x.md", content: "x", parent_id: folder.id }],
+      ["move_folder", { folder_id: folder.id, expected_revision: 1, to_folder_path: "/" }],
+    ] as const) {
+      const result = await call(jordan, name, args);
+      expect(result.structuredContent).toEqual({
+        error: {
+          code: "FOLDER_NOT_FOUND",
+          message: expect.not.stringContaining("ws_demo"),
+          folder_id: folder.id,
+        },
+      });
+    }
+    // A path resolves in the caller's own workspace only.
+    expect(errorCode(await call(jordan, "list_files", { path: "/private" }))).toBe(
+      "PATH_NOT_FOUND",
+    );
+    await Promise.all([alex.close(), jordan.close()]);
+  });
+
+  it("list_files lists one folder, a flattened subtree, or name matches within it", async () => {
+    const alex = await connect("alex-token");
+    const { folder: api } = await mkdir(alex, "/specs/api");
+    await mkdir(alex, "/specs/ui");
+    await mkdir(alex, "/archive");
+    await ok(alex, "create_document", { name: "readme.md", content: "x", folder_path: "/specs" });
+    await ok(alex, "create_document", { name: "api-notes.md", content: "x", folder_path: "/specs/api" });
+    await ok(alex, "create_document", { name: "old-api.md", content: "x", folder_path: "/archive" });
+
+    const specs = await ok<Listing>(alex, "list_files", { path: "/specs" });
+    expect(specs.folder).toEqual({ id: expect.any(String), path: "/specs" });
+    expect(specs.folders.map((f) => f.name)).toEqual(["api", "ui"]);
+    expect(specs.files.map((f) => f.path)).toEqual(["/specs/readme.md"]);
+    expect(specs.truncated).toBe(false);
+
+    const byId = await ok<Listing>(alex, "list_files", { folder_id: api.id });
+    expect(byId.files.map((f) => f.path)).toEqual(["/specs/api/api-notes.md"]);
+
+    const tree = await ok<Listing>(alex, "list_files", { path: "/specs", recursive: true });
+    expect(tree.folders.map((f) => f.path)).toEqual(["/specs/api", "/specs/ui"]);
+    expect(tree.files.map((f) => f.path)).toEqual([
+      "/specs/api/api-notes.md",
+      "/specs/readme.md",
+    ]);
+    const everything = await ok<Listing>(alex, "list_files", { recursive: true });
+    expect(everything.folders.map((f) => f.path)).toEqual([
+      "/archive",
+      "/specs",
+      "/specs/api",
+      "/specs/ui",
+    ]);
+    expect(everything.files).toHaveLength(4);
+
+    const scoped = await ok<Listing>(alex, "list_files", { path: "/specs", query: "api" });
+    expect(scoped.folders.map((f) => f.path)).toEqual(["/specs/api"]);
+    expect(scoped.files.map((f) => f.path)).toEqual(["/specs/api/api-notes.md"]);
+    const all = await ok<Listing>(alex, "list_files", { query: "api" });
+    expect(all.files.map((f) => f.path)).toEqual([
+      "/archive/old-api.md",
+      "/specs/api/api-notes.md",
+    ]);
+
+    expect(errorCode(await call(alex, "list_files", { path: "/nope" }))).toBe("PATH_NOT_FOUND");
+    expect(
+      errorCode(await call(alex, "list_files", { folder_id: api.id, path: "/specs" })),
+    ).toBe("INVALID_INPUT");
+    await alex.close();
+  });
+
+  it("move_file moves and renames as a new version, and rejects stale versions and collisions", async () => {
+    const alex = await connect("alex-token");
+    const sam = await connect("sam-token");
+    const { folder: archive } = await mkdir(alex, "/archive");
+    const draft = await ok<File>(alex, "create_document", { name: "draft.md", content: "body" });
+    await ok(alex, "create_document", { name: "draft.md", content: "taken", folder_path: "/archive" });
+    const start = await ok<{ cursor: string }>(alex, "sync_workspace", {});
+
+    // Sam edits first, so Alex's version is stale.
+    await ok(sam, "update_document", { file_id: draft.id, content: "body v2", expected_version: 1 });
+    const stale = await call(alex, "move_file", {
+      file_id: draft.id,
+      expected_version: 1,
+      to_folder_path: "/archive",
+      new_name: "plan.md",
+    });
+    expect(stale.structuredContent).toMatchObject({
+      error: { code: "VERSION_CONFLICT", current_version: 2, expected_version: 1 },
+    });
+    expect(text(stale)).toContain("retry move_file with expected_version=2");
+
+    const collision = await call(alex, "move_file", {
+      file_id: draft.id,
+      expected_version: 2,
+      to_folder_id: archive.id,
+    });
+    expect(collision.structuredContent).toMatchObject({
+      error: { code: "NAME_EXISTS", kind: "file", name: "draft.md" },
+    });
+    expect(errorCode(await call(alex, "move_file", { file_id: draft.id, expected_version: 2 }))).toBe(
+      "INVALID_INPUT",
+    );
+    const unchanged = await ok<{ file: File }>(alex, "read_file", { file_id: draft.id });
+    expect(unchanged.file).toMatchObject({ path: "/draft.md", version: 2 });
+
+    const moved = await ok<File>(alex, "move_file", {
+      file_id: draft.id,
+      expected_version: 2,
+      to_folder_path: "/archive",
+      new_name: "plan.md",
+    });
+    expect(moved).toMatchObject({
+      id: draft.id,
+      parent_id: archive.id,
+      name: "plan.md",
+      path: "/archive/plan.md",
+      version: 3,
+    });
+    const read = await ok<{ content: string }>(sam, "read_file", { path: "/archive/plan.md" });
+    expect(read.content).toBe("body v2");
+    const versions = await ok<{ versions: { version: number }[] }>(sam, "get_file_versions", {
+      file_id: draft.id,
+    });
+    expect(versions.versions.map((v) => v.version)).toEqual([3, 2, 1]);
+
+    const back = await ok<File>(alex, "move_file", {
+      file_id: draft.id,
+      expected_version: 3,
+      to_folder_path: "/",
+    });
+    expect(back).toMatchObject({ parent_id: null, path: "/plan.md", version: 4 });
+
+    const changes = await ok<{
+      changed_files: File[];
+      events: { type: string; summary: string }[];
+    }>(alex, "sync_workspace", { since: start.cursor });
+    expect(changes.changed_files).toEqual([
+      expect.objectContaining({ id: draft.id, path: "/plan.md", version: 4 }),
+    ]);
+    expect(changes.events.filter((e) => e.type === "file.moved").map((e) => e.summary)).toEqual([
+      "Moved plan.md to /archive",
+      "Moved plan.md to /",
+    ]);
+    await Promise.all([alex.close(), sam.close()]);
+  });
+
+  it("move_folder moves a subtree and rejects cycles, stale revisions, collisions and depth overflow", async () => {
+    const alex = await connect("alex-token");
+    const { folder: specs } = await mkdir(alex, "/specs");
+    const { folder: api } = await mkdir(alex, "/specs/api");
+    const { folder: archive } = await mkdir(alex, "/archive");
+    await ok(alex, "create_document", { name: "endpoints.md", content: "x", folder_path: "/specs/api" });
+
+    for (const to_folder_id of [specs.id, api.id]) {
+      const cycle = await call(alex, "move_folder", {
+        folder_id: specs.id,
+        expected_revision: 1,
+        to_folder_id,
+      });
+      expect(errorCode(cycle)).toBe("INVALID_MOVE");
+    }
+    expect(
+      errorCode(
+        await call(alex, "move_folder", {
+          folder_id: specs.id,
+          expected_revision: 1,
+          to_folder_path: "/specs/api",
+        }),
+      ),
+    ).toBe("INVALID_MOVE");
+
+    await mkdir(alex, "/archive/specs");
+    const collision = await call(alex, "move_folder", {
+      folder_id: specs.id,
+      expected_revision: 1,
+      to_folder_id: archive.id,
+    });
+    expect(collision.structuredContent).toMatchObject({
+      error: { code: "NAME_EXISTS", kind: "folder", name: "specs" },
+    });
+
+    const moved = await ok<Folder>(alex, "move_folder", {
+      folder_id: specs.id,
+      expected_revision: 1,
+      to_folder_path: "/archive",
+      new_name: "specs-2025",
+    });
+    expect(moved).toMatchObject({
+      id: specs.id,
+      parent_id: archive.id,
+      name: "specs-2025",
+      path: "/archive/specs-2025",
+      revision: 2,
+    });
+    const file = await ok<{ file: File }>(alex, "read_file", {
+      path: "/archive/specs-2025/api/endpoints.md",
+    });
+    expect(file.file.version).toBe(1);
+    const sub = await ok<Listing>(alex, "list_files", { folder_id: api.id });
+    expect(sub.folder.path).toBe("/archive/specs-2025/api");
+
+    const stale = await call(alex, "move_folder", {
+      folder_id: specs.id,
+      expected_revision: 1,
+      to_folder_path: "/",
+    });
+    expect(stale.structuredContent).toMatchObject({
+      error: { code: "VERSION_CONFLICT", current_revision: 2, expected_revision: 1 },
+    });
+
+    // 31 levels down to the destination plus the two-level specs subtree is 33.
+    const deep = `/deep/${Array.from({ length: 30 }, (_, i) => `d${i}`).join("/")}`;
+    await mkdir(alex, deep);
+    const tooDeep = await call(alex, "move_folder", {
+      folder_id: specs.id,
+      expected_revision: 2,
+      to_folder_path: deep,
+    });
+    expect(errorCode(tooDeep)).toBe("FOLDER_TOO_DEEP");
+    const events = await ok<{ events: { type: string; summary: string }[] }>(
+      alex,
+      "sync_workspace",
+      {},
+    );
+    expect(events.events.filter((e) => e.type === "folder.moved").map((e) => e.summary)).toEqual([
+      "Moved folder specs-2025 to /archive",
+    ]);
+    await alex.close();
+  });
+});
+
 describe("Origin allowlist", () => {
   let originServer: Server;
   let originUrl: URL;
@@ -1792,7 +2201,7 @@ describe("Origin allowlist", () => {
         }),
       );
       const { tools } = await client.listTools();
-      expect(tools.length).toBe(11);
+      expect(tools.length).toBe(14);
       await client.close();
     }
   });
@@ -1830,7 +2239,7 @@ describe("Origin allowlist", () => {
         }),
       );
       const { tools } = await client.listTools();
-      expect(tools.length).toBe(11);
+      expect(tools.length).toBe(14);
       await client.close();
     } finally {
       await stop(slashServer);
@@ -1863,7 +2272,7 @@ describe("MockBackend", () => {
         "INVALID_INPUT",
       );
     }
-    const { file } = await backend.readFile(alex, "file_brief");
+    const { file } = await backend.readFile(alex, { file_id: "file_brief" });
     expect(file.version).toBe(1);
   });
 
@@ -1885,6 +2294,13 @@ describe("MockBackend", () => {
     expect(nameKey("  My\u00A0 Caf\u00e9.MD\u200B ")).toBe("my caf\u00e9.md");
     expect(nameKey("cafe\u0301.md")).toBe(nameKey("caf\u00e9.md"));
     expect(nameKey("Stra\u00dfe.md")).toBe(nameKey("STRASSE.md"));
+  });
+
+  it("accepts only valid new names", () => {
+    for (const name of ["notes.md", "a.b", "...", "x".repeat(255)])
+      expect(isValidName(name), name).toBe(true);
+    for (const name of ["", " ", "a/b", ".", "..", "x".repeat(256)])
+      expect(isValidName(name), name).toBe(false);
   });
 
   it("stores the display form of a name", () => {

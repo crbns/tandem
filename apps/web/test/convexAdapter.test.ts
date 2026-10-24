@@ -276,7 +276,8 @@ describe("createConvexApi", () => {
     ["FORBIDDEN", "FORBIDDEN"],
     ["FILE_NOT_FOUND", "FILE_NOT_FOUND"],
     ["UNAUTHENTICATED", "UNAUTHENTICATED"],
-    ["INVALID_NAME", "INVALID_INPUT"],
+    ["INVALID_NAME", "INVALID_NAME"],
+    ["INVALID_PARENT_FOLDER", "INVALID_INPUT"],
     ["WORKSPACE_NOT_FOUND", "FORBIDDEN"],
     ["CONTEXT_NOT_INITIALIZED", "UNKNOWN"],
   ])("maps the backend's ConvexError %s to %s", (backendCode, code) => {
@@ -295,5 +296,87 @@ describe("restoreRevision adapter (#26)", () => {
     const { client, calls } = fakeConvex({ "files:restoreRevision": new ConvexError({ code: "VERSION_CONFLICT", currentVersion: 4, currentContent: "newer" }) });
     await expect(createConvexApi(client).restoreRevision("files_1", 1, 3)).rejects.toMatchObject({ code: "VERSION_CONFLICT", details: { currentVersion: 4, currentContent: "newer" } });
     expect(calls).toHaveLength(1);
+  });
+});
+
+type BackendListing = FunctionReturnType<typeof api.folders.listDirectory>;
+type BackendFolderRow = BackendListing["folders"][number];
+
+describe("folder adapter (docs/filesystem.md Dashboard API)", () => {
+  const folderRow = (id: string, parentId: string | null, path: string, revision = 1): BackendFolderRow => ({
+    id: id as Id<"folders">,
+    workspaceId: "workspaces_1" as Id<"workspaces">,
+    parentId: parentId as Id<"folders"> | null,
+    name: path.split("/").at(-1)!,
+    path,
+    revision,
+    updatedAt: 1,
+    updatedBy: ALEX,
+  });
+  const SPECS = folderRow("folders_1", null, "/specs");
+  const API = folderRow("folders_2", "folders_1", "/specs/api");
+  const LISTING: BackendListing = {
+    folder: SPECS,
+    breadcrumbs: [{ id: SPECS.id, name: "specs" }],
+    folders: [API],
+    files: [{ ...FILE, parentId: SPECS.id, path: "/specs/plan.md" }],
+  };
+
+  it("calls api.folders.* and files.moveFile with exact args and maps rows", async () => {
+    const { client, calls } = fakeConvex({
+      "folders:listDirectory": LISTING,
+      "folders:listFolderTree": [SPECS, API],
+      "folders:createFolder": API,
+      "folders:renameFolder": { ...API, name: "v2", path: "/specs/v2", revision: 2 },
+      "folders:moveFolder": { ...API, parentId: null, path: "/api", revision: 2 },
+      "folders:deleteFolder": { deletedFiles: 3, deletedFolders: 2 },
+      "files:moveFile": { ...FILE, version: 4 },
+      "files:createDocument": { ...FILE, id: "files_2", version: 1 },
+    });
+    const tandem = createConvexApi(client);
+
+    const listing = await tandem.listDirectory("workspaces_1", "folders_1");
+    expect(listing.folder).toMatchObject({ id: "folders_1", parentId: null, path: "/specs", revision: 1 });
+    expect(listing.breadcrumbs).toEqual([{ id: "folders_1", name: "specs" }]);
+    expect(listing.folders[0]).toMatchObject({ id: "folders_2", parentId: "folders_1", updatedBy: { actorType: "human", userName: "Alex" } });
+    expect(listing.files[0]).toMatchObject({ id: "files_1", parentId: "folders_1", path: "/specs/plan.md" });
+    await tandem.listDirectory("workspaces_1", null);
+    expect((await tandem.listFolderTree("workspaces_1")).map((f) => f.path)).toEqual(["/specs", "/specs/api"]);
+    expect(await tandem.createFolder("workspaces_1", { name: "api", parentId: "folders_1" })).toMatchObject({ path: "/specs/api" });
+    await tandem.createFolder("workspaces_1", { name: "top", parentId: null });
+    expect(await tandem.renameFolder("folders_2", "v2", 1)).toMatchObject({ name: "v2", revision: 2 });
+    expect(await tandem.moveFolder("folders_2", null, 2)).toMatchObject({ parentId: null, path: "/api" });
+    expect(await tandem.deleteFolder("folders_1", 1)).toEqual({ deletedFiles: 3, deletedFolders: 2 });
+    expect(await tandem.moveFile("files_1", "folders_1", 3)).toEqual({ version: 4 });
+    await tandem.createFile("workspaces_1", { name: "n.md", mimeType: "text/markdown", content: "", parentId: "folders_1" });
+
+    expect(calls).toEqual([
+      { name: "folders:listDirectory", args: { workspaceId: "workspaces_1", folderId: "folders_1" } },
+      { name: "folders:listDirectory", args: { workspaceId: "workspaces_1" } },
+      { name: "folders:listFolderTree", args: { workspaceId: "workspaces_1" } },
+      { name: "folders:createFolder", args: { workspaceId: "workspaces_1", name: "api", parentId: "folders_1" } },
+      { name: "folders:createFolder", args: { workspaceId: "workspaces_1", name: "top" } },
+      { name: "folders:renameFolder", args: { folderId: "folders_2", name: "v2", expectedRevision: 1 } },
+      { name: "folders:moveFolder", args: { folderId: "folders_2", parentId: null, expectedRevision: 2 } },
+      { name: "folders:deleteFolder", args: { folderId: "folders_1", expectedRevision: 1 } },
+      { name: "files:moveFile", args: { fileId: "files_1", parentId: "folders_1", expectedVersion: 3 } },
+      { name: "files:createDocument", args: { workspaceId: "workspaces_1", name: "n.md", mimeType: "text/markdown", content: "", parentId: "folders_1" } },
+    ]);
+  });
+
+  it("surfaces folder errors with their own codes and details", async () => {
+    const { client } = fakeConvex({
+      "folders:moveFolder": new ConvexError({ code: "INVALID_MOVE" }),
+      "folders:renameFolder": new ConvexError({ code: "NAME_EXISTS", kind: "file", fileId: "files_1", name: "plan.md", currentVersion: 3 }),
+      "folders:deleteFolder": new ConvexError({ code: "VERSION_CONFLICT", currentRevision: 5 }),
+      "folders:listDirectory": new ConvexError({ code: "FOLDER_NOT_FOUND", folderId: "folders_9" }),
+    });
+    const tandem = createConvexApi(client);
+    await expect(tandem.moveFolder("folders_1", "folders_2", 1)).rejects.toMatchObject({ code: "INVALID_MOVE" });
+    await expect(tandem.renameFolder("folders_1", "plan.md", 1)).rejects.toMatchObject({
+      code: "NAME_EXISTS", details: { existing: { kind: "file", id: "files_1", name: "plan.md" } },
+    });
+    await expect(tandem.deleteFolder("folders_1", 1)).rejects.toMatchObject({ code: "VERSION_CONFLICT", details: { currentRevision: 5 } });
+    await expect(tandem.listDirectory("workspaces_1", "folders_9")).rejects.toMatchObject({ code: "FOLDER_NOT_FOUND" });
   });
 });

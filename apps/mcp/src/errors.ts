@@ -5,7 +5,13 @@ export type TandemErrorCode =
   | "VERSION_CONFLICT"
   | "NAME_EXISTS"
   | "APPROVAL_REQUIRED"
-  | "INVALID_INPUT";
+  | "INVALID_INPUT"
+  | "INVALID_PATH"
+  | "PATH_NOT_FOUND"
+  | "FOLDER_NOT_FOUND"
+  | "INVALID_MOVE"
+  | "FOLDER_TOO_DEEP"
+  | "FOLDER_TOO_LARGE";
 
 /** A domain error that tool handlers turn into an `isError` tool result. */
 export class TandemError extends Error {
@@ -35,16 +41,53 @@ export function fileNotFound(fileId: string): TandemError {
   );
 }
 
+export function folderNotFound(folderId: string): TandemError {
+  return new TandemError(
+    "FOLDER_NOT_FOUND",
+    `No folder with id ${folderId}. Call list_files to find the correct folder id.`,
+    { folder_id: folderId },
+  );
+}
+
+export function invalidPath(path: string, reason: string): TandemError {
+  return new TandemError(
+    "INVALID_PATH",
+    `Invalid path ${JSON.stringify(path)}: ${reason}. ` +
+      `Write paths like "/specs/api/endpoints.md": names separated by "/", without empty, "." or ".." segments.`,
+    { path },
+  );
+}
+
+export function pathNotFound(path: string, hint: string): TandemError {
+  // The path may contain untrusted names, so quote it.
+  return new TandemError(
+    "PATH_NOT_FOUND",
+    `Nothing at path ${JSON.stringify(path)}. ${hint}`,
+    { path },
+  );
+}
+
+export function folderTooDeep(path: string): TandemError {
+  return new TandemError(
+    "FOLDER_TOO_DEEP",
+    `Folders can nest at most 32 levels deep, and ${JSON.stringify(path)} would go deeper. Use a shallower folder.`,
+    { path, max_depth: 32 },
+  );
+}
+
 export function versionConflict(
   fileId: string,
   currentVersion: number,
   expectedVersion: number,
+  tool: "update_document" | "move_file" = "update_document",
 ): TandemError {
   return new TandemError(
     "VERSION_CONFLICT",
     `File ${fileId} is at version ${currentVersion}, not ${expectedVersion}; someone else changed it. ` +
-      `Re-read the file with read_file, merge your changes into the latest content, ` +
-      `then retry update_document with expected_version=${currentVersion}.`,
+      (tool === "update_document"
+        ? `Re-read the file with read_file, merge your changes into the latest content, `
+        : `Re-read the file with read_file and check the move still makes sense, `) +
+      `then retry ${tool} with expected_version=${currentVersion}.`,
     {
       file_id: fileId,
       current_version: currentVersion,
@@ -96,6 +139,16 @@ export function nameExists(
     `A file named ${JSON.stringify(name)} already exists (file_id ${fileId}, version ${currentVersion}). ` +
       `Read it with read_file. If it is the same document, merge your changes into it with update_document; ` +
       `otherwise choose a different name or ask the user.`,
-    { file_id: fileId, name, current_version: currentVersion },
+    { kind: "file", file_id: fileId, name, current_version: currentVersion },
+  );
+}
+
+/** A folder already uses the name in that folder (files and folders share one namespace). */
+export function folderNameExists(folderId: string, name: string): TandemError {
+  return new TandemError(
+    "NAME_EXISTS",
+    `A folder named ${JSON.stringify(name)} already exists there (folder_id ${folderId}). ` +
+      `Choose a different name, or use that folder.`,
+    { kind: "folder", folder_id: folderId, name },
   );
 }

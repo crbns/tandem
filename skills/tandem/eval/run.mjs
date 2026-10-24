@@ -72,6 +72,9 @@ const LOCAL_TOOLS = new Set(["Read", "Glob", "Grep"]);
 const WRITE_TOOLS = new Set([
   "create_document",
   "update_document",
+  "create_folder",
+  "move_file",
+  "move_folder",
   "publish_work",
   "propose_context_change",
 ]);
@@ -1267,7 +1270,7 @@ ${envLine}
 
 ## Summary
 
-Counts are k/n trials. Sync/write attempted count trials with matching tool calls; Sync/write OK require at least one matching non-error tool result. Write tools are create_document, update_document, publish_work, propose_context_change. First Tandem call = sync measures attempted order. Tool errors counts trials with at least one Tandem tool error, even if the final answer succeeds. Errors/timeouts includes tool errors, CLI failures (including nonzero exit or a missing final result), and timeouts; these trials still count in n. Tool calls made inside subagents are excluded. Columns shown as n/a were not recorded by that run.${staleNote}
+Counts are k/n trials. Sync/write attempted count trials with matching tool calls; Sync/write OK require at least one matching non-error tool result. Write tools are create_document, update_document, create_folder, move_file, move_folder, publish_work, propose_context_change. First Tandem call = sync measures attempted order. Tool errors counts trials with at least one Tandem tool error, even if the final answer succeeds. Errors/timeouts includes tool errors, CLI failures (including nonzero exit or a missing final result), and timeouts; these trials still count in n. Tool calls made inside subagents are excluded. Columns shown as n/a were not recorded by that run.${staleNote}
 
 ${renderSummaryTable(r.summary, r.settings.env, r.trials)}
 ${renderConflictSection(r)}## Isolation
