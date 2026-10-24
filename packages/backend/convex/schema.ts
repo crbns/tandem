@@ -7,6 +7,8 @@ const actor = v.object({
   userId: v.optional(v.id("users")),
   agentConnectionId: v.optional(v.id("agent_connections")),
   label: v.string(),
+  client: v.optional(v.string()),
+  userName: v.optional(v.string()),
 });
 
 const contextValue = v.object({
@@ -136,6 +138,7 @@ export default defineSchema({
     proposedValue: v.string(),
     rationale: v.string(),
     sourceFileIds: v.array(v.id("files")),
+    contextRevision: v.optional(v.number()),
     status: v.union(
       v.literal("pending"),
       v.literal("approved"),
