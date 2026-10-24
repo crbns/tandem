@@ -22,9 +22,10 @@ The content lives in `packages/backend/convex/seed.ts` (`DEMO_BRIEF`, `DEMO_GOAL
 
 ## What a reset does
 
-1. It creates the three users, or for users that already exist, sets their password and signs out their existing sessions.
-2. It deletes Alex's "Onboarding refresh" workspace and everything in it (files, revisions, proposals, approvals, events, connections, invites, stored blobs).
-3. It builds the workspace again as described above, in one transaction.
+1. It checks the inputs (password length, token format, tokens that are duplicated or used outside the demo). If any check fails, it stops before changing anything.
+2. It creates the three users. For users that already exist, it sets their password and deletes their sessions and refresh tokens. A dashboard sign-in token issued before the reset keeps working until it expires (at most an hour).
+3. It deletes the seeded demo workspace and everything in it (files, revisions, proposals, approvals, events, connections, invites, stored blobs). The seeded workspace carries a `demoSeed` marker, so a workspace Alex creates with the same name is not touched.
+4. It builds the workspace again as described above, in one transaction.
 
 Nothing else is touched. Other workspaces, including any the demo users created themselves, survive a reset. Running it repeatedly always ends in the same state.
 
@@ -89,7 +90,7 @@ The rules:
 
 - The password needs at least 8 characters.
 - A token must have the `tdm_` form the reset printed. Make your own with a reset that has no pins, and copy its tokens.
-- A pinned token that is already used by another connection outside the demo is rejected with `INVALID_INPUT`.
+- A token pinned for two people, or already used by a connection outside the demo, is rejected with `INVALID_INPUT`.
 
 Treat the password and tokens as secrets on a public deployment. Anyone who has them can act as that demo user.
 
@@ -130,7 +131,7 @@ It doesn't run as part of `pnpm test:e2e`, where the suite shows as skipped.
 2. Run `pnpm test:demo` against the demo deployment. All 6 steps should pass, and it leaves the demo clean.
 3. Configure Claude Code with Alex's token. Sign in to the dashboard as Blake in a second browser profile.
 4. Rehearse.
-5. Run `pnpm demo:reset`. The output should match your pinned values. Each reset signs everyone out, so sign Blake in again.
+5. Run `pnpm demo:reset`. The output should match your pinned values. Sign out and back in as Blake: the reset ends sessions, though an open tab can keep working for up to an hour on its current token.
 6. Check the dashboard: only `brief.md` (v1), the approved goal is shown, and there are no pending approvals.
 
 ## Troubleshooting
@@ -142,5 +143,5 @@ It doesn't run as part of `pnpm test:e2e`, where the suite shows as skipped.
 | Sign-in fails with the old password | Expected: each reset sets a new password unless `DEMO_PASSWORD` is pinned. Use the password from the last reset. |
 | Claude Code gets 401 after a reset | Expected without pinned tokens, because the old connections were deleted. Re-add with the new token, or pin `DEMO_TOKEN_*`. |
 | `WEAK_PASSWORD` | `DEMO_PASSWORD` is shorter than 8 characters. |
-| `INVALID_INPUT` with `field: "tokens.<name>"` | That pinned token is malformed or used by another connection. Drop the pin to get a new one. |
-| The reset fails partway | The rebuild is one transaction, so the demo workspace is either fully replaced or left as it was. Fix the cause and rerun. |
+| `INVALID_INPUT` with `field: "tokens.<name>"` | That pinned token is malformed, pinned for two people, or used by a connection outside the demo. Drop the pin to get a new one. |
+| The reset fails | Input errors (`WEAK_PASSWORD`, `INVALID_INPUT`) are caught before any account changes. If it fails later, the passwords may already be reset but the rebuild is one transaction, so the demo workspace is either fully replaced or left as it was. Fix the cause and rerun; the passwords and tokens printed by the next successful reset are the valid ones. |

@@ -61,7 +61,7 @@ for (const member of demo.members) {
 lines.push(
   "",
   "To keep these across resets:",
-  `  DEMO_PASSWORD='${demo.password}' ${demo.members
+  `  DEMO_PASSWORD='${demo.password.replaceAll("'", "'\\''")}' ${demo.members
     .map((m) => `DEMO_TOKEN_${m.key.toUpperCase()}=${m.token}`)
     .join(" ")}`,
 );

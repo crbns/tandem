@@ -22,6 +22,7 @@ import {
   type MutationCtx,
   internalAction,
   internalMutation,
+  internalQuery,
 } from "./_generated/server";
 import { MIN_PASSWORD_LENGTH } from "./auth";
 import { decideProposalCore } from "./context";
@@ -145,20 +146,52 @@ export const resetDemo = internalAction({
   },
   returns: resetResult,
   handler: async (ctx, args) => {
+    // Every check runs before the first account change, so a refused reset
+    // leaves passwords and sessions as they were.
     const password = args.password ?? generatePassword();
     if (password.length < MIN_PASSWORD_LENGTH)
       throw new ConvexError({ code: "WEAK_PASSWORD", field: "password" });
-    const people = [];
-    for (const person of DEMO_PEOPLE) {
-      const token = args.tokens?.[person.key] ?? generateAgentToken();
-      if (!TOKEN_PATTERN.test(token))
+    const tokens = DEMO_PEOPLE.map(
+      (person) => args.tokens?.[person.key] ?? generateAgentToken(),
+    );
+    DEMO_PEOPLE.forEach((person, i) => {
+      if (!TOKEN_PATTERN.test(tokens[i]!) || tokens.indexOf(tokens[i]!) !== i)
         throw new ConvexError({ code: "INVALID_INPUT", field: `tokens.${person.key}` });
+    });
+    const taken: number[] = await ctx.runQuery(internal.seed.tokensInUse, { tokens });
+    if (taken.length > 0)
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        field: `tokens.${DEMO_PEOPLE[taken[0]!]!.key}`,
+      });
+    const people = [];
+    for (const [i, person] of DEMO_PEOPLE.entries()) {
       const userId = await upsertPasswordUser(ctx, person, password);
-      people.push({ key: person.key, userId, token });
+      people.push({ key: person.key, userId, token: tokens[i]! });
     }
     const built: Omit<typeof resetResult.type, "password"> =
       await ctx.runMutation(internal.seed.rebuildDemoWorkspace, { people });
     return { ...built, password };
+  },
+});
+
+/** Indexes of `tokens` held by a connection outside a demo workspace. */
+export const tokensInUse = internalQuery({
+  args: { tokens: v.array(v.string()) },
+  returns: v.array(v.number()),
+  handler: async (ctx, { tokens }) => {
+    const taken = [];
+    for (const [i, token] of tokens.entries()) {
+      const tokenHash = await hashAgentToken(token);
+      const connection = await ctx.db
+        .query("agent_connections")
+        .withIndex("by_token_hash", (q) => q.eq("tokenHash", tokenHash))
+        .first();
+      if (!connection) continue;
+      const workspace = await ctx.db.get(connection.workspaceId);
+      if (workspace?.demoSeed !== true) taken.push(i);
+    }
+    return taken;
   },
 });
 
@@ -197,12 +230,13 @@ export const rebuildDemoWorkspace = internalMutation({
       .query("workspaces")
       .withIndex("by_created_by", (q) => q.eq("createdBy", alex._id))
       .take(100);
+    // Marked by demoSeed, not by name: a workspace Alex names the same survives.
     for (const workspace of previous)
-      if (workspace.name === DEMO_WORKSPACE_NAME)
-        await deleteWorkspace(ctx, workspace._id);
+      if (workspace.demoSeed === true) await deleteWorkspace(ctx, workspace._id);
 
     const workspaceId = await ctx.db.insert("workspaces", {
       name: DEMO_WORKSPACE_NAME,
+      demoSeed: true,
       createdBy: alex._id,
       updatedBy: owner,
       revision: 1,
@@ -244,8 +278,8 @@ export const rebuildDemoWorkspace = internalMutation({
           kind: "workspace.member_added",
           entityType: "workspace_member",
           entityId: memberId,
-          summary: `${actor.label} joined through an invite`,
-          actor,
+          summary: `Added ${actor.label} as a member`,
+          actor: owner,
         });
     }
 

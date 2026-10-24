@@ -80,7 +80,8 @@ describe("seed:rebuildDemoWorkspace", () => {
     const { t, rebuild, as } = await setup();
     const first = await rebuild();
     // Alex's own non-demo workspace, and an edit to the demo, both from before the reset.
-    const other = await as("alex").mutation(api.workspaces.createWorkspace, { name: "Alex's own" });
+    // Named like the demo on purpose: only the seeded workspace is replaced.
+    const other = await as("alex").mutation(api.workspaces.createWorkspace, { name: DEMO_WORKSPACE_NAME });
     await as("blake").mutation(api.files.createDocument, {
       workspaceId: first.workspaceId,
       name: "proposal.md",
@@ -112,5 +113,30 @@ describe("seed:rebuildDemoWorkspace", () => {
         .filter((row) => row.workspaceId === old),
     ]);
     expect(leftovers).toEqual([]);
+  });
+});
+
+describe("seed:resetDemo", () => {
+  it("refuses bad pins before touching any account", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await t.run((ctx) => ctx.db.insert("users", { name: "Dana" }));
+    const dana = t.withIdentity({ subject: `${userId}|session` });
+    const workspaceId = await dana.mutation(api.workspaces.createWorkspace, { name: "Dana's" });
+    const { token: danasToken } = await dana.mutation(api.agentConnections.createAgentConnection, {
+      workspaceId,
+      client: "claude",
+    });
+    const same = generateAgentToken();
+    for (const [args, field] of [
+      [{ password: "short" }, "password"],
+      [{ tokens: { blake: "tdm_bad" } }, "tokens.blake"],
+      [{ tokens: { alex: same, casey: same } }, "tokens.casey"],
+      [{ tokens: { blake: danasToken } }, "tokens.blake"],
+    ] as const) {
+      await expect(t.action(internal.seed.resetDemo, args)).rejects.toThrow(field);
+    }
+    const accounts = await t.run((ctx) => ctx.db.query("authAccounts").take(10));
+    expect(accounts).toEqual([]);
+    expect(await t.query(api.mcp.verifyToken, { token: danasToken })).toMatchObject({ workspaceId });
   });
 });
