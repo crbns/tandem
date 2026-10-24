@@ -37,7 +37,7 @@ const fns = {
     { fileId: string; expectedVersion: number; content: string },
     BackendFile
   >("files:updateDocument"),
-  getFileVersions: makeFunctionReference<"query", { fileId: string }, BackendRevision[]>(
+  getFileVersions: makeFunctionReference<"query", { fileId: string; limit: number }, BackendRevision[]>(
     "files:getFileVersions",
   ),
   getWorkspaceContext: makeFunctionReference<
@@ -46,6 +46,10 @@ const fns = {
     BackendWorkspaceContext | null
   >("workspaces:getWorkspaceContext"),
 };
+
+// The backend's maximum. Its default (20) would cut history short: the oldest
+// version shown would lose its diff and look like the first one.
+export const REVISION_LIMIT = 100;
 
 // The Convex client never rejects while disconnected: queries wait for the
 // socket and mutations queue until it's back. Without a deadline, "Saving…" and
@@ -86,7 +90,9 @@ export function createConvexApi(convex: ConvexReactClient): TandemApi {
         return { version: file.version };
       }),
     listRevisions: (fileId) =>
-      call(async () => toRevisions(await convex.query(fns.getFileVersions, { fileId }))),
+      call(async () =>
+        toRevisions(await convex.query(fns.getFileVersions, { fileId, limit: REVISION_LIMIT })),
+      ),
     getContext: (workspaceId) =>
       call(async () => toProjectContext(await convex.query(fns.getWorkspaceContext, { workspaceId }))),
   };

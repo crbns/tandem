@@ -1,4 +1,5 @@
 import { ConvexError, type Value } from "convex/values";
+import { type BackendActor, toActor } from "./convexMappers";
 import type { Actor } from "./types";
 
 export const API_ERROR_CODES = [
@@ -42,6 +43,31 @@ function isApiErrorCode(value: unknown): value is ApiErrorCode {
   return typeof value === "string" && (API_ERROR_CODES as readonly string[]).includes(value);
 }
 
+/**
+ * The backend's own codes (packages/backend/convex) that have a dashboard
+ * equivalent. Used for `ConvexError({ code })` and for the dev-mode message
+ * fallback, so the backend can keep its names when it switches to ConvexError.
+ * Codes left out (e.g. CONTEXT_NOT_INITIALIZED) are server faults: UNKNOWN.
+ */
+const BACKEND_CODES: Readonly<Record<string, ApiErrorCode>> = {
+  // A member can't reach a missing workspace's pages, so "not found" copy fits.
+  WORKSPACE_NOT_FOUND: "FILE_NOT_FOUND",
+  PROPOSAL_NOT_FOUND: "FILE_NOT_FOUND",
+  // Someone decided it first: the same "reread, you were stale" situation.
+  PROPOSAL_ALREADY_DECIDED: "VERSION_CONFLICT",
+  INVALID_NAME: "INVALID_INPUT",
+  INVALID_PARENT_FOLDER: "INVALID_INPUT",
+  INVALID_SOURCE_FILE: "INVALID_INPUT",
+  INVALID_EMAIL: "INVALID_INPUT",
+  USER_NOT_REGISTERED: "INVALID_INPUT",
+  USER_EMAIL_NOT_VERIFIED: "INVALID_INPUT",
+};
+
+function toApiErrorCode(value: unknown): ApiErrorCode | null {
+  if (isApiErrorCode(value)) return value;
+  return typeof value === "string" ? (BACKEND_CODES[value] ?? null) : null;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
@@ -49,6 +75,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function asActor(value: unknown): Actor | undefined {
   const v = asRecord(value);
   if (!v) return undefined;
+  // The backend's own actor { type, label, userId?, agentConnectionId? }, which
+  // it will naturally pass as `updatedBy: file.updatedBy`.
+  if ((v.type === "human" || v.type === "agent" || v.type === "system") && typeof v.label === "string") {
+    return toActor(v as unknown as BackendActor);
+  }
   // Canonical camelCase, or MCP's snake_case Attribution { actor_type, user_id, client }.
   const actorType = v.actorType ?? v.actor_type;
   const userId = v.userId ?? v.user_id;
@@ -68,10 +99,11 @@ function asActor(value: unknown): Actor | undefined {
 
 function fromConvexError(err: ConvexError<Value>): TandemApiError {
   const data = err.data;
-  if (isApiErrorCode(data)) return new TandemApiError(data);
+  const bare = toApiErrorCode(data);
+  if (bare) return new TandemApiError(bare);
 
   const record = asRecord(data);
-  const code = record && isApiErrorCode(record.code) ? record.code : "UNKNOWN";
+  const code = (record && toApiErrorCode(record.code)) ?? "UNKNOWN";
   const details: ApiErrorDetails = {};
   if (record) {
     // Canonical keys are camelCase (CONTRACT_NOTES); snake_case is accepted so a
@@ -99,22 +131,15 @@ const MESSAGE_PATTERNS: ReadonlyArray<[RegExp, ApiErrorCode]> = [
 ];
 
 // The current backend throws `new Error("CODE")` / `new Error("VERSION_CONFLICT:
-// current version is N; …")`, which `convex dev` relays as "Uncaught Error: CODE".
-// Same dev-only caveat as above: deployed, these arrive as UNKNOWN until the
-// backend switches to ConvexError. Anchored on "Uncaught Error: " so a code
-// word inside file content or a user-supplied name can't match.
-const BACKEND_CODES: Readonly<Record<string, ApiErrorCode>> = {
-  VERSION_CONFLICT: "VERSION_CONFLICT",
-  FORBIDDEN: "FORBIDDEN",
-  FILE_NOT_FOUND: "FILE_NOT_FOUND",
-  UNAUTHENTICATED: "UNAUTHENTICATED",
-  INVALID_NAME: "INVALID_INPUT",
-  INVALID_PARENT_FOLDER: "INVALID_INPUT",
-};
+// current version is N; …")`, which `convex dev` relays as a line reading
+// "Uncaught Error: CODE[: detail]". Same dev-only caveat as above: deployed,
+// these arrive as UNKNOWN until the backend switches to ConvexError. The whole
+// line must have that form, so a code word elsewhere in a message can't match.
+const BACKEND_MESSAGE = /^Uncaught Error: ([A-Z_]+)(?:: (.*))?$/m;
 
 function fromBackendMessage(message: string): TandemApiError | null {
-  const match = /Uncaught Error: ([A-Z_]+)\b(.*)/.exec(message);
-  const code = match && BACKEND_CODES[match[1]!];
+  const match = BACKEND_MESSAGE.exec(message);
+  const code = match && toApiErrorCode(match[1]);
   if (!code) return null;
   const details: ApiErrorDetails = { cause: message };
   const version = /current version is (\d+)/.exec(match[2] ?? "");
