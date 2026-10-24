@@ -4,5 +4,8 @@
 
 {$WEB_DOMAIN} {
 	encode zstd gzip
+	# The app sets its other security headers itself (next.config.js).
+	header Strict-Transport-Security "max-age=31536000"
+	header -Server
 	reverse_proxy web:3000
 }

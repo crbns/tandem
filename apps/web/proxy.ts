@@ -35,6 +35,9 @@ export default function proxy(request: NextRequest, event: NextFetchEvent) {
 }
 
 export const config = {
-  // Everything except static files and Next internals; /api/auth must pass through.
-  matcher: ["/((?!.*\\..*|_next).*)", "/", "/(api|trpc)(.*)"],
+  // Everything except Next's static output and asset files; /api/auth must pass
+  // through. Match asset extensions only, so ids with dots (/w/acme.prod) are guarded.
+  matcher: [
+    "/((?!_next/static|_next/image|favicon\\.ico|.*\\.(?:png|jpe?g|gif|svg|ico|webp|avif|woff2?|css|js|map|txt)$).*)",
+  ],
 };
