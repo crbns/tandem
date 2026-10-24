@@ -165,6 +165,76 @@ Report project prompts separately from unrelated controls such as `Write a
 haiku about rain.` (three fresh chats). Small samples measure behavior under
 this setup; they do not promise automatic activation in all chats.
 
+## Continuous loop (read before, write back after)
+
+Measures whether, once Tandem is in use in a chat, the assistant keeps syncing
+and reading before work and writing back after it **without being asked
+again**. Use one fresh chat per run, three runs per client. Send these turns in
+order in the same chat; only the first mentions Tandem:
+
+```text
+Use Tandem for this. What's our current project goal?
+```
+
+```text
+Draft a short risks section for brief.md covering the top three launch risks.
+```
+
+```text
+Add a one-paragraph status note for this week as a new doc.
+```
+
+```text
+Which of these risks should we tackle first?
+```
+
+```text
+We've decided to cut the mobile app from v1.
+```
+
+Between turns 2 and 3, have a teammate edit `brief.md` in the dashboard so the
+next write must re-sync or hit `VERSION_CONFLICT`.
+
+Expected, per turn (record each as yes / no / prompted):
+
+| Turn | Read before                                                      | Write back after                                                                  |
+| ---- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| 1    | `sync_workspace` (brief); answer cites the approved goal         | none (question only)                                                              |
+| 2    | `sync_workspace` with `since`, `read_file` of `brief.md`         | `update_document` with the version read, then `publish_work`; one-line report     |
+| 3    | `sync_workspace` with `since` (sees the teammate edit)           | `create_document`, then `publish_work`; one-line report                           |
+| 4    | `sync_workspace` with `since`, `read_file` of `brief.md`         | no file change; still `publish_work` kind `"finding"` with the recommendation     |
+| 5    | `sync_workspace` with `since`                                    | `propose_context_change` (`decisions`), reported as pending; no file edit claims it |
+
+Also check in the dashboard: the new revisions, the published work, and the
+pending proposal, each attributed to the assistant. Check that no published
+summary quotes the chat beyond the work itself. Note every client
+write-confirmation prompt; "Always allow" on Tandem's tools removes them.
+
+| Client         | Run | T1 read | T2 read/write | T3 read/write | T4 finding | T5 propose | Prompted? | Notes |
+| -------------- | --- | ------- | ------------- | ------------- | ---------- | ---------- | --------- | ----- |
+| Claude web     |     | PENDING | PENDING       | PENDING       | PENDING    | PENDING    |           |       |
+| Claude desktop |     | PENDING | PENDING       | PENDING       | PENDING    | PENDING    |           |       |
+
+**Empty-context run.** Send turns 1 to 3 once per client in a fresh chat on a
+workspace with no approved goal, scope or entries, after seeding `brief.md`
+with a goal, an owner and an open question in its text (turn 1 then finds no
+approved goal). Expected: the first
+`sync_workspace` result's `next_steps` starts with the "context is empty" step,
+and the assistant seeds the context from the files it reads or saves: after
+reading `brief.md` and after each `create_document` / `update_document` it
+calls `propose_context_change` for what the file shows (goal, scope,
+constraints, decisions, owners, open questions) with that file's id in
+`source_ids`. The proposals stay pending (manual workspace), so later syncs
+still show the "context is empty" step; the assistant must not re-propose what
+is already pending (the brief's `blockers.pending_approvals`). Check in the
+dashboard that the proposals are pending, cite the file, and that each item
+was proposed once. Record yes / no / prompted per client.
+
+| Client         | Run | Empty-context step seen | Proposals after read/save | Cite file in `source_ids` | No duplicate proposals | Notes |
+| -------------- | --- | ----------------------- | ------------------------- | ------------------------- | ---------------------- | ----- |
+| Claude web     |     | PENDING                 | PENDING                   | PENDING                   | PENDING                |       |
+| Claude desktop |     | PENDING                 | PENDING                   | PENDING                   | PENDING                |       |
+
 ## Record and replay
 
 Save redacted screenshots of connector/skill installation, expanded successful

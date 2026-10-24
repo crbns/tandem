@@ -11,6 +11,18 @@ You need two pieces in each client:
 1. **The Tandem MCP connector**, which provides the tools.
 2. **This skill**, which tells the assistant when and how to use them.
 
+**The loop.** Once Tandem is used in a chat, the skill and the server both tell
+the assistant to run the same loop on every later project request: sync, read
+the relevant files, do the work, write back (`update_document` /
+`create_document`), log the request with `publish_work` (even when no file
+changed), propose context changes (seeding an empty context from the files it
+reads or saves, otherwise anything a saved file shows that the context lacks,
+skipping what is already pending), and report.
+The server sends the loop as MCP `instructions` at initialize and restates it
+as `next_steps` on `sync_workspace`, save, publish, and propose results, so it
+reaches assistants without the skill too. `TESTING.md` → "Continuous loop"
+measures it.
+
 > **Limits.** A skill only nudges the model. Whether it activates, and whether
 > the assistant calls `sync_workspace`/`list_files`, is probabilistic. A skill
 > cannot force tool calls, and Tandem cannot wake a native chat when files
