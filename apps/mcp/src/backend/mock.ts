@@ -9,6 +9,7 @@ import {
   versionConflict,
 } from "../errors.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
+import { nameKey, storedName } from "../names.js";
 import type {
   Actor,
   AgentConnection,
@@ -75,6 +76,7 @@ const SYNC_LIMIT = 50;
 
 /** In-memory backend for local development and tests. State is lost on restart. */
 export class MockBackend implements TandemBackend {
+  readonly kind = "mock";
   // Insertion order matters: an actor's first workspace is their default.
   private readonly workspaces = new Map<string, StoredWorkspace>();
   private readonly files = new Map<string, StoredFile>();
@@ -99,6 +101,7 @@ export class MockBackend implements TandemBackend {
       members: new Map([
         ["user_alex", "owner"],
         ["user_sam", "member"],
+        ["user_taylor", "admin"],
       ]),
       context: {
         goal: "Ship a working Tandem demo at Cal Hacks 13.0: two teammates, each in their own assistant, editing one canonical brief without losing work.",
@@ -273,7 +276,16 @@ export class MockBackend implements TandemBackend {
         { parent_id: input.parent_id },
       );
     }
-    const key = nameKey(input.name);
+    const name = storedName(input.name);
+    const key = nameKey(name);
+    if (!key || name.length > 255) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "name must contain 1–255 visible characters.",
+        { name: input.name },
+      );
+    }
+    // No await between the check and the insert, so this is atomic in Node.
     const existing = [...this.files.values()].find(
       (f) =>
         f.workspace_id === workspaceId &&
@@ -287,7 +299,7 @@ export class MockBackend implements TandemBackend {
       id: `file_${randomUUID()}`,
       workspace_id: workspaceId,
       parent_id: null,
-      name: input.name,
+      name,
       mime_type: input.mime_type,
       revisions: [newRevision(actor, 1, input.content)],
     };
@@ -309,11 +321,19 @@ export class MockBackend implements TandemBackend {
   ): Promise<FileMetadata> {
     const file = this.getFile(actor, input.file_id);
     const current = head(file).version;
-    if (input.expected_version > current) {
-      throw versionAhead(file.id, current, input.expected_version);
+    const expected = input.expected_version;
+    if (!Number.isSafeInteger(expected) || expected < 1) {
+      throw new TandemError(
+        "INVALID_INPUT",
+        "expected_version must be a positive integer: the file.version returned by read_file.",
+        { file_id: file.id, expected_version: expected },
+      );
     }
-    if (input.expected_version < current) {
-      throw versionConflict(file.id, current, input.expected_version);
+    // Fail closed: anything other than an exact match is rejected.
+    if (expected !== current) {
+      throw expected > current
+        ? versionAhead(file.id, current, expected)
+        : versionConflict(file.id, current, expected);
     }
     file.revisions.push(newRevision(actor, current + 1, input.content));
     this.appendEvent(
@@ -387,6 +407,7 @@ export class MockBackend implements TandemBackend {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
     this.checkValue(workspaceId, input.field, input.proposed_value);
     const proposal: ContextProposal = {
+      base_context_version: this.workspaces.get(workspaceId)!.context_version,
       id: `prop_${randomUUID()}`,
       workspace_id: workspaceId,
       field: input.field,
@@ -457,7 +478,7 @@ export class MockBackend implements TandemBackend {
     if (actor.actor_type !== "human") {
       throw new TandemError(
         "FORBIDDEN",
-        "Only a human workspace owner can approve or reject proposals, in the Tandem dashboard.",
+        "Only a human workspace owner or admin can approve or reject proposals, in the Tandem dashboard.",
         { proposal_id: proposalId },
       );
     }
@@ -471,7 +492,7 @@ export class MockBackend implements TandemBackend {
         },
       );
     }
-    this.requireOwner(actor, proposal.workspace_id);
+    this.requireContextManager(actor, proposal.workspace_id);
     if (proposal.status !== "pending") {
       throw new TandemError(
         "INVALID_INPUT",
@@ -481,6 +502,20 @@ export class MockBackend implements TandemBackend {
     }
     const now = new Date().toISOString();
     if (decision === "approve") {
+      const currentVersion = this.workspaces.get(
+        proposal.workspace_id,
+      )!.context_version;
+      if (proposal.base_context_version !== currentVersion) {
+        throw new TandemError(
+          "VERSION_CONFLICT",
+          "The approved context changed since this proposal was created. Sync the workspace and propose a reconciled change for human approval.",
+          {
+            proposal_id: proposalId,
+            base_context_version: proposal.base_context_version,
+            context_version: currentVersion,
+          },
+        );
+      }
       this.applyToContext(
         proposal.workspace_id,
         proposal.field,
@@ -509,14 +544,14 @@ export class MockBackend implements TandemBackend {
   ): Promise<{ context: StructuredContext; context_version: number }> {
     if (actor.actor_type !== "human") throw approvalRequired(input.field);
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
-    this.requireOwner(actor, workspaceId);
+    this.requireContextManager(actor, workspaceId);
     this.applyToContext(workspaceId, input.field, input.value, actor, []);
     this.appendEvent(
       workspaceId,
       "context.approved",
       workspaceId,
       attribution(actor),
-      `${input.field} changed by owner`,
+      `${input.field} changed by human`,
     );
     const ws = this.workspaces.get(workspaceId)!;
     return {
@@ -672,13 +707,12 @@ export class MockBackend implements TandemBackend {
     this.connections.set(k, connection);
   }
 
-  private requireOwner(actor: Actor, workspaceId: string): void {
-    if (
-      this.workspaces.get(workspaceId)?.members.get(actor.user_id) !== "owner"
-    ) {
+  private requireContextManager(actor: Actor, workspaceId: string): void {
+    const role = this.workspaces.get(workspaceId)?.members.get(actor.user_id);
+    if (role !== "owner" && role !== "admin") {
       throw new TandemError(
         "FORBIDDEN",
-        "Only a workspace owner can change the approved context.",
+        "Only a workspace owner or admin can change the approved context.",
         { workspace_id: workspaceId },
       );
     }
@@ -739,10 +773,6 @@ function truncate(text: string, max: number): string {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function nameKey(name: string): string {
-  return name.trim().toLowerCase();
 }
 
 function connectionKey(actor: Actor): string {

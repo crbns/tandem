@@ -18,7 +18,7 @@ export interface Attribution {
   client: string;
 }
 
-export type WorkspaceRole = "owner" | "member";
+export type WorkspaceRole = "owner" | "admin" | "member";
 
 export interface WorkspaceSummary {
   id: string;
@@ -55,10 +55,14 @@ export interface ListFilesInput {
 
 export interface CreateDocumentInput {
   /**
-   * Unique per workspace and parent, compared trimmed and case-insensitively.
-   * If a file with the same name exists there, throw NAME_EXISTS with its
-   * file_id, name, and current version. 1–255 characters; reject longer
-   * names with INVALID_INPUT.
+   * Stored as `storedName` (src/names.ts): Unicode NFC, zero-width characters
+   * removed, trimmed. Unique per workspace and parent, compared by `nameKey`
+   * (src/names.ts): Unicode NFKC, strip zero-width characters (U+200B-U+200D,
+   * U+2060, U+FEFF), trim, collapse internal whitespace to one space, case-fold
+   * with uppercase then lowercase (so "Straße" and "STRASSE" collide).
+   * If the key is empty, throw INVALID_INPUT. If a file with the same key exists
+   * there, throw NAME_EXISTS with its file_id, name, and current_version.
+   * 1–255 characters; reject longer names with INVALID_INPUT.
    */
   name: string;
   content: string;
@@ -168,6 +172,8 @@ export type ProposedValue = string | string[] | Ownership;
 export type ProposalStatus = "pending" | "approved" | "rejected";
 
 export interface ContextProposal {
+  /** Context version this proposal was based on; stale proposals cannot be approved. */
+  base_context_version: number;
   id: string;
   workspace_id: string;
   field: ContextField;
@@ -177,7 +183,7 @@ export interface ContextProposal {
   status: ProposalStatus;
   proposed_by: Attribution;
   created_at: string;
-  /** Set once a human owner decides; agents can never decide. */
+  /** Set once a human owner or admin decides; agents can never decide. */
   decided_by?: { user_id: string; actor_type: "human" };
   decided_at?: string;
   decision_note?: string;
@@ -217,7 +223,7 @@ export interface WorkspaceEvent {
   seq: number;
   workspace_id: string;
   type: WorkspaceEventType;
-  /** The file, proposal, or published work the event is about (the workspace for a direct owner change). */
+  /** The file, proposal, or published work the event is about (the workspace for a direct human change). */
   subject_id: string;
   actor: Attribution;
   at: string;
@@ -305,6 +311,8 @@ export interface ApplyContextChangeInput {
  * also set the connection's last_action_at.
  */
 export interface TandemBackend {
+  /** Which implementation this is, e.g. "mock". Dev-only features check it. */
+  readonly kind: string;
   /** Only workspaces the actor is a member of. Returns [] (not FORBIDDEN) if there are none. */
   listWorkspaces(actor: Actor): Promise<WorkspaceSummary[]>;
   /** The actor's own (user, client) presence; nulls if it never synced or wrote. */
@@ -339,9 +347,11 @@ export interface TandemBackend {
   publishWork(actor: Actor, input: PublishWorkInput): Promise<PublishedWork>;
   /**
    * Human decision on a proposal; not exposed over MCP. Agents get FORBIDDEN;
-   * an unknown or other-tenant proposal gets INVALID_INPUT; a non-owner gets
+   * an unknown or other-tenant proposal gets INVALID_INPUT; a member without owner/admin role gets
    * FORBIDDEN; an already decided proposal gets INVALID_INPUT. Approving applies
-   * proposed_value (context_version + 1). Either way it sets decided_by and
+   * proposed_value (context_version + 1), or throws VERSION_CONFLICT with the
+   * current context_version if base_context_version is stale. Rejection is
+   * allowed even when stale. Either way it sets decided_by and
    * decided_at and appends context.approved or context.rejected.
    */
   decideProposal(
@@ -352,7 +362,7 @@ export interface TandemBackend {
   ): Promise<ContextProposal>;
   /**
    * Direct context change; not exposed over MCP. Agents ALWAYS get
-   * APPROVAL_REQUIRED (they must use proposeContextChange). Human owners apply
+   * APPROVAL_REQUIRED (they must use proposeContextChange). Human owners and admins apply
    * the value like an approved proposal; human members get FORBIDDEN.
    */
   applyContextChange(
@@ -376,13 +386,24 @@ export interface TandemBackend {
     fileId: string,
     limit: number,
   ): Promise<FileVersions>;
+  /**
+   * The name check and the insert must happen atomically, in one transaction.
+   * In Convex that means one mutation, shared by the dashboard and MCP, that
+   * looks up a stored normalized `name_key` through an index on
+   * (workspace_id, parent_id, name_key) and inserts in the same mutation;
+   * Convex has no unique indexes, so OCC on that index read is what prevents
+   * duplicates. Renames and moves must run the same check.
+   */
   createDocument(
     actor: Actor,
     input: CreateDocumentInput,
   ): Promise<FileMetadata>;
   /**
    * Atomically writes version N+1 only if `expected_version` equals the current version N.
-   * Throws VERSION_CONFLICT when it is lower than N, and INVALID_INPUT when it is higher.
+   * Throws INVALID_INPUT when `expected_version` is not a safe integer >= 1 (this
+   * layer can't rely on the MCP schema: the dashboard calls it directly), then
+   * VERSION_CONFLICT when it is lower than N and INVALID_INPUT when it is higher.
+   * Any value that isn't exactly N must fail; never write on a failed comparison.
    */
   updateDocument(
     actor: Actor,

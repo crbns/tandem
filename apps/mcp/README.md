@@ -8,14 +8,14 @@ Tools:
 - Sync: `sync_workspace` (approved context, pending proposal summaries, changed files, events, and an opaque `cursor`; pass it back as `since` for incremental syncs). It only records the last sync time.
 - Write: `create_document`, `update_document` (optimistic versioning via `expected_version`), `propose_context_change` (creates a pending proposal, never changes context), `publish_work` (records an authorized deliverable or finding)
 
-Approving or rejecting proposals is not an MCP tool: humans do it in the dashboard (`TandemBackend.decideProposal`, owners only). `TandemBackend.applyContextChange` always throws `APPROVAL_REQUIRED` for agents.
+Approving or rejecting proposals is not an MCP tool: humans do it in the dashboard (`TandemBackend.decideProposal`, owners and admins only). `TandemBackend.applyContextChange` always throws `APPROVAL_REQUIRED` for agents.
 
 ## Data model
 
 Documented as the `TandemBackend` contract in `src/backend/types.ts`:
 
-- **StructuredContext** per workspace, versioned by `context_version`: goal, scope, constraints, approved decisions, ownership, open questions. Only a human owner's decision changes it.
-- **ContextProposal**: a pending change to one field (`goal`, `scope`, `constraints`, `decisions`, `ownership`) with rationale, source file ids, and who proposed and decided it.
+- **StructuredContext** per workspace, versioned by `context_version`: goal, scope, constraints, approved decisions, ownership, open questions. Only a human owner or admin can change it.
+- **ContextProposal**: a pending change to one field (`goal`, `scope`, `constraints`, `decisions`, `ownership`) with rationale, source file ids, `base_context_version`, and who proposed and decided it. Approval requires that base version to match the current `context_version`, otherwise it fails with `VERSION_CONFLICT` without changing the context or proposal; stale proposals can still be rejected. Direct human context changes also increment `context_version` and invalidate pending approvals.
 - **PublishedWork**: a deliverable or finding with title, summary, and file ids.
 - **WorkspaceEvent**: per-workspace monotonic `seq` for file, context, and publish changes. Summaries are short metadata, never document content. The sync cursor is base64url JSON of the workspace id and last seq.
 - **AgentConnection**: per user and client, `last_synced_at` and `last_action_at`. Presence is these timestamps, never "online".
@@ -24,23 +24,30 @@ Documented as the `TandemBackend` contract in `src/backend/types.ts`:
 
 ```sh
 pnpm install
-TANDEM_DEV_TOKENS=alex-dev-token:user_alex,sam-dev-token:user_sam pnpm --filter mcp dev
+export ALEX_KEY=$(openssl rand -hex 24) SAM_KEY=$(openssl rand -hex 24)
+TANDEM_DEV_TOKENS=${ALEX_KEY}:user_alex,${SAM_KEY}:user_sam pnpm --filter mcp dev
 ```
+
+Generate dev keys with `openssl rand -hex 24` rather than reusing guessable ones; anyone who can reach the server and knows a key acts as that user. Keep the braces in `${ALEX_KEY}:user_alex`: zsh reads an unbraced `$ALEX_KEY:u` as a modifier and drops the colon, which leaves every key unusable.
+
+The keys are exported only in the terminal running the server. Before using `$ALEX_KEY` anywhere else (curl, Claude Code, MCP Inspector), run `echo $ALEX_KEY` in the server terminal and copy the value, or export the same value in the other terminal.
 
 - MCP endpoint: `POST http://localhost:8787/mcp` (GET/DELETE return 405 because the server is stateless)
 - Health check: `GET http://localhost:8787/healthz` returns `{"ok":true}`
+- The server binds `127.0.0.1` by default, so it isn't reachable from your LAN. Set `HOST` (e.g. `HOST=0.0.0.0` in a container) to change that.
+- `/mcp` requests that carry an `Origin` header not listed in `TANDEM_ALLOWED_ORIGINS` get `403` (DNS-rebinding protection). Server-side clients (claude.ai, Claude Code, curl) send no `Origin` and are unaffected.
 
-Every `/mcp` request needs an `api-key: <key>` header with a key from `TANDEM_DEV_TOKENS` (unless dev anon mode is on; see below). A missing, empty, or unknown key gets `401` with `{"error":{"code":"UNAUTHENTICATED",...}}`. The `Authorization` header is ignored. This is temporary until OAuth lands (see `docs/mcp-auth-design.md`). The env vars are read from the process environment; the server doesn't load `.env` files itself.
+Every `/mcp` request needs an `api-key: <key>` header with a key from `TANDEM_DEV_TOKENS` (unless dev anon mode is on; see below). A missing, empty, comma-containing (e.g. a repeated header), or unknown key gets `401` with `WWW-Authenticate: ApiKey realm="tandem"` and `{"error":{"code":"UNAUTHENTICATED",...}}`. The `Authorization` header is ignored. This is temporary until OAuth lands (see `docs/mcp-auth-design.md`). The env vars are read from the process environment; the server doesn't load `.env` files itself.
 
 ```sh
 curl -s http://localhost:8787/mcp \
-  -H "api-key: alex-dev-token" \
+  -H "api-key: $ALEX_KEY" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-Production build: `pnpm --filter mcp build && node apps/mcp/dist/index.js`.
+Production build: `pnpm --filter mcp build && node apps/mcp/dist/index.js`. The dev script sets `NODE_ENV=development`; the production command doesn't, so dev anon mode refuses to start there.
 
 ## Connect MCP Inspector
 
@@ -48,22 +55,22 @@ Production build: `pnpm --filter mcp build && node apps/mcp/dist/index.js`.
 npx @modelcontextprotocol/inspector
 ```
 
-In the Inspector UI choose transport **Streamable HTTP**, URL `http://localhost:8787/mcp`, and under **Custom Headers** add `api-key` = `alex-dev-token` (any key from `TANDEM_DEV_TOKENS`) with its toggle on.
+In the Inspector UI choose transport **Streamable HTTP**, URL `http://localhost:8787/mcp`, and under **Custom Headers** add `api-key` = your `$ALEX_KEY` (any key from `TANDEM_DEV_TOKENS`) with its toggle on. If you use the Inspector's direct (browser) connection instead of its proxy, add its origin, e.g. `TANDEM_ALLOWED_ORIGINS=http://localhost:6274`.
 
 ## Connect Claude Code
 
 ```sh
-claude mcp add --transport http tandem http://localhost:8787/mcp --header "api-key: alex-dev-token"
+claude mcp add --transport http tandem http://localhost:8787/mcp --header "api-key: $ALEX_KEY"
 ```
 
 ## Test from claude.ai (temporary)
 
-claude.ai custom connectors can't send a static `api-key` header, so until Convex OAuth lands (see `docs/mcp-auth-design.md`) there is a dev-only anonymous mode: with `TANDEM_DEV_ANON_USER` set, `/mcp` requests that have **no** `api-key` header act as that user (attributed with client `dev-anon`). Requests that send a key still go through `TANDEM_DEV_TOKENS`, and an empty or unknown key still gets `401`. The server refuses to start in this mode if `NODE_ENV=production` or `TANDEM_BACKEND` isn't `mock`.
+claude.ai custom connectors can't send a static `api-key` header, so until Convex OAuth lands (see `docs/mcp-auth-design.md`) there is a dev-only anonymous mode: with `TANDEM_DEV_ANON_USER` set, `/mcp` requests that have **no** `api-key` header act as that user (attributed with client `dev-anon`). Requests that send a key still go through `TANDEM_DEV_TOKENS`, and an empty or unknown key still gets `401`. The server refuses to start in this mode unless the backend is the mock and `NODE_ENV` is exactly `development` or `test`. `pnpm --filter mcp dev` sets `NODE_ENV=development`; if you run the server another way, set it yourself.
 
 1. Start the server in anon mode:
 
    ```sh
-   TANDEM_DEV_ANON_USER=user_alex TANDEM_DEV_TOKENS=alex-dev-token:user_alex,sam-dev-token:user_sam pnpm --filter mcp dev
+   TANDEM_DEV_ANON_USER=user_alex TANDEM_DEV_TOKENS=${ALEX_KEY}:user_alex,${SAM_KEY}:user_sam pnpm --filter mcp dev
    ```
 
 2. Expose it with a quick tunnel (in another terminal):
@@ -78,17 +85,21 @@ claude.ai custom connectors can't send a static `api-key` header, so until Conve
 Caveats:
 
 - Data is the in-memory mock and resets every time the server restarts.
+- cloudflared connects to `localhost`, so the default `127.0.0.1` bind is enough; don't set `HOST=0.0.0.0` for this.
 - While the tunnel runs, the URL is public and anyone who has it can read and write as `TANDEM_DEV_ANON_USER`. Stop `cloudflared` when you're done.
 - This mode is temporary and will be removed once Convex OAuth lands.
 
 ## Environment
 
-| Variable               | Default | Meaning                                                                                                                                                                                                          |
-| ---------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PORT`                 | `8787`  | HTTP port                                                                                                                                                                                                        |
-| `TANDEM_BACKEND`       | `mock`  | Storage backend. `mock` is in-memory and seeded with `ws_demo` (owner `user_alex`, member `user_sam`) containing `brief.md` v1 and a project context, and `ws_other` (owner `user_jordan`) with its own context. |
-| `TANDEM_DEV_TOKENS`    | empty   | Comma-separated `key:user_id` pairs for the dev identity resolver; clients send the key in the `api-key` header                                                                                                  |
-| `TANDEM_DEV_ANON_USER` | unset   | TEMPORARY. Requests with no `api-key` header act as this user. Mock backend and non-production only (see above).                                                                                                 |
+| Variable                 | Default     | Meaning                                                                                                                                                |
+| ------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PORT`                   | `8787`      | HTTP port                                                                                                                                              |
+| `HOST`                   | `127.0.0.1` | Interface to bind. Use `0.0.0.0` only inside a container.                                                                                              |
+| `NODE_ENV`               | unset       | Must be exactly `development` or `test` for dev anon mode. The `dev` script sets `development`.                                                        |
+| `TANDEM_ALLOWED_ORIGINS` | empty       | Comma-separated browser origins allowed to call `/mcp`. Any other `Origin` gets `403`; requests without `Origin` are unaffected. Trailing `/` is OK.   |
+| `TANDEM_BACKEND`         | `mock`      | Storage backend. `mock` is in-memory and seeded with `ws_demo` (owner `user_alex`, admin `user_taylor`, member `user_sam`) containing `brief.md` v1 and project context, and `ws_other` (owner `user_jordan`).                   |
+| `TANDEM_DEV_TOKENS`      | empty       | Comma-separated `key:user_id` pairs (split on the first `:`); clients send the key in the `api-key` header. Generate keys with `openssl rand -hex 24`. |
+| `TANDEM_DEV_ANON_USER`   | unset       | TEMPORARY. Requests with no `api-key` header act as this user. Mock backend and `NODE_ENV=development`/`test` only (see above).                        |
 
 ## Layout
 
@@ -97,6 +108,7 @@ Caveats:
 - `src/auth.ts`: `IdentityResolver` interface, the dev token resolver, and the temporary dev anon wrapper (swap for OAuth/JWT later)
 - `src/backend/types.ts`: `TandemBackend` interface; `src/backend/mock.ts`: in-memory implementation; `src/backend/cursor.ts`: sync cursor encoding
 - `src/errors.ts`: `TandemError` and its error codes
+- `src/names.ts`: `nameKey`, the file-name normalization used for `NAME_EXISTS`
 
 The caller's identity always comes from the `api-key` header (or the server's anon config), never from tool arguments.
 
