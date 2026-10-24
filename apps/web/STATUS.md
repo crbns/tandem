@@ -67,17 +67,24 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 
 ## Gate 6: live Convex integration
 
-The backend functions exist; these need a seeded deployment (dev `NEXT_PUBLIC_CONVEX_URL` and a test login, in `apps/web/.env.local` only).
+Measured 2026-10-24 against `colorful-grouse-361` after the authorized deployment of clean `origin/main` @ `5aafe3b`. The local Next.js dashboard used this cloud backend; the agent used the real Streamable HTTP MCP endpoint with a bearer API key. Local anonymous Convex was also measured. See [D11 report](../../docs/phase-d/30-report.md) for commands, limitations, and screenshots. “Claude” below identifies the MCP connection's client attribution; no native Claude conversation is claimed.
 
 | Check | Status | Notes |
 |---|---|---|
-| Claude-created file appears in the dashboard without reload | PENDING (live) | reactive refresh verified in mock + adapter unit test |
-| Human save → v2; Claude rereads v2 | PENDING (live) | needs Person 1's MCP + Person 2's functions |
-| Stale write from a second tab → ConflictPanel; Convex keeps newer | PENDING (live) | same flow verified in mock via Simulate agent edit |
-| History attributes agent vs human | PENDING (live) | verified in mock |
-| Signed-out `/w/*` redirects (real-mode proxy) | PASS | production standalone server: `/w/ws_demo` → 307 `/sign-in?next=%2Fw%2Fws_demo` |
-| Outsider gets the FORBIDDEN UI | PENDING (live) | copy + ErrorState exist |
-| UNAUTHENTICATED on save stashes and restores the draft | PENDING (live) | |
+| Claude-created file appears in the dashboard without reload | PASS | `colorful-grouse-361` + local, 2026-10-24: MCP create while browser list open; reactive file link appeared. Screenshot `30-cloud-reactive.png`. |
+| Human save → v2; Claude rereads v2 | PASS | `colorful-grouse-361` + local, 2026-10-24: browser saved v2; MCP read returned v2 with exact human content. |
+| Stale write from a second tab → ConflictPanel; Convex keeps newer | PASS | `colorful-grouse-361` + local, 2026-10-24: first tab saved v3, second tab's stale v2 save showed conflict; MCP confirmed newer v3 content intact. Screenshot `30-cloud-conflict.png`. |
+| History attributes agent vs human | PASS | `colorful-grouse-361` + local, 2026-10-24: browser history labeled v1 AGENT via Claude and v2/v3 HUMAN; e2e checked both member identities. Screenshot `30-cloud-history.png`. |
+| Signed-out `/w/*` redirects (real-mode proxy) | PASS | `colorful-grouse-361` + local, 2026-10-24: fresh browser context opening workspace redirected to sign-in and returned after authentication. |
+| Outsider gets the FORBIDDEN UI | PASS | `colorful-grouse-361`, 2026-10-24: generated outsider C saw “You don't have access” on A's workspace. Screenshot `30-cloud-forbidden.png`; e2e also verified FORBIDDEN. |
+| UNAUTHENTICATED on save stashes and restores the draft | PASS (fault injection) | `colorful-grouse-361` + local, 2026-10-24: injected coded UNAUTHENTICATED save response; real sign-out/sign-in preserved sessionStorage draft and restored exact text. Natural JWT expiry not induced. Screenshot `30-cloud-restored.png`. |
+| Agent proposes scope → human approves in dashboard → next sync | PASS | `colorful-grouse-361` + local, 2026-10-24: real MCP scope proposal, browser Approve, MCP sync returned revised scope. Screenshot `30-cloud-approved.png`. |
+
+### Network/auth failure tests
+
+Measured 2026-10-24 on `colorful-grouse-361` and local anonymous Convex. Browser offline Save reached the 15-second timeout, showed “Can't reach Tandem,” and retained the exact draft; reconnect recovered (`30-cloud-network.png`). A targeted UNAUTHENTICATED response exercised save recovery as described above. Cloud P0 tests also measured HTTP 401 for revoked/malformed MCP credentials and revoked OAuth refresh rejection. No automatic cloud demo reset was run.
+
+`pnpm test:e2e` on local: **16 passed, 6 opt-in demo tests skipped**. `pnpm test:demo` on local: **6 passed**. Cloud P0 suite: **16 passed** after clean-main deployment (initial stale deployment: 4 passed, 12 failed). Web unit tests: **226 passed**; web and e2e type checks passed. Full evidence and cloud cleanup inventory: [D11 report](../../docs/phase-d/30-report.md).
 
 ## Gate 7: deploy artifacts + demo hardening
 
