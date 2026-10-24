@@ -1,11 +1,17 @@
 # MCP auth design: claude.ai connectors on Convex Auth
 
-Status: proposal, 2026-10-23. Researched against the docs and source linked in [Sources](#sources).
+Status: proposal, 2026-10-23. Updated 2026-10-24: Vultr dropped; `apps/web` deploys to Vercel. Researched against the docs and source linked in [Sources](#sources).
 Labels: **[verified]** = stated in official docs or read in source. **[unverified]** = inferred, or a vendor claim we haven't tested.
 
 ## Recommendation
 
 Use the Convex MCP component (`@convex-dev/mcp`, pinned to `0.1.0-alpha.7`) as both the MCP endpoint and the OAuth 2.1 authorization server, inside our Convex deployment. Users sign in on a Next.js consent page with their existing Convex Auth session. The component maps every connection to the Convex Auth `users` id (`getUserId: requireHuman`, §3) and hands each tool handler a verified `user`, which our internal functions use to check workspace membership. This removes the custom OAuth layer, the signing keys and the Node MCP container from the critical path. The gate is a one-day proof of concept (PoC) against claude.ai (§4). If the PoC fails, fall back to the custom design in §6.
+
+**Hosting decision (2026-10-24).** The MCP endpoint and the OAuth authorization server stay on the default Convex origin, `https://<deployment>.convex.site/mcp`, with `siteUrl` unset. Only the consent page (`/oauth/consent`) runs in `apps/web` on Vercel. This is the component's documented default and the lowest-risk layout: no proxy sits between claude.ai and Convex, Vercel previews, redeploys and domain changes can't invalidate connections, and a web outage only blocks new connections, not existing ones. Rejected for the demo:
+- **Vercel rewrites** (`siteUrl` set to the Vercel domain, Next.js rewrites forwarding `/mcp`, `/mcp/oauth/*` and the two `/.well-known/oauth-*` paths to `convex.site`). It gives a branded URL, but the component documents `siteUrl` only for a Convex custom domain, the proxy hop counts against the token endpoint's 10 s budget, and only one fixed domain works [unverified end to end].
+- **An OAuth server in Next.js on Vercel.** It is §6 moved to Vercel: about two more days, and Vercel would hold a signing key that can mint any user's token.
+
+If a branded URL is needed later, prefer a Convex custom domain plus `siteUrl` over Vercel rewrites, and decide before connecting demo accounts (§5.10).
 
 ## 1. What claude.ai and the MCP spec require [verified]
 
@@ -24,7 +30,7 @@ Sources: [cmcp-page], [cmcp-readme], and `src/client/index.ts` in [cmcp-repo] (r
 1. **Does it reuse Convex Auth users? Yes [verified].** The consent page calls the component's `authorize` action, which calls our `getUserId(ctx)` against the caller's normal Convex Auth session. We pass `requireHuman` from `convex/access.ts` (§3), which checks the Convex Auth issuer and then calls `getAuthUserId` from `@convex-dev/auth/server`, so a grant stores the Convex Auth `users` `_id` and only a human session can approve one. The official example app runs Convex Auth and the component on one `httpRouter` (`auth.addHttpRoutes(http); mcp.registerRoutes(http)`). Access tokens are opaque strings stored as SHA-256 hashes; they are not JWTs, and Convex `auth.config.ts` never sees them.
 2. **Does each tool call run as that user? Yes, but not through `ctx.auth` [verified].** Handlers run in an HTTP action with no `ctx.auth` identity. They receive `user: { userId, scopes, clientId?, connectionId }` from the verified credential and pass it to `internal*` functions (`args: { user: vMcpUser(v.id("users")) }`), which check membership in the same transaction. **This changes our hard requirement.** `ctx.auth.getUserIdentity()` is null in MCP paths. The requirement's intent still holds: no deploy key or admin credential is used at runtime, the user id never comes from tool arguments, and internal functions can't be called from outside Convex without deploy credentials. Person 1 accepted this change on 2026-10-23.
 3. **Where does the endpoint live? In Convex HTTP actions [verified].** The endpoint is `https://<deployment>.convex.site/mcp`, alongside `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server` and `/mcp/oauth/{register,authorize,token,revoke,device}`. The app must not set `httpPrefix`. What this means for apps/mcp:
-   - **Deploy:** the Vultr MCP container becomes unnecessary, and only `apps/web` ships to Vultr. Don't proxy: the PRM `resource` must equal the pasted URL. Use the component's `siteUrl` option for a custom domain.
+   - **Deploy:** a separately hosted MCP server becomes unnecessary, and only `apps/web` deploys (to Vercel). The PRM `resource`, the issuer and every advertised OAuth URL are built from the component's `siteUrl` option (default `CONVEX_SITE_URL`), and `resource` must equal the pasted URL. A plain proxy in front of `convex.site` therefore breaks discovery; serving the endpoints on another origin (custom domain or Vercel rewrites) requires setting `siteUrl` to that origin. We leave `siteUrl` unset (see the hosting decision under Recommendation).
    - **Tools:** port the 4 tools to `tool({ args: v…, returns: v…, scope, annotations, handler })`. Zod schemas become Convex validators. Each write must run in **one** internal mutation (version check plus N+1 write), because every `ctx.runMutation` is its own transaction.
    - **Attribution:** every tool mutation records `user.userId` as the person and `user.connectionId` plus `user.clientId` as the agent, on `file_revisions`, `workspace_events` and `context_proposals`. These come from the verified credential [verified: `vMcpUser` has `connectionId: string`, `clientId?: string`]. `clientId` is optional, probably absent for API keys [unverified], so `connectionId` is the field that is always present. `clientName` from `getAuthRequest` is self-reported by the client (the component's own comment says "label it as unverified"), so a DCR client can call itself "Claude". Never store it as attribution; show it only as an **unverified** display label next to the connection.
    - **Errors:** throw `ConvexError({ code: "VERSION_CONFLICT", message, current_version })`. The component returns `ConvexError` data to the model as JSON text with `isError: true`. Any other exception becomes a generic failure.
@@ -95,7 +101,7 @@ Security rules for the MCP path:
 
 ## 4. First proof of concept: claude.ai → OAuth → `get_workspace_info`
 
-The coordinator asked for a `get_workspace`-style tool. We name it `get_workspace_info` to match the tool surface in CLAUDE.md. The consent page can run on `http://localhost:3000`, because the user's own browser loads it. The Convex dev deployment is already public, so the PoC needs no Vultr deploy.
+The coordinator asked for a `get_workspace`-style tool. We name it `get_workspace_info` to match the tool surface in CLAUDE.md. The consent page can run on `http://localhost:3000`, because the user's own browser loads it. The Convex dev deployment is already public, so the PoC needs no Vercel deploy.
 
 | Owner | File / piece | Content |
 |---|---|---|
@@ -128,9 +134,9 @@ PoC acceptance:
 4. Repeat as B in a second claude.ai account and confirm B can't see A-only workspaces.
 5. `revokeConnection`, then the next call returns 401 and Claude asks to reconnect.
 
-Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every agent loads as overriding instructions. Until then, agents will keep building and deploying `apps/mcp` and the Vultr MCP container. Changes:
+Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every agent loads as overriding instructions. Until then, agents will keep building `apps/mcp` as a separately deployed MCP server. Changes:
 - **Stack › MCP server:** the endpoint is `@convex-dev/mcp` in Convex HTTP actions at `https://<deployment>.convex.site/mcp`, replacing the Node.js MCP container. Replace "calling the same Convex functions as the dashboard" with "using the same authz helpers as the dashboard (`requireMember`, `requireHuman`)", because MCP tools call `internal*` functions in `convex/mcpTools.ts`, not the dashboard's public functions.
-- **Stack › Hosting:** only `apps/web` ships as a Docker container to Vultr.
+- **Stack › Hosting:** updated 2026-10-24 to Vercel. Still to remove: the Vultr Docker/Caddy deploy files under `apps/*/deploy/` and the Vultr sections in `README.md`, `apps/web/README.md` and `apps/mcp/README.md`.
 - **Hard rules:** agent attribution is `connectionId` + `clientId` (§2.3); `clientName` is an unverified label.
 
 ## 5. Open questions and risks
@@ -144,7 +150,7 @@ Follow-up once the PoC passes: update AGENTS.md (and so CLAUDE.md), which every 
 7. **Atomicity:** every multi-step tool must use one internal mutation. A query followed by a mutation from the action loses the optimistic-version guarantee.
 8. **Presence:** `grants.lastUsedAt` exists and `listConnections` returns it. How often it updates isn't verified. To be safe, write our own "last MCP action" from tool mutations.
 9. **Workspace scoping:** grants are per user, not per workspace. Every tool takes or defaults `workspace_id` and checks membership. The component's tables carry no workspace id, which is an accepted exception to the "every record has workspace ID" rule, because they hold auth state, not workspace content.
-10. **Custom domain:** changing `siteUrl` later changes `resource` and invalidates existing connections. Decide the URL before the demo.
+10. **Custom domain:** changing `siteUrl` later changes `resource` and invalidates existing connections. Decided 2026-10-24: the demo uses the default `convex.site` URL (see Recommendation).
 11. **Abuse:** `/mcp` isn't rate-limited. The demo risk is acceptable; add `@convex-dev/rate-limiter` per user later.
 12. **DCR lockout [verified in alpha.7 source].** `src/component/limits.ts` sets `registerClient` to a token bucket with capacity 30 and 100/hour, and `src/component/clients.ts` calls `rateLimiter.limit(ctx, "registerClient")` with **no key**, so one bucket is shared by everyone. An unauthenticated script that sends about 30 `POST /mcp/oauth/register` requests, then about 100/hour, makes every new connector add (claude.ai and Claude Code) fail at DCR, for example while judges connect. Existing grants keep working. Mitigations:
     - Connect every demo account (both claude.ai accounts and Claude Code) before judging, and check the connections still work on the day.

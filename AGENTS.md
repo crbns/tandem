@@ -41,7 +41,7 @@ Supabase and Railway were dropped. Don't reintroduce them.
 - **Backend:** Convex (`packages/backend/convex`): database, Convex Auth, file storage, reactive queries for dashboard realtime, and scheduled functions/actions for the outbox and LLM context extraction. Enforce authorization inside every query, mutation, and action. Serve binaries through authorized HTTP actions, not shareable storage URLs.
 - **Web:** Next.js + React (`apps/web`), wrapped in `ConvexClientProvider`. Needs `NEXT_PUBLIC_CONVEX_URL`, which is inlined at build time.
 - **MCP server:** Node.js + TypeScript MCP SDK, calling the same Convex functions as the dashboard.
-- **Hosting:** Vultr. Web and MCP server ship as Docker containers (`apps/web/Dockerfile`, Next `standalone` + `turbo prune`) through Vultr Container Registry. Convex Cloud hosts the backend (`pnpm --filter @repo/backend deploy` with `CONVEX_DEPLOY_KEY`).
+- **Hosting:** Vercel hosts the web dashboard. Vultr was dropped; don't reintroduce it. The planned MCP endpoint is `@convex-dev/mcp` in Convex HTTP actions at `https://<deployment>.convex.site/mcp`, so it needs no separate host (`docs/mcp-auth-design.md`, pending its PoC). Convex Cloud hosts the backend (`pnpm --filter @repo/backend deploy` with `CONVEX_DEPLOY_KEY`).
 
 Core tables: users, workspaces, workspace_members, agent_connections, files, folders, file_revisions, structured_context, context_proposals, approvals, workspace_events, outbox_events, sync_cursors, storage_objects.
 
