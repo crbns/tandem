@@ -150,7 +150,10 @@ export function createMockApi({
   const contexts = new Map<string, ProjectContext>([
     [MOCK_WORKSPACE_ID, context],
   ]);
+  let nextEntryId = 1;
+  const entryIdentity = () => ({ id: `entry_${nextEntryId++}`, status: "active" as const, resolvedBy: null, resolvedAt: null, supersededBy: null });
   const seedEntry = (text: string): ContextEntry => ({
+    ...entryIdentity(),
     text, sourceFileIds: ["file_proposal"], updatedBy: { ...ALEX }, updatedAt: context.approvedAt,
   });
   const details = new Map<string, ContextDetails>([[MOCK_WORKSPACE_ID, {
@@ -196,11 +199,23 @@ export function createMockApi({
         throw new TandemApiError("INVALID_INPUT");
     } else if (input.ownerUserId !== undefined) throw new TandemApiError("INVALID_INPUT");
   };
+  const entryKey = { constraint: "constraints", decision: "decisions", ownership: "ownership", open_question: "openQuestions" } as const;
+  const refreshSummary = (workspaceId: string, actor: Actor) => {
+    const ctx = details.get(workspaceId)!;
+    ctx.version++;
+    contexts.set(workspaceId, {
+      goal: ctx.goal?.text ?? "", scope: ctx.scope?.text ?? "",
+      constraints: ctx.constraints.filter((e) => e.status === "active").map((e) => e.text),
+      decisions: ctx.decisions.filter((e) => e.status === "active").map((e) => e.text), version: ctx.version,
+      approvedBy: ctx.goal?.updatedBy ?? actor, approvedAt: ctx.goal?.updatedAt ?? Date.now(),
+    });
+  };
   const applyChange = (workspaceId: string, input: ContextChangeInput, actor: Actor, entryIndex?: number) => {
     const ctx = details.get(workspaceId)!;
     const now = Date.now();
     const text = input.proposedValue.trim();
-    const value: ContextEntry = { text, sourceFileIds: [...input.sourceFileIds], updatedBy: { ...actor }, updatedAt: now };
+    const existing = input.field === "goal" || input.field === "scope" || entryIndex === undefined ? undefined : ctx[entryKey[input.field]][entryIndex];
+    const value: ContextEntry = { ...entryIdentity(), ...(existing ? { id: existing.id } : {}), text, sourceFileIds: [...input.sourceFileIds], updatedBy: { ...actor }, updatedAt: now };
     if (input.field === "goal" || input.field === "scope") ctx[input.field] = value;
     else {
       const key = { constraint: "constraints", decision: "decisions", ownership: "ownership", open_question: "openQuestions" } as const;
@@ -213,12 +228,7 @@ export function createMockApi({
       } else if (entryIndex === undefined) entries.push(value);
       else entries[entryIndex] = value;
     }
-    ctx.version++;
-    contexts.set(workspaceId, {
-      goal: ctx.goal?.text ?? "", scope: ctx.scope?.text ?? "", constraints: ctx.constraints.map((e) => e.text),
-      decisions: ctx.decisions.map((e) => e.text), version: ctx.version,
-      approvedBy: ctx.goal?.updatedBy ?? actor, approvedAt: ctx.goal?.updatedAt ?? now,
-    });
+    refreshSummary(workspaceId, actor);
   };
   const memberNames = new Map<string, string>();
   // Proposals keep the value they were based on (goal/scope only), like the
@@ -462,27 +472,70 @@ export function createMockApi({
       const key = { constraint: "constraints", decision: "decisions", ownership: "ownership", open_question: "openQuestions" } as const;
       if (input.entryIndex !== undefined && (input.field === "goal" || input.field === "scope" || !Number.isInteger(input.entryIndex) || input.entryIndex < 0 || input.entryIndex >= ctx[key[input.field]].length))
         throw new TandemApiError("INVALID_INPUT");
-      applyChange(workspaceId, input, getActor(), input.entryIndex);
+      let index = input.entryIndex;
+      if (input.entryId !== undefined) {
+        if (input.field === "goal" || input.field === "scope" || input.entryIndex !== undefined) throw new TandemApiError("INVALID_INPUT");
+        index = ctx[key[input.field]].findIndex((entry) => entry.id === input.entryId);
+        if (index < 0) throw new TandemApiError("INVALID_INPUT");
+      }
+      if (input.field !== "goal" && input.field !== "scope" && index !== undefined && ctx[key[input.field]][index]?.status !== "active")
+        throw new TandemApiError("INVALID_INPUT");
+      applyChange(workspaceId, input, getActor(), index);
       notify(workspaceId);
       return { version: ctx.version };
     },
 
     async proposeContextChange(workspaceId, input) {
       await delay();
-      requireMember(workspaceId);
-      validateChange(workspaceId, input);
+      const actor = getActor();
+      // Agent proposals use the underlying person's existing membership.
+      const members = memberships.get(workspaceId);
+      if (actor.actorType === "agent") {
+        if (!members?.has(actor.userId)) throw new TandemApiError("FORBIDDEN");
+      } else requireMember(workspaceId);
       const ctx = details.get(workspaceId)!;
+      if (input.sourceFileIds.some((id) => files.get(id)?.summary.workspaceId !== workspaceId))
+        throw new TandemApiError("INVALID_INPUT");
+      const operation = input.operation ?? "add";
+      if (input.expectedVersion !== undefined && input.expectedVersion !== ctx.version)
+        throw new TandemApiError("VERSION_CONFLICT", { currentVersion: ctx.version });
+      const working = input.field === "constraint" || input.field === "open_question";
+      if (operation !== "add") {
+        if (!working || (operation === "resolve" && input.field !== "open_question") || !input.entryId || input.expectedVersion === undefined || input.supersedes)
+          throw new TandemApiError("INVALID_INPUT");
+        if (operation === "remove" && actor.actorType !== "human") throw new TandemApiError("INVALID_INPUT");
+        const entries = input.field === "constraint" ? ctx.constraints : ctx.openQuestions;
+        const index = entries.findIndex((entry) => entry.id === input.entryId && (operation === "remove" || entry.status === "active"));
+        if (index < 0) throw new TandemApiError("INVALID_INPUT");
+      } else {
+        validateChange(workspaceId, input);
+        if (input.entryId !== undefined) throw new TandemApiError("INVALID_INPUT");
+        if (input.supersedes !== undefined && (input.field !== "decision" || !ctx.decisions.some((entry) => entry.id === input.supersedes && entry.status === "active")))
+          throw new TandemApiError("INVALID_INPUT");
+      }
       const id = `proposal_${nextId++}`;
       const area = input.proposedValue.trim();
+      const status = working ? "applied" as const : "pending" as const;
+      if (working) {
+        if (operation === "add") applyChange(workspaceId, input, actor);
+        else {
+          const entries = input.field === "constraint" ? ctx.constraints : ctx.openQuestions;
+          const index = entries.findIndex((entry) => entry.id === input.entryId);
+          if (operation === "remove") entries.splice(index, 1);
+          else Object.assign(entries[index]!, { status: "resolved", resolvedBy: { ...actor }, resolvedAt: Date.now() });
+          refreshSummary(workspaceId, actor);
+        }
+      }
       proposals.push({
         id, workspaceId, field: input.field, rationale: input.rationale, sourceFileIds: [...input.sourceFileIds],
+        supersedes: input.supersedes ?? null,
         proposedValue: input.field === "ownership" ? `${area}: ${memberNames.get(input.ownerUserId!) ?? "Workspace member"}` : input.proposedValue,
         ...(input.field === "ownership" ? { ownerArea: area, ownerUserId: input.ownerUserId } : {}),
         ...(input.field === "goal" || input.field === "scope" ? { baseValue: ctx[input.field]?.text ?? "" } : {}),
-        status: "pending", createdBy: { ...getActor() }, createdAt: Date.now(), decidedBy: null, decidedAt: null,
+        status, createdBy: { ...actor }, createdAt: Date.now(), decidedBy: null, decidedAt: null,
       });
       notify(workspaceId);
-      return id;
+      return { id, status };
     },
 
     async listPublishedWork(workspaceId, cursor = null, pageSize = 20) {
@@ -524,7 +577,17 @@ export function createMockApi({
         }
         const input = { ...proposal, proposedValue: proposal.ownerArea ?? proposal.proposedValue };
         validateChange(workspaceId, input);
+        const target = proposal.supersedes ? details.get(workspaceId)!.decisions.find((entry) => entry.id === proposal.supersedes) : undefined;
+        if (proposal.supersedes && target?.status !== "active") {
+          proposal.status = "stale";
+          notify(workspaceId);
+          throw new TandemApiError("VERSION_CONFLICT");
+        }
         applyChange(workspaceId, input, actor);
+        if (target) Object.assign(target, { status: "superseded", supersededBy: details.get(workspaceId)!.decisions.at(-1)!.id });
+        // The compact summary exposes only active decisions.
+        const summary = contexts.get(workspaceId)!;
+        summary.decisions = details.get(workspaceId)!.decisions.filter((entry) => entry.status === "active").map((entry) => entry.text);
       }
       Object.assign(proposal, { status: decision, decidedBy: { ...actor }, decidedAt: now });
       notify(workspaceId);
@@ -587,7 +650,7 @@ export function createMockApi({
 }
 
 function seedProposals(now: number, context: ProjectContext): Array<ContextProposal & { baseValue?: string }> {
-  const base = { workspaceId: MOCK_WORKSPACE_ID, decidedBy: null, decidedAt: null, status: "pending" as const };
+  const base = { supersedes: null, workspaceId: MOCK_WORKSPACE_ID, decidedBy: null, decidedAt: null, status: "pending" as const };
   return [
     {
       ...base,

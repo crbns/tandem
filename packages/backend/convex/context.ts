@@ -12,15 +12,14 @@ import {
   requireHumanSession,
   requireMembership,
 } from "./lib/auth";
-import { nameKey } from "./lib/names";
 import {
   checkSourceFiles,
   listProposals,
   loadContext,
   toPublishedWork,
   proposeContextChangeCore,
-  ownershipText,
-  requireOwnerMember,
+  applyApprovedProposal,
+  normalizeContext,
   toProposal,
 } from "./lib/ops";
 import {
@@ -75,7 +74,8 @@ export const updateContextField = mutation({
     sourceFileIds: v.array(v.id("files")),
     expectedVersion: v.number(),
     ownerUserId: v.optional(v.id("users")),
-    // Until entries have stable IDs, the revision guards positional edits.
+    entryId: v.optional(v.string()),
+    // Kept for existing dashboard clients; revision guards positional edits.
     entryIndex: v.optional(v.number()),
   },
   returns: v.object({ version: v.number() }),
@@ -121,6 +121,25 @@ export const updateContextField = mutation({
         args.entryIndex >= context[key].length)
     )
       throw new ConvexError({ code: "INVALID_INPUT", field: "entryIndex" });
+    let entryIndex = args.entryIndex;
+    if (args.entryId !== undefined) {
+      if (!key || entryIndex !== undefined)
+        throw new ConvexError({ code: "INVALID_INPUT", field: "entryId" });
+      entryIndex = normalizeContext(context)[key].findIndex(
+        (e) => e.id === args.entryId,
+      );
+      if (entryIndex < 0)
+        throw new ConvexError({ code: "INVALID_INPUT", field: "entryId" });
+    }
+    if (key && entryIndex !== undefined) {
+      const target = context[key][entryIndex];
+      if (target?.status && target.status !== "active")
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          field: "entryId",
+          message: "Historical entries cannot be edited",
+        });
+    }
     const sourceFileIds = await checkSourceFiles(
       ctx,
       args.workspaceId,
@@ -140,7 +159,7 @@ export const updateContextField = mutation({
       },
       actor,
       Date.now(),
-      args.entryIndex,
+      entryIndex,
     );
     await recordWorkspaceEvent(ctx, {
       workspaceId: args.workspaceId,
@@ -157,6 +176,12 @@ export const updateContextField = mutation({
 export const proposeContextChange = mutation({
   args: {
     workspaceId: v.id("workspaces"),
+    operation: v.optional(
+      v.union(v.literal("add"), v.literal("resolve"), v.literal("remove")),
+    ),
+    entryId: v.optional(v.string()),
+    supersedes: v.optional(v.string()),
+    expectedVersion: v.optional(v.number()),
     field: fieldValidator,
     proposedValue: v.string(),
     rationale: v.string(),
@@ -164,7 +189,10 @@ export const proposeContextChange = mutation({
     /** Required for ownership (proposedValue is then the area); else omitted. */
     ownerUserId: v.optional(v.id("users")),
   },
-  returns: v.id("context_proposals"),
+  returns: v.object({
+    id: v.id("context_proposals"),
+    status: v.union(v.literal("applied"), v.literal("pending")),
+  }),
   handler: async (ctx, args) => {
     const { user } = await requireMembership(ctx, args.workspaceId);
     const sourceFileIds = await checkSourceFiles(
@@ -177,7 +205,10 @@ export const proposeContextChange = mutation({
       sourceFileIds,
       actor: humanActor(user),
     });
-    return proposal._id;
+    return {
+      id: proposal._id,
+      status: proposal.status as "applied" | "pending",
+    };
   },
 });
 
@@ -251,7 +282,16 @@ export async function decideProposalCore(
         : proposal.field === "scope"
           ? (context.scope?.text ?? null)
           : undefined;
+    const supersededTarget = proposal.supersedes
+      ? normalizeContext(context).decisions.find(
+          (e) => e.id === proposal.supersedes,
+        )
+      : null;
     const stale =
+      (proposal.supersedes !== undefined &&
+        (!supersededTarget ||
+          (supersededTarget.status !== undefined &&
+            supersededTarget.status !== "active"))) ||
       proposal.contextRevision === undefined ||
       (currentField !== undefined &&
         (proposal.baseValue === undefined
@@ -303,98 +343,4 @@ export async function decideProposalCore(
     summary: `${decision === "approved" ? "Approved" : "Rejected"} ${proposal.field.replaceAll("_", " ")} change`,
     actor,
   });
-}
-
-async function applyApprovedProposal(
-  ctx: MutationCtx,
-  proposal: Pick<
-    Doc<"context_proposals">,
-    | "workspaceId"
-    | "field"
-    | "proposedValue"
-    | "sourceFileIds"
-    | "ownerUserId"
-    | "ownerArea"
-  >,
-  actor: ReturnType<typeof humanActor>,
-  now: number,
-  entryIndex?: number,
-) {
-  const context = await ctx.db
-    .query("structured_context")
-    .withIndex("by_workspace", (q) => q.eq("workspaceId", proposal.workspaceId))
-    .unique();
-  if (!context) throw new ConvexError({ code: "CONTEXT_NOT_INITIALIZED" });
-  const value = {
-    text: proposal.proposedValue,
-    sourceFileIds: proposal.sourceFileIds,
-    updatedBy: actor,
-    updatedAt: now,
-  };
-  const next = {
-    revision: context.revision + 1,
-    updatedAt: now,
-    updatedBy: actor,
-  };
-  const put = <T>(entries: T[], entry: T) =>
-    entryIndex === undefined
-      ? [...entries, entry]
-      : entries.map((old, index) => (index === entryIndex ? entry : old));
-  switch (proposal.field) {
-    case "goal":
-      await ctx.db.patch(context._id, { ...next, goal: value });
-      break;
-    case "scope":
-      await ctx.db.patch(context._id, { ...next, scope: value });
-      break;
-    case "constraint":
-      await ctx.db.patch(context._id, {
-        ...next,
-        constraints: put(context.constraints, value),
-      });
-      break;
-    case "decision":
-      await ctx.db.patch(context._id, {
-        ...next,
-        decisions: put(context.decisions, value),
-      });
-      break;
-    case "ownership": {
-      // Re-checked on approval: the owner may have left since the proposal.
-      // Legacy free-text proposals have no owner to check and can't be approved.
-      if (!proposal.ownerUserId || !proposal.ownerArea)
-        throw new ConvexError({ code: "INVALID_INPUT", field: "ownerUserId" });
-      const owner = await requireOwnerMember(
-        ctx,
-        proposal.workspaceId,
-        proposal.ownerUserId,
-      );
-      // One owner per area: approval replaces the owner of an equal area.
-      const area = nameKey(proposal.ownerArea);
-      await ctx.db.patch(context._id, {
-        ...next,
-        ownership: [
-          ...context.ownership.filter(
-            (entry, index) =>
-              index !== entryIndex &&
-              (entry.ownerArea === undefined ||
-                nameKey(entry.ownerArea) !== area),
-          ),
-          {
-            ...value,
-            text: ownershipText(proposal.ownerArea, owner),
-            ownerUserId: owner._id,
-            ownerArea: proposal.ownerArea,
-          },
-        ],
-      });
-      break;
-    }
-    case "open_question":
-      await ctx.db.patch(context._id, {
-        ...next,
-        openQuestions: put(context.openQuestions, value),
-      });
-      break;
-  }
 }

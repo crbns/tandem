@@ -6,7 +6,11 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { getFunctionName } from "convex/server";
 import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConvexTokenResolver, credentialHeader, withDevAnon } from "../src/auth.js";
+import {
+  ConvexTokenResolver,
+  credentialHeader,
+  withDevAnon,
+} from "../src/auth.js";
 import { encodeCursor } from "../src/backend/cursor.js";
 import { ConvexBackend } from "../src/backend/convex.js";
 import { createApp } from "../src/server.js";
@@ -57,13 +61,17 @@ const verifyToken: Handler = ({ token }) => {
 
 describe("credentialHeader", () => {
   it("reads only api-key when bearer is off", () => {
-    expect(credentialHeader({ authorization: "Bearer x" }, false)).toBeUndefined();
+    expect(
+      credentialHeader({ authorization: "Bearer x" }, false),
+    ).toBeUndefined();
     expect(credentialHeader({ "api-key": "k" }, false)).toBe("k");
   });
 
   it("accepts Bearer or api-key, and rejects malformed or conflicting ones", () => {
     expect(credentialHeader({ authorization: "Bearer tok" }, true)).toBe("tok");
-    expect(credentialHeader({ authorization: "bearer  tok " }, true)).toBe("tok");
+    expect(credentialHeader({ authorization: "bearer  tok " }, true)).toBe(
+      "tok",
+    );
     expect(credentialHeader({ "api-key": "tok" }, true)).toBe("tok");
     expect(credentialHeader({}, true)).toBeUndefined();
     expect(credentialHeader({ authorization: "Basic abc" }, true)).toBe("");
@@ -110,10 +118,16 @@ describe("Convex-backed server", () => {
           field: args.field,
           // Convex stores the display form; the owner is structured.
           proposedValue:
-            args.field === "ownership" ? `${args.proposedValue}: Sam` : args.proposedValue,
+            args.field === "ownership"
+              ? `${args.proposedValue}: Sam`
+              : args.proposedValue,
           rationale: args.rationale,
           sourceFileIds: [],
-          status: "pending",
+          status:
+            args.field === "open_question" || args.field === "constraint"
+              ? "applied"
+              : "pending",
+          supersedes: args.supersedes ?? null,
           createdBy: FILE.updatedBy,
           createdAt: FILE.updatedAt,
           decidedBy: null,
@@ -126,20 +140,82 @@ describe("Convex-backed server", () => {
       "mcp:syncWorkspace": () => ({
         workspace: { id: "ws1", name: "Demo" },
         context: {
-          goal: null, scope: null, constraints: [], decisions: [], ownership: [], openQuestions: [],
-          revision: 1, updatedAt: FILE.updatedAt, updatedBy: FILE.updatedBy,
+          goal: null,
+          scope: null,
+          constraints: [
+            {
+              id: "constraint-stable",
+              text: "Ship today",
+              status: "active",
+              resolvedBy: null,
+              resolvedAt: null,
+              supersededBy: null,
+              sourceFileIds: [FILE.id],
+              updatedAt: FILE.updatedAt,
+              updatedBy: FILE.updatedBy,
+            },
+          ],
+          decisions: [
+            {
+              id: "decision-stable",
+              text: "Original",
+              status: "superseded",
+              resolvedBy: null,
+              resolvedAt: null,
+              supersededBy: "decision-new",
+              sourceFileIds: [FILE.id],
+              updatedAt: FILE.updatedAt,
+              updatedBy: FILE.updatedBy,
+            },
+          ],
+          ownership: [],
+          openQuestions: [
+            {
+              id: "question-stable",
+              text: "Answered?",
+              status: "resolved",
+              resolvedBy: FILE.updatedBy,
+              resolvedAt: FILE.updatedAt,
+              supersededBy: null,
+              sourceFileIds: [],
+              updatedAt: FILE.updatedAt,
+              updatedBy: FILE.updatedBy,
+            },
+          ],
+          revision: 1,
+          updatedAt: FILE.updatedAt,
+          updatedBy: FILE.updatedBy,
         },
-        pendingProposals: [], changedFiles: [], filesTruncated: false,
-        recentWork: [{
-          id: "work1", workspaceId: "ws1", kind: "finding", title: "Latency",
-          summary: "Full finding: p95 is 120ms; cache misses dominate.", fileIds: [FILE.id],
-          createdBy: FILE.updatedBy, createdAt: FILE.updatedAt,
-        }],
-        workTruncated: true, events: [], eventsTruncated: false, headSeq: 8, cursorSeq: 8,
+        pendingProposals: [],
+        changedFiles: [],
+        filesTruncated: false,
+        recentWork: [
+          {
+            id: "work1",
+            workspaceId: "ws1",
+            kind: "finding",
+            title: "Latency",
+            summary: "Full finding: p95 is 120ms; cache misses dominate.",
+            fileIds: [FILE.id],
+            createdBy: FILE.updatedBy,
+            createdAt: FILE.updatedAt,
+          },
+        ],
+        workTruncated: true,
+        events: [],
+        eventsTruncated: false,
+        headSeq: 8,
+        cursorSeq: 8,
       }),
       "mcp:touchConnection": () => null,
       "mcp:listWorkspaces": () => [
-        { id: "ws1", name: "Demo", role: "owner", memberCount: 2, isDefault: true },
+        {
+          id: "ws1",
+          name: "Demo",
+          role: "owner",
+          memberCount: 2,
+          isDefault: true,
+        },
       ],
       "mcp:listMembers": () => ({
         members: [
@@ -183,8 +259,12 @@ describe("Convex-backed server", () => {
       identity: new ConvexTokenResolver(backend),
       acceptBearer: true,
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    url = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    url = new URL(
+      `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    );
   });
 
   afterEach(async () => {
@@ -199,9 +279,102 @@ describe("Convex-backed server", () => {
     );
     return client;
   }
-  async function call(client: Client, name: string, args: Record<string, unknown>) {
+  async function call(
+    client: Client,
+    name: string,
+    args: Record<string, unknown>,
+  ) {
     return (await client.callTool({ name, arguments: args })) as CallToolResult;
   }
+
+  it("forwards operations and versions and preserves applied and superseding responses", async () => {
+    const client = await connect({ Authorization: `Bearer ${TOKEN}` });
+    const added = await call(client, "propose_context_change", {
+      field: "open_questions",
+      proposed_value: "Answered?",
+      rationale: "Track it",
+    });
+    expect(added.structuredContent).toMatchObject({
+      proposal: {
+        field: "open_questions",
+        status: "applied",
+        supersedes: null,
+      },
+    });
+    await call(client, "propose_context_change", {
+      field: "open_questions",
+      proposed_value: "Answered?",
+      rationale: "Answered",
+      operation: "resolve",
+      entry_id: "question-stable",
+      expected_version: 8,
+    });
+    expect(fake.calls.at(-1)).toMatchObject({
+      name: "mcp:proposeContextChange",
+      args: {
+        field: "open_question",
+        operation: "resolve",
+        entryId: "question-stable",
+        expectedVersion: 8,
+      },
+    });
+    const replacement = await call(client, "propose_context_change", {
+      field: "decisions",
+      proposed_value: "Replacement",
+      rationale: "New evidence",
+      supersedes: "decision-stable",
+    });
+    expect(replacement.structuredContent).toMatchObject({
+      proposal: { status: "pending", supersedes: "decision-stable" },
+    });
+    expect(fake.calls.at(-1)?.args).toMatchObject({
+      operation: "add",
+      supersedes: "decision-stable",
+    });
+    const applied = await call(client, "get_approvals", { status: "applied" });
+    expect(applied.structuredContent).toMatchObject({
+      proposals: [{ status: "applied" }],
+    });
+    await client.close();
+  });
+
+  it("preserves stable context IDs and resolved/superseded history on every sync", async () => {
+    const client = await connect({ Authorization: `Bearer ${TOKEN}` });
+    for (let i = 0; i < 2; i++) {
+      const result = await call(client, "sync_workspace", {});
+      expect(result.structuredContent).toMatchObject({
+        context: {
+          constraints: [
+            {
+              id: "constraint-stable",
+              updated_at: new Date(FILE.updatedAt).toISOString(),
+              source_ids: [FILE.id],
+              updated_by: { actor_type: "agent", agent_connection_id: "conn1" },
+            },
+          ],
+          decisions: [
+            {
+              id: "decision-stable",
+              status: "superseded",
+              superseded_by: "decision-new",
+            },
+          ],
+          open_questions: [
+            {
+              id: "question-stable",
+              status: "resolved",
+              resolved_at: FILE.updatedAt,
+              resolved_by: {
+                actor_type: "agent",
+                agent_connection_id: "conn1",
+              },
+            },
+          ],
+        },
+      });
+    }
+    await client.close();
+  });
 
   it("challenges with Bearer and rejects tokens Convex rejects", async () => {
     for (const headers of [{}, { Authorization: "Bearer tdm_wrong" }]) {
@@ -240,28 +413,46 @@ describe("Convex-backed server", () => {
     const read = fake.calls.find((c) => c.name === "mcp:readFile");
     expect(read?.args).toEqual({ token: TOKEN, fileId: "file1" });
     // A successful call records presence itself: no separate touch.
-    expect(fake.calls.some((c) => c.name === "mcp:touchConnection")).toBe(false);
+    expect(fake.calls.some((c) => c.name === "mcp:touchConnection")).toBe(
+      false,
+    );
   });
 
   it("maps sync recent_work, attribution, file references and work_truncated", async () => {
     const client = await connect({ Authorization: `Bearer ${TOKEN}` });
-    const result = await call(client, "sync_workspace", { since: encodeCursor("ws1", 7) });
+    const result = await call(client, "sync_workspace", {
+      since: encodeCursor("ws1", 7),
+    });
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toMatchObject({
-      recent_work: [{
-        id: "work1", workspace_id: "ws1", kind: "finding", title: "Latency",
-        summary: "Full finding: p95 is 120ms; cache misses dominate.", file_ids: ["file1"],
-        published_by: {
-          actor_type: "agent", user_id: "user1", client: "claude",
-          agent_connection_id: "conn1", label: "Sam's Claude",
+      recent_work: [
+        {
+          id: "work1",
+          workspace_id: "ws1",
+          kind: "finding",
+          title: "Latency",
+          summary: "Full finding: p95 is 120ms; cache misses dominate.",
+          file_ids: ["file1"],
+          published_by: {
+            actor_type: "agent",
+            user_id: "user1",
+            client: "claude",
+            agent_connection_id: "conn1",
+            label: "Sam's Claude",
+          },
+          created_at: "2026-10-24T00:00:00.000Z",
         },
-        created_at: "2026-10-24T00:00:00.000Z",
-      }],
+      ],
       work_truncated: true,
       cursor: encodeCursor("ws1", 8),
     });
-    expect(fake.calls.find((c) => c.name === "mcp:syncWorkspace")?.args).toEqual({
-      token: TOKEN, workspaceId: undefined, sinceSeq: 7, cursorWorkspaceId: "ws1",
+    expect(
+      fake.calls.find((c) => c.name === "mcp:syncWorkspace")?.args,
+    ).toEqual({
+      token: TOKEN,
+      workspaceId: undefined,
+      sinceSeq: 7,
+      cursorWorkspaceId: "ws1",
     });
     await client.close();
   });
@@ -274,7 +465,13 @@ describe("Convex-backed server", () => {
       user: { id: "user1" },
       client: "claude",
       workspaces: [
-        { id: "ws1", name: "Demo", role: "owner", member_count: 2, is_default: true },
+        {
+          id: "ws1",
+          name: "Demo",
+          role: "owner",
+          member_count: 2,
+          is_default: true,
+        },
       ],
       members: [
         { user_id: "user1", name: "Sam", role: "owner" },
@@ -300,11 +497,18 @@ describe("Convex-backed server", () => {
     });
     expect(conflict.isError).toBe(true);
     expect(conflict.structuredContent).toMatchObject({
-      error: { code: "VERSION_CONFLICT", current_version: 3, expected_version: 2 },
+      error: {
+        code: "VERSION_CONFLICT",
+        current_version: 3,
+        expected_version: 2,
+      },
     });
     expect(JSON.stringify(conflict)).not.toContain("secret head content");
 
-    const dup = await call(client, "create_document", { name: "Brief.md", content: "" });
+    const dup = await call(client, "create_document", {
+      name: "Brief.md",
+      content: "",
+    });
     expect(dup.structuredContent).toMatchObject({
       error: { code: "NAME_EXISTS", file_id: "file1", current_version: 2 },
     });
@@ -334,7 +538,9 @@ describe("Convex-backed server", () => {
     const all = await call(client, "get_approvals", { status: "all" });
     expect(all.isError).toBeFalsy();
     expect(
-      fake.calls.filter((c) => c.name === "mcp:getApprovals").map((c) => c.args.status),
+      fake.calls
+        .filter((c) => c.name === "mcp:getApprovals")
+        .map((c) => c.args.status),
     ).toEqual(["stale", undefined]);
   });
 
@@ -346,7 +552,11 @@ describe("Convex-backed server", () => {
       rationale: "r",
     });
     expect(decision.structuredContent).toMatchObject({
-      proposal: { field: "decisions", base_context_version: 4, status: "pending" },
+      proposal: {
+        field: "decisions",
+        base_context_version: 4,
+        status: "pending",
+      },
     });
     await call(client, "propose_context_change", {
       field: "constraints",
@@ -385,8 +595,12 @@ describe("Convex-backed server", () => {
       proposed_value: "Sam owns MCP",
       rationale: "r",
     });
-    expect(freeTextOwner.structuredContent).toMatchObject({ error: { code: "INVALID_INPUT" } });
-    expect(fake.calls.filter((c) => c.name === "mcp:proposeContextChange")).toHaveLength(3);
+    expect(freeTextOwner.structuredContent).toMatchObject({
+      error: { code: "INVALID_INPUT" },
+    });
+    expect(
+      fake.calls.filter((c) => c.name === "mcp:proposeContextChange"),
+    ).toHaveLength(3);
   });
 });
 

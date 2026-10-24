@@ -149,7 +149,11 @@ export const listMembers = mutation({
   args: { token: v.string() },
   returns: v.object({
     members: v.array(
-      v.object({ userId: v.id("users"), name: v.string(), role: roleValidator }),
+      v.object({
+        userId: v.id("users"),
+        name: v.string(),
+        role: roleValidator,
+      }),
     ),
     truncated: v.boolean(),
   }),
@@ -232,7 +236,9 @@ export const listFiles = mutation({
       rows = await ctx.db
         .query("files")
         .withSearchIndex("search_name", (q) => {
-          const search = q.search("name", needle).eq("workspaceId", workspaceId);
+          const search = q
+            .search("name", needle)
+            .eq("workspaceId", workspaceId);
           return folderId ? search.eq("parentId", folderId) : search;
         })
         .take(LIST_LIMIT + 1);
@@ -287,7 +293,11 @@ export const readFile = mutation({
   }),
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.token);
-    const file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
+    const file = await getFileInWorkspace(
+      ctx,
+      args.fileId,
+      session.workspaceId,
+    );
     return { file: toFileMetadata(file), content: file.content ?? null };
   },
 });
@@ -308,7 +318,11 @@ export const getFileVersions = mutation({
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.token);
     const limit = boundedInt(args.limit, 1, 100);
-    const file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
+    const file = await getFileInWorkspace(
+      ctx,
+      args.fileId,
+      session.workspaceId,
+    );
     const revisions = await ctx.db
       .query("file_revisions")
       .withIndex("by_file_and_version", (q) => q.eq("fileId", file._id))
@@ -370,7 +384,11 @@ export const updateDocument = mutation({
   returns: fileMetadataValidator,
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.token);
-    const file = await getFileInWorkspace(ctx, args.fileId, session.workspaceId);
+    const file = await getFileInWorkspace(
+      ctx,
+      args.fileId,
+      session.workspaceId,
+    );
     const updated = await updateDocumentCore(ctx, {
       file,
       content: args.content,
@@ -397,6 +415,9 @@ export const syncWorkspace = mutation({
         id: v.id("context_proposals"),
         field: contextFieldValidator,
         rationale: v.string(),
+        proposedValue: v.string(),
+        supersedes: v.union(v.string(), v.null()),
+        status: v.literal("pending"),
         createdBy: actorValidator,
         createdAt: v.number(),
       }),
@@ -455,6 +476,12 @@ export const proposeContextChange = mutation({
   args: {
     token: v.string(),
     workspaceId: v.optional(v.string()),
+    operation: v.optional(
+      v.union(v.literal("add"), v.literal("resolve"), v.literal("remove")),
+    ),
+    entryId: v.optional(v.string()),
+    supersedes: v.optional(v.string()),
+    expectedVersion: v.optional(v.number()),
     field: contextFieldValidator,
     proposedValue: v.string(),
     rationale: v.string(),
@@ -472,9 +499,17 @@ export const proposeContextChange = mutation({
     const proposal = await proposeContextChangeCore(ctx, {
       workspaceId,
       field: args.field,
+      operation: args.operation,
+      entryId: args.entryId,
+      supersedes: args.supersedes,
+      expectedVersion: args.expectedVersion,
       proposedValue: boundedText(args.proposedValue, 2000, "proposedValue"),
       rationale: boundedText(args.rationale, 2000, "rationale"),
-      sourceFileIds: await checkSourceFiles(ctx, workspaceId, args.sourceFileIds),
+      sourceFileIds: await checkSourceFiles(
+        ctx,
+        workspaceId,
+        args.sourceFileIds,
+      ),
       ownerUserId: args.ownerUserId,
       actor: session.actor,
     });

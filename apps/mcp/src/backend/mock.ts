@@ -16,6 +16,7 @@ import type {
   WorkspaceMember,
   ApplyContextChangeInput,
   Attribution,
+  ContextEntry,
   ContextField,
   ContextProposal,
   CreateDocumentInput,
@@ -41,6 +42,29 @@ import type {
   WorkspaceRole,
   WorkspaceSummary,
 } from "./types.js";
+
+function contextEntry(
+  text: string,
+  id = `entry_${randomUUID()}`,
+  updatedBy: Attribution = {
+    actor_type: "human",
+    user_id: "user_alex",
+    client: "dashboard",
+  },
+  sourceIds: string[] = [],
+): ContextEntry {
+  return {
+    id,
+    text,
+    source_ids: [...sourceIds],
+    updated_at: new Date().toISOString(),
+    updated_by: updatedBy,
+    status: "active",
+    resolved_by: null,
+    resolved_at: null,
+    superseded_by: null,
+  };
+}
 
 interface StoredWorkspace {
   name: string;
@@ -110,19 +134,28 @@ export class MockBackend implements TandemBackend {
         scope:
           "One shared workspace with files, revisions, approvals, and a remote MCP server for Claude and ChatGPT. No real-time co-editing and no agent-to-agent messaging.",
         constraints: [
-          "Submissions are due Oct 25, 9 AM PT.",
-          "Every write carries expected_version; stale writes fail with VERSION_CONFLICT.",
+          contextEntry("Submissions are due Oct 25, 9 AM PT."),
+          contextEntry(
+            "Every write carries expected_version; stale writes fail with VERSION_CONFLICT.",
+          ),
         ],
         decisions: [
           {
-            id: "dec_convex",
-            text: "Use Convex for the database, auth, and file storage.",
-            status: "approved",
+            ...contextEntry(
+              "Use Convex for the database, auth, and file storage.",
+              "dec_convex",
+            ),
             decided_at: now,
             source_ids: ["file_brief"],
           },
         ],
-        ownership: [{ area: "MCP server", owner_user_id: "user_alex" }],
+        ownership: [
+          {
+            ...contextEntry("MCP server"),
+            area: "MCP server",
+            owner_user_id: "user_alex",
+          },
+        ],
         open_questions: [],
         updated_at: now,
         updated_by: alex,
@@ -136,9 +169,17 @@ export class MockBackend implements TandemBackend {
       context: {
         goal: "Plan the spring community meetup.",
         scope: "Venue, speakers, and budget for a single evening event.",
-        constraints: ["Total budget under $2,000."],
+        constraints: [
+          contextEntry("Total budget under $2,000.", undefined, jordan),
+        ],
         decisions: [],
-        ownership: [{ area: "Venue", owner_user_id: "user_jordan" }],
+        ownership: [
+          {
+            ...contextEntry("Venue", undefined, jordan),
+            area: "Venue",
+            owner_user_id: "user_jordan",
+          },
+        ],
         open_questions: [],
         updated_at: now,
         updated_by: jordan,
@@ -409,13 +450,26 @@ export class MockBackend implements TandemBackend {
       context_version: ws.context_version,
       pending_proposals: this.proposalsIn(workspaceId)
         .filter((p) => p.status === "pending")
-        .map(({ id, field, rationale, proposed_by, created_at }) => ({
-          id,
-          field,
-          rationale,
-          proposed_by,
-          created_at,
-        })),
+        .map(
+          ({
+            id,
+            field,
+            proposed_value,
+            supersedes,
+            rationale,
+            proposed_by,
+            created_at,
+          }) => ({
+            proposed_value: structuredClone(proposed_value),
+            supersedes,
+            status: "pending" as const,
+            id,
+            field,
+            rationale,
+            proposed_by,
+            created_at,
+          }),
+        ),
       changed_files: changed.slice(0, SYNC_LIMIT),
       files_truncated: changed.length > SYNC_LIMIT,
       recent_work: structuredClone(work.slice(0, SYNC_WORK_LIMIT)),
@@ -431,6 +485,85 @@ export class MockBackend implements TandemBackend {
     input: ProposeContextChangeInput,
   ): Promise<ContextProposal> {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
+    const ws = this.workspaces.get(workspaceId)!;
+    const operation = input.operation ?? "add";
+    const working =
+      input.field === "constraints" || input.field === "open_questions";
+    if (!["add", "resolve", "remove"].includes(operation))
+      throw new TandemError("INVALID_INPUT", "Invalid operation.");
+    if (operation !== "add") {
+      if (
+        !input.entry_id ||
+        !Number.isSafeInteger(input.expected_version) ||
+        input.expected_version! < 0
+      )
+        throw new TandemError(
+          "INVALID_INPUT",
+          "entry_id and expected_version are required for resolve/remove.",
+        );
+      if (operation === "remove" && actor.actor_type !== "human")
+        throw forbidden(workspaceId);
+      if (
+        !working ||
+        (operation === "resolve" && input.field !== "open_questions")
+      )
+        throw new TandemError(
+          "INVALID_INPUT",
+          "Only open questions can be resolved; only working entries can be removed.",
+        );
+      if (input.expected_version !== ws.context_version)
+        throw new TandemError(
+          "VERSION_CONFLICT",
+          "Sync and reconcile the latest context.",
+          {
+            current_version: ws.context_version,
+            expected_version: input.expected_version,
+          },
+        );
+    }
+    if (
+      input.supersedes &&
+      (operation !== "add" ||
+        input.field !== "decisions" ||
+        !ws.context.decisions.some(
+          (e) => e.id === input.supersedes && e.status === "active",
+        ))
+    )
+      throw new TandemError(
+        "INVALID_INPUT",
+        "supersedes must name an active decision in this workspace.",
+      );
+    if (operation === "add" && input.entry_id !== undefined)
+      throw new TandemError(
+        "INVALID_INPUT",
+        "entry_id is only valid for resolve/remove.",
+      );
+    if (
+      input.expected_version !== undefined &&
+      input.expected_version !== ws.context_version
+    )
+      throw new TandemError(
+        "VERSION_CONFLICT",
+        "Sync and reconcile the latest context.",
+        {
+          current_version: ws.context_version,
+          expected_version: input.expected_version,
+        },
+      );
+    const entries =
+      input.field === "open_questions"
+        ? ws.context.open_questions
+        : ws.context.constraints;
+    const target =
+      operation !== "add"
+        ? entries.find(
+            (e) =>
+              e.id === input.entry_id &&
+              (operation === "remove" || e.status === "active"),
+          )
+        : undefined;
+    if (operation !== "add" && !target)
+      throw new TandemError("INVALID_INPUT", "Active context entry not found.");
     this.checkValue(workspaceId, input.field, input.proposed_value);
     const proposal: ContextProposal = {
       base_context_version: this.workspaces.get(workspaceId)!.context_version,
@@ -440,14 +573,43 @@ export class MockBackend implements TandemBackend {
       proposed_value: structuredClone(input.proposed_value),
       rationale: input.rationale,
       source_ids: this.checkFileIds(workspaceId, input.source_ids),
-      status: "pending",
+      status: working ? "applied" : "pending",
+      supersedes: input.supersedes ?? null,
       proposed_by: attribution(actor),
       created_at: new Date().toISOString(),
     };
+    if (working) {
+      if (operation === "add") {
+        this.applyToContext(
+          workspaceId,
+          input.field,
+          input.proposed_value,
+          actor,
+          proposal.source_ids,
+        );
+      } else {
+        if (operation === "remove") entries.splice(entries.indexOf(target!), 1);
+        else
+          Object.assign(target!, {
+            status: "resolved",
+            resolved_by: attribution(actor),
+            resolved_at: Date.now(),
+          });
+        ws.context_version += 1;
+        ws.context.updated_at = new Date().toISOString();
+        ws.context.updated_by = attribution(actor);
+      }
+    }
     this.proposals.set(proposal.id, proposal);
     this.appendEvent(
       workspaceId,
-      "context.proposed",
+      working
+        ? operation === "resolve"
+          ? "context.resolved"
+          : operation === "remove"
+            ? "context.removed"
+            : "context.recorded"
+        : "context.proposed",
       proposal.id,
       proposal.proposed_by,
       `${proposal.field} change proposed`,
@@ -544,11 +706,11 @@ export class MockBackend implements TandemBackend {
       }
       this.applyToContext(
         proposal.workspace_id,
-        // Mock proposals only come from the MCP tool, which never sends open_questions.
-        proposal.field as ContextField,
+        proposal.field,
         proposal.proposed_value,
         actor,
         proposal.source_ids,
+        proposal.supersedes,
       );
     }
     proposal.status = decision === "approve" ? "approved" : "rejected";
@@ -593,35 +755,75 @@ export class MockBackend implements TandemBackend {
     value: ProposedValue,
     actor: Actor,
     sourceIds: string[],
+    supersedes: string | null = null,
   ): void {
     // Re-checked at apply time: e.g. a proposed owner may have left since.
     this.checkValue(workspaceId, field, value);
     const ws = this.workspaces.get(workspaceId)!;
     const context = ws.context;
     const now = new Date().toISOString();
+    const previous = supersedes
+      ? context.decisions.find(
+          (e) => e.id === supersedes && e.status === "active",
+        )
+      : undefined;
+    if (supersedes && !previous)
+      throw new TandemError(
+        "INVALID_INPUT",
+        "Superseded decision is no longer active.",
+      );
     switch (field) {
       case "goal":
       case "scope":
         context[field] = value as string;
         break;
       case "constraints":
-        // Same as Convex: one constraint per proposal, appended on approval.
-        context.constraints = [...context.constraints, (value as string).trim()];
+        context.constraints.push(
+          contextEntry(
+            (value as string).trim(),
+            undefined,
+            attribution(actor),
+            sourceIds,
+          ),
+        );
+        break;
+      case "open_questions":
+        context.open_questions.push({
+          ...contextEntry(
+            value as string,
+            undefined,
+            attribution(actor),
+            sourceIds,
+          ),
+          created_at: now,
+          created_by: attribution(actor),
+        });
         break;
       case "decisions":
         context.decisions.push({
-          id: `dec_${randomUUID()}`,
-          text: value as string,
-          status: "approved",
+          ...contextEntry(
+            value as string,
+            undefined,
+            attribution(actor),
+            sourceIds,
+          ),
           decided_at: now,
           source_ids: [...sourceIds],
         });
+        if (previous) {
+          previous.status = "superseded";
+          previous.superseded_by = context.decisions.at(-1)!.id;
+        }
         break;
       case "ownership": {
         const { area, owner_user_id } = value as Ownership;
         context.ownership = [
           ...context.ownership.filter((o) => nameKey(o.area) !== nameKey(area)),
-          { area, owner_user_id },
+          {
+            ...contextEntry(area, undefined, attribution(actor), sourceIds),
+            area,
+            owner_user_id,
+          },
         ];
         break;
       }
@@ -649,6 +851,7 @@ export class MockBackend implements TandemBackend {
         if (!isNonEmptyString(value))
           throw fail("the full new text, as a non-empty string");
         return;
+      case "open_questions":
       case "decisions":
         if (!isNonEmptyString(value))
           throw fail("the decision text, as a non-empty string");

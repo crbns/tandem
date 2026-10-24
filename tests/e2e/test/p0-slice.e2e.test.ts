@@ -9,7 +9,10 @@ import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { TandemApiError } from "../../../apps/web/lib/api/errors";
 import { Agent, rawMcpStatus } from "../src/agent";
 import { passwordSignIn, signUp, type Human } from "../src/humans";
-import { isAccountExistsError, isWeakPasswordError } from "../../../apps/web/lib/auth/signInErrors";
+import {
+  isAccountExistsError,
+  isWeakPasswordError,
+} from "../../../apps/web/lib/auth/signInErrors";
 
 const convexUrl = inject("convexUrl");
 const mcpUrl = inject("mcpUrl");
@@ -48,15 +51,46 @@ type Attribution = {
   agent_connection_id?: string;
   label?: string;
 };
-type McpFile = { id: string; workspace_id: string; name: string; version: number; updated_by: Attribution };
-type McpEvent = { seq: number; type: string; actor: Attribution; subject_id: string };
+type McpFile = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  version: number;
+  updated_by: Attribution;
+};
+type McpEvent = {
+  seq: number;
+  type: string;
+  actor: Attribution;
+  subject_id: string;
+};
 type McpSync = {
   workspace: { id: string };
-  context: { goal: string };
+  context: {
+    goal: string;
+    open_questions: {
+      id: string;
+      text: string;
+      status: string;
+      resolved_by: Attribution | null;
+      resolved_at: number | null;
+    }[];
+    decisions: {
+      id: string;
+      text: string;
+      status: string;
+      superseded_by: string | null;
+    }[];
+  };
+  context_version: number;
   pending_proposals: { id: string }[];
   recent_work: {
-    kind: string; title: string; summary: string; file_ids: string[];
-    published_by: Attribution; created_at: string;
+    kind: string;
+    title: string;
+    summary: string;
+    file_ids: string[];
+    published_by: Attribution;
+    created_at: string;
   }[];
   work_truncated: boolean;
   events: McpEvent[];
@@ -101,7 +135,10 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     await agent?.close();
     await Promise.all([a?.close(), b?.close(), c?.close()]);
     if (process.env.E2E_EVIDENCE)
-      writeFileSync(process.env.E2E_EVIDENCE, `${JSON.stringify(evidence, null, 2)}\n`);
+      writeFileSync(
+        process.env.E2E_EVIDENCE,
+        `${JSON.stringify(evidence, null, 2)}\n`,
+      );
   });
 
   it("0. sign-up rejects a short password (coded WEAK_PASSWORD) and an existing email", async () => {
@@ -111,7 +148,9 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       flow: "signUp",
     }).catch((err: unknown) => err);
     expect(isWeakPasswordError(weak)).toBe(true);
-    expect((weak as { data?: { code?: string } }).data?.code).toBe("WEAK_PASSWORD");
+    expect((weak as { data?: { code?: string } }).data?.code).toBe(
+      "WEAK_PASSWORD",
+    );
 
     // Convex Auth treats a sign-up with an existing email and the RIGHT password
     // as a sign-in; only a different password is "already exists".
@@ -128,27 +167,45 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
 
   it("1. A creates a workspace with an approved goal and invites B; C has their own workspace", async () => {
     workspaceId = await a.dashboard.createWorkspace(`E2E ${run}`);
-    const goalProposal = await a.http.mutation(api.context.proposeContextChange, {
-      workspaceId: workspaceId as Id<"workspaces">,
-      field: "goal",
-      proposedValue: INITIAL_GOAL,
-      rationale: "Kickoff",
-      sourceFileIds: [],
-    });
-    await a.dashboard.decideProposal({ id: goalProposal, workspaceId }, "approved");
+    const goalProposal = await a.http.mutation(
+      api.context.proposeContextChange,
+      {
+        workspaceId: workspaceId as Id<"workspaces">,
+        field: "goal",
+        proposedValue: INITIAL_GOAL,
+        rationale: "Kickoff",
+        sourceFileIds: [],
+      },
+    );
+    await a.dashboard.decideProposal(
+      { id: goalProposal.id, workspaceId },
+      "approved",
+    );
     const context = await a.dashboard.getContext(workspaceId);
     expect(context?.goal).toBe(INITIAL_GOAL);
-    expect(context?.approvedBy).toMatchObject({ actorType: "human", userName: a.name });
+    expect(context?.approvedBy).toMatchObject({
+      actorType: "human",
+      userName: a.name,
+    });
 
     const invite = await a.dashboard.createInvite(workspaceId, "member");
-    expect(await b.dashboard.acceptInvite(invite.token)).toEqual({ workspaceId });
+    expect(await b.dashboard.acceptInvite(invite.token)).toEqual({
+      workspaceId,
+    });
     expect(await b.dashboard.listWorkspaces()).toEqual([
       { id: workspaceId, name: `E2E ${run}`, role: "member" },
     ]);
 
     cWorkspaceId = await c.dashboard.createWorkspace(`Outsider ${run}`);
-    expect((await c.dashboard.listWorkspaces()).map((w) => w.id)).toEqual([cWorkspaceId]);
-    evidence.step1 = { workspaceId, cWorkspaceId, goal: context?.goal, bRole: "member" };
+    expect((await c.dashboard.listWorkspaces()).map((w) => w.id)).toEqual([
+      cWorkspaceId,
+    ]);
+    evidence.step1 = {
+      workspaceId,
+      cWorkspaceId,
+      goal: context?.goal,
+      bRole: "member",
+    };
   });
 
   it("2. A creates an agent connection and the MCP SDK client connects with the token", async () => {
@@ -182,7 +239,11 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       name: "proposal.md",
       content: V1,
     });
-    expect(file).toMatchObject({ name: "proposal.md", version: 1, workspace_id: workspaceId });
+    expect(file).toMatchObject({
+      name: "proposal.md",
+      version: 1,
+      workspace_id: workspaceId,
+    });
     // The connection that wrote it, not just the person and client.
     expect(file.updated_by).toEqual({
       actor_type: "agent",
@@ -201,37 +262,73 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     expect(listed).toMatchObject({
       name: "proposal.md",
       version: 1,
-      updatedBy: { actorType: "agent", userName: a.name, agentClient: "claude" },
+      updatedBy: {
+        actorType: "agent",
+        userName: a.name,
+        agentClient: "claude",
+      },
     });
 
     const detail = await b.dashboard.readFile(fileId);
     expect(detail).toMatchObject({ version: 1, content: V1 });
 
-    expect(await b.dashboard.updateFileContent(fileId, { content: V2, expectedVersion: 1 })).toEqual({
+    expect(
+      await b.dashboard.updateFileContent(fileId, {
+        content: V2,
+        expectedVersion: 1,
+      }),
+    ).toEqual({
       version: 2,
     });
     // A second proposal.md (names are case/space-insensitive) is refused, not duplicated.
     expect(
-      await dashboardCode(b.dashboard.createFile(workspaceId, { name: " PROPOSAL.md ", mimeType: "text/markdown", content: "dup" })),
+      await dashboardCode(
+        b.dashboard.createFile(workspaceId, {
+          name: " PROPOSAL.md ",
+          mimeType: "text/markdown",
+          content: "dup",
+        }),
+      ),
     ).toBe("NAME_EXISTS");
-    expect((await b.dashboard.listFiles(workspaceId)).filter((f) => /proposal\.md/i.test(f.name))).toHaveLength(1);
-    evidence.step4 = { listedBy: listed?.updatedBy, savedVersion: 2, duplicateName: "NAME_EXISTS" };
+    expect(
+      (await b.dashboard.listFiles(workspaceId)).filter((f) =>
+        /proposal\.md/i.test(f.name),
+      ),
+    ).toHaveLength(1);
+    evidence.step4 = {
+      listedBy: listed?.updatedBy,
+      savedVersion: 2,
+      duplicateName: "NAME_EXISTS",
+    };
   });
 
   it("5. agent reads v2; a stale update gets VERSION_CONFLICT(current 2) and v2 stays intact", async () => {
-    const read = await agent.ok<{ file: McpFile; content: string }>("read_file", { file_id: fileId });
+    const read = await agent.ok<{ file: McpFile; content: string }>(
+      "read_file",
+      { file_id: fileId },
+    );
     expect(read.file.version).toBe(2);
     expect(read.content).toBe(V2);
-    expect(read.file.updated_by).toMatchObject({ actor_type: "human", client: "dashboard" });
+    expect(read.file.updated_by).toMatchObject({
+      actor_type: "human",
+      client: "dashboard",
+    });
 
     const conflict = await agent.fails("update_document", {
       file_id: fileId,
       content: "stale overwrite",
       expected_version: 1,
     });
-    expect(conflict).toMatchObject({ code: "VERSION_CONFLICT", current_version: 2, expected_version: 1 });
+    expect(conflict).toMatchObject({
+      code: "VERSION_CONFLICT",
+      current_version: 2,
+      expected_version: 1,
+    });
 
-    const reread = await agent.ok<{ file: McpFile; content: string }>("read_file", { file_id: fileId });
+    const reread = await agent.ok<{ file: McpFile; content: string }>(
+      "read_file",
+      { file_id: fileId },
+    );
     expect(reread).toMatchObject({ file: { version: 2 }, content: V2 });
     expect((await b.dashboard.readFile(fileId)).content).toBe(V2);
     evidence.step5 = { conflict };
@@ -252,14 +349,22 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       agent_connection_id: connectionId,
       label: expect.any(String),
     });
-    expect(byVersion.get(2)?.author).toMatchObject({ actor_type: "human", client: "dashboard" });
+    expect(byVersion.get(2)?.author).toMatchObject({
+      actor_type: "human",
+      client: "dashboard",
+    });
     expect(byVersion.get(2)?.author.user_id).not.toBe(userIdA);
     for (const v of history.versions) expect(v).not.toHaveProperty("content");
 
     const revisions = await b.dashboard.listRevisions(fileId);
     const v1 = revisions.find((r) => r.version === 1);
     const v2 = revisions.find((r) => r.version === 2);
-    expect(v1).toMatchObject({ actorType: "agent", userId: userIdA, userName: a.name, agentClient: "claude" });
+    expect(v1).toMatchObject({
+      actorType: "agent",
+      userId: userIdA,
+      userName: a.name,
+      agentClient: "claude",
+    });
     expect(v2).toMatchObject({ actorType: "human", userName: b.name });
     expect(v2?.userId).toBe(byVersion.get(2)?.author.user_id);
     evidence.step6 = { mcp: history.versions, dashboard: revisions };
@@ -268,10 +373,14 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
   it("7. approval loop: agent proposes, cannot decide; member B is forbidden; A approves; agent syncs", async () => {
     cursorBeforeProposal = (await agent.ok<McpSync>("sync_workspace")).cursor;
 
-    const { proposal } = await agent.ok<{ proposal: { id: string; status: string; field: string } }>(
-      "propose_context_change",
-      { field: "goal", proposed_value: NEW_GOAL, rationale: "Scope agreed in proposal.md", source_ids: [fileId] },
-    );
+    const { proposal } = await agent.ok<{
+      proposal: { id: string; status: string; field: string };
+    }>("propose_context_change", {
+      field: "goal",
+      proposed_value: NEW_GOAL,
+      rationale: "Scope agreed in proposal.md",
+      source_ids: [fileId],
+    });
     expect(proposal).toMatchObject({
       status: "pending",
       field: "goal",
@@ -290,7 +399,10 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     const toolNames = (await agent.client.listTools()).tools.map((t) => t.name);
     expect(toolNames.filter((n) => /approve|decide/.test(n))).toEqual([]);
     await expect(
-      agent.client.callTool({ name: "decide_context_proposal", arguments: { proposal_id: proposalId } }),
+      agent.client.callTool({
+        name: "decide_context_proposal",
+        arguments: { proposal_id: proposalId },
+      }),
     ).resolves.toMatchObject({ isError: true });
     const withAgentToken = new ConvexHttpClient(convexUrl, { logger: false });
     withAgentToken.setAuth(token);
@@ -309,15 +421,24 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     ).rejects.toThrow(/UNAUTHENTICATED/);
 
     // B is a member, not an admin.
-    expect(await dashboardCode(b.dashboard.decideProposal({ id: proposalId, workspaceId }, "approved"))).toBe(
-      "FORBIDDEN",
+    expect(
+      await dashboardCode(
+        b.dashboard.decideProposal({ id: proposalId, workspaceId }, "approved"),
+      ),
+    ).toBe("FORBIDDEN");
+    expect((await a.dashboard.getContext(workspaceId))?.goal).toBe(
+      INITIAL_GOAL,
     );
-    expect((await a.dashboard.getContext(workspaceId))?.goal).toBe(INITIAL_GOAL);
 
-    await a.dashboard.decideProposal({ id: proposalId, workspaceId }, "approved");
+    await a.dashboard.decideProposal(
+      { id: proposalId, workspaceId },
+      "approved",
+    );
     expect((await a.dashboard.getContext(workspaceId))?.goal).toBe(NEW_GOAL);
 
-    const sync = await agent.ok<McpSync>("sync_workspace", { since: cursorBeforeProposal });
+    const sync = await agent.ok<McpSync>("sync_workspace", {
+      since: cursorBeforeProposal,
+    });
     expect(sync.context.goal).toBe(NEW_GOAL);
     expect(sync.pending_proposals.map((p) => p.id)).not.toContain(proposalId);
     const seqs = sync.events.map((e) => e.seq);
@@ -331,32 +452,56 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     expect(sync.events_truncated).toBe(false);
 
     // Nothing new after that cursor.
-    const again = await agent.ok<McpSync>("sync_workspace", { since: sync.cursor });
+    const again = await agent.ok<McpSync>("sync_workspace", {
+      since: sync.cursor,
+    });
     expect(again.events).toEqual([]);
-    evidence.step7 = { proposalId, eventsSinceCursor: sync.events.map((e) => `${e.seq}:${e.type}:${e.actor.actor_type}`) };
+    evidence.step7 = {
+      proposalId,
+      eventsSinceCursor: sync.events.map(
+        (e) => `${e.seq}:${e.type}:${e.actor.actor_type}`,
+      ),
+    };
   });
 
   it("7a. A publishes a finding and B's next cursor sync receives the full summary and files", async () => {
     const connection = await b.dashboard.createAgentConnection(workspaceId, {
-      client: "chatgpt", displayName: "Blake's ChatGPT",
+      client: "chatgpt",
+      displayName: "Blake's ChatGPT",
     });
     teammateConnectionId = connection.connectionId;
     const teammate = await Agent.connect(mcpUrl, connection.token);
     try {
       const before = await teammate.ok<McpSync>("sync_workspace");
       const summary = `Full finding (${run}): use expected_version when updating proposal.md; stale writes must reread and reconcile.`;
-      const { published } = await agent.ok<{ published: McpSync["recent_work"][number] }>("publish_work", {
-        kind: "finding", title: "Version conflict findings", summary, file_ids: [fileId],
+      const { published } = await agent.ok<{
+        published: McpSync["recent_work"][number];
+      }>("publish_work", {
+        kind: "finding",
+        title: "Version conflict findings",
+        summary,
+        file_ids: [fileId],
       });
-      const after = await teammate.ok<McpSync>("sync_workspace", { since: before.cursor });
+      const after = await teammate.ok<McpSync>("sync_workspace", {
+        since: before.cursor,
+      });
       expect(after.recent_work).toEqual([published]);
       expect(after.recent_work[0]).toMatchObject({
-        kind: "finding", title: "Version conflict findings", summary, file_ids: [fileId],
-        published_by: { actor_type: "agent", agent_connection_id: connectionId },
+        kind: "finding",
+        title: "Version conflict findings",
+        summary,
+        file_ids: [fileId],
+        published_by: {
+          actor_type: "agent",
+          agent_connection_id: connectionId,
+        },
         created_at: expect.any(String),
       });
       expect(after.work_truncated).toBe(false);
-      expect((await teammate.ok<McpSync>("sync_workspace", { since: after.cursor })).recent_work).toEqual([]);
+      expect(
+        (await teammate.ok<McpSync>("sync_workspace", { since: after.cursor }))
+          .recent_work,
+      ).toEqual([]);
     } finally {
       await teammate.close();
     }
@@ -375,36 +520,182 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     const second = await propose(`Second competing goal (${run})`);
     await a.dashboard.decideProposal({ id: first, workspaceId }, "approved");
     // The backend marks the second stale (and keeps that record); the adapter surfaces VERSION_CONFLICT.
-    expect(await dashboardCode(a.dashboard.decideProposal({ id: second, workspaceId }, "approved"))).toBe(
-      "VERSION_CONFLICT",
+    expect(
+      await dashboardCode(
+        a.dashboard.decideProposal({ id: second, workspaceId }, "approved"),
+      ),
+    ).toBe("VERSION_CONFLICT");
+    expect((await a.dashboard.getContext(workspaceId))?.goal).toBe(
+      `First competing goal (${run})`,
     );
-    expect((await a.dashboard.getContext(workspaceId))?.goal).toBe(`First competing goal (${run})`);
-    expect((await a.dashboard.listProposals(workspaceId, "stale")).map((p) => p.id)).toContain(second);
-    const fromAgent = await agent.ok<{ proposals: { id: string; status: string }[] }>("get_approvals", {
+    expect(
+      (await a.dashboard.listProposals(workspaceId, "stale")).map((p) => p.id),
+    ).toContain(second);
+    const fromAgent = await agent.ok<{
+      proposals: { id: string; status: string }[];
+    }>("get_approvals", {
       status: "stale",
     });
-    expect(fromAgent.proposals.map((p) => [p.id, p.status])).toContainEqual([second, "stale"]);
+    expect(fromAgent.proposals.map((p) => [p.id, p.status])).toContainEqual([
+      second,
+      "stale",
+    ]);
     // Deciding it again says it's already decided.
-    expect(await dashboardCode(a.dashboard.decideProposal({ id: second, workspaceId }, "approved"))).toBe(
-      "PROPOSAL_DECIDED",
-    );
+    expect(
+      await dashboardCode(
+        a.dashboard.decideProposal({ id: second, workspaceId }, "approved"),
+      ),
+    ).toBe("PROPOSAL_DECIDED");
     evidence.step7b = { approved: first, stale: second };
+  });
+
+  it("7c. an agent adds and resolves a working question immediately with retained history", async () => {
+    const before = await agent.ok<McpSync>("sync_workspace");
+    const text = `Which native client should we demo first? (${run})`;
+    const added = await agent.ok<{ proposal: { id: string; status: string } }>(
+      "propose_context_change",
+      {
+        field: "open_questions",
+        proposed_value: text,
+        rationale: "Track demo planning",
+        source_ids: [fileId],
+      },
+    );
+    expect(added.proposal.status).toBe("applied");
+    const active = await agent.ok<McpSync>("sync_workspace", {
+      since: before.cursor,
+    });
+    const question = active.context.open_questions.find(
+      (q) => q.text === text,
+    )!;
+    expect(question).toMatchObject({
+      id: expect.any(String),
+      status: "active",
+      resolved_by: null,
+      resolved_at: null,
+    });
+    expect(active.pending_proposals.map((p) => p.id)).not.toContain(
+      added.proposal.id,
+    );
+    const resolve = {
+      operation: "resolve",
+      field: "open_questions",
+      entry_id: question.id,
+      proposed_value: text,
+      rationale: "Claude is the primary target",
+      source_ids: [fileId],
+    };
+    expect(
+      (
+        await agent.fails("propose_context_change", {
+          ...resolve,
+          expected_version: before.context_version,
+        })
+      ).code,
+    ).toBe("VERSION_CONFLICT");
+    const resolved = await agent.ok<{ proposal: { status: string } }>(
+      "propose_context_change",
+      { ...resolve, expected_version: active.context_version },
+    );
+    expect(resolved.proposal.status).toBe("applied");
+    const after = await agent.ok<McpSync>("sync_workspace");
+    expect(
+      after.context.open_questions.find((q) => q.id === question.id),
+    ).toMatchObject({
+      status: "resolved",
+      resolved_at: expect.any(Number),
+      resolved_by: { actor_type: "agent", agent_connection_id: connectionId },
+    });
+    evidence.step7c = {
+      added: added.proposal,
+      questionId: question.id,
+      resolved: after.context.open_questions.find((q) => q.id === question.id),
+    };
+  });
+
+  it("7d. a superseding decision stays pending until human approval and retains both IDs", async () => {
+    const proposeDecision = async (text: string, supersedes?: string) =>
+      (
+        await agent.ok<{
+          proposal: { id: string; status: string; supersedes: string | null };
+        }>("propose_context_change", {
+          field: "decisions",
+          proposed_value: text,
+          rationale: "Demo architecture",
+          source_ids: [fileId],
+          ...(supersedes ? { supersedes } : {}),
+        })
+      ).proposal;
+    const originalText = `Demo Claude first (${run})`;
+    const original = await proposeDecision(originalText);
+    await a.dashboard.decideProposal(
+      { id: original.id, workspaceId },
+      "approved",
+    );
+    const before = await agent.ok<McpSync>("sync_workspace");
+    const d1 = before.context.decisions.find((d) => d.text === originalText)!;
+    expect(d1).toMatchObject({ id: expect.any(String), status: "active" });
+    const replacement = await proposeDecision(
+      `Demo Claude then ChatGPT (${run})`,
+      d1.id,
+    );
+    expect(replacement).toMatchObject({ status: "pending", supersedes: d1.id });
+    const pending = await agent.ok<McpSync>("sync_workspace");
+    expect(pending.context.decisions.find((d) => d.id === d1.id)).toEqual(d1);
+    expect(pending.pending_proposals).toContainEqual(
+      expect.objectContaining({
+        id: replacement.id,
+        supersedes: d1.id,
+        status: "pending",
+      }),
+    );
+    await a.dashboard.decideProposal(
+      { id: replacement.id, workspaceId },
+      "approved",
+    );
+    const after = await agent.ok<McpSync>("sync_workspace");
+    const old = after.context.decisions.find((d) => d.id === d1.id)!;
+    const current = after.context.decisions.find(
+      (d) => d.id === old.superseded_by,
+    )!;
+    expect(old.status).toBe("superseded");
+    expect(current).toMatchObject({
+      status: "active",
+      text: `Demo Claude then ChatGPT (${run})`,
+    });
+    expect(after.pending_proposals.map((p) => p.id)).not.toContain(
+      replacement.id,
+    );
+    evidence.step7d = { proposalId: replacement.id, old, current };
   });
 
   it("8. tenant boundaries: C's token and session can't touch A's workspace; revoked and malformed tokens get 401", async () => {
     // C's own assistant.
-    const cConnection = await c.dashboard.createAgentConnection(cWorkspaceId, { client: "chatgpt" });
+    const cConnection = await c.dashboard.createAgentConnection(cWorkspaceId, {
+      client: "chatgpt",
+    });
     const cAgent = await Agent.connect(mcpUrl, cConnection.token);
     try {
       const cFiles = await cAgent.ok<{ files: McpFile[] }>("list_files");
       expect(cFiles.files.map((f) => f.id)).not.toContain(fileId);
-      expect((await cAgent.fails("list_files", { workspace_id: workspaceId })).code).toBe("FORBIDDEN");
-      expect((await cAgent.fails("sync_workspace", { workspace_id: workspaceId })).code).toBe("FORBIDDEN");
+      expect(
+        (await cAgent.fails("list_files", { workspace_id: workspaceId })).code,
+      ).toBe("FORBIDDEN");
+      expect(
+        (await cAgent.fails("sync_workspace", { workspace_id: workspaceId }))
+          .code,
+      ).toBe("FORBIDDEN");
       expect(["FILE_NOT_FOUND", "FORBIDDEN"]).toContain(
         (await cAgent.fails("read_file", { file_id: fileId })).code,
       );
       expect(["FILE_NOT_FOUND", "FORBIDDEN"]).toContain(
-        (await cAgent.fails("update_document", { file_id: fileId, content: "pwned", expected_version: 2 })).code,
+        (
+          await cAgent.fails("update_document", {
+            file_id: fileId,
+            content: "pwned",
+            expected_version: 2,
+          })
+        ).code,
       );
       expect(["FILE_NOT_FOUND", "FORBIDDEN"]).toContain(
         (await cAgent.fails("get_file_versions", { file_id: fileId })).code,
@@ -416,18 +707,38 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     }
 
     // C's dashboard session.
-    expect(await dashboardCode(c.dashboard.listFiles(workspaceId))).toBe("FORBIDDEN");
-    expect(["FILE_NOT_FOUND", "FORBIDDEN"]).toContain(await dashboardCode(c.dashboard.readFile(fileId)));
-    expect(["FILE_NOT_FOUND", "FORBIDDEN"]).toContain(
-      await dashboardCode(c.dashboard.updateFileContent(fileId, { content: "pwned", expectedVersion: 2 })),
+    expect(await dashboardCode(c.dashboard.listFiles(workspaceId))).toBe(
+      "FORBIDDEN",
     );
-    expect(await dashboardCode(c.dashboard.getContext(workspaceId))).toBe("FORBIDDEN");
-    expect(await dashboardCode(c.dashboard.listAgentConnections(workspaceId))).toBe("FORBIDDEN");
-    expect(await dashboardCode(c.dashboard.revokeAgentConnection(connectionId))).toBe("FORBIDDEN");
-    expect(await b.dashboard.readFile(fileId)).toMatchObject({ version: 2, content: V2 });
+    expect(["FILE_NOT_FOUND", "FORBIDDEN"]).toContain(
+      await dashboardCode(c.dashboard.readFile(fileId)),
+    );
+    expect(["FILE_NOT_FOUND", "FORBIDDEN"]).toContain(
+      await dashboardCode(
+        c.dashboard.updateFileContent(fileId, {
+          content: "pwned",
+          expectedVersion: 2,
+        }),
+      ),
+    );
+    expect(await dashboardCode(c.dashboard.getContext(workspaceId))).toBe(
+      "FORBIDDEN",
+    );
+    expect(
+      await dashboardCode(c.dashboard.listAgentConnections(workspaceId)),
+    ).toBe("FORBIDDEN");
+    expect(
+      await dashboardCode(c.dashboard.revokeAgentConnection(connectionId)),
+    ).toBe("FORBIDDEN");
+    expect(await b.dashboard.readFile(fileId)).toMatchObject({
+      version: 2,
+      content: V2,
+    });
 
     // Revoked token: the connection stops working on the very next request.
-    const doomed = await a.dashboard.createAgentConnection(workspaceId, { client: "gemini" });
+    const doomed = await a.dashboard.createAgentConnection(workspaceId, {
+      client: "gemini",
+    });
     const doomedAgent = await Agent.connect(mcpUrl, doomed.token);
     await doomedAgent.ok("list_files");
     await a.dashboard.revokeAgentConnection(doomed.connectionId);
@@ -436,21 +747,36 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       message: expect.stringContaining("UNAUTHENTICATED"),
     });
     await doomedAgent.close().catch(() => {});
-    const revoked = await rawMcpStatus(mcpUrl, { Authorization: `Bearer ${doomed.token}` });
+    const revoked = await rawMcpStatus(mcpUrl, {
+      Authorization: `Bearer ${doomed.token}`,
+    });
     expect(revoked.status).toBe(401);
     expect(revoked.wwwAuthenticate).toMatch(/^Bearer/);
     await expect(Agent.connect(mcpUrl, doomed.token)).rejects.toThrow();
     const listed = await a.dashboard.listAgentConnections(workspaceId);
-    expect(listed.find((x) => x.id === doomed.connectionId)?.revokedAt).toEqual(expect.any(Number));
+    expect(listed.find((x) => x.id === doomed.connectionId)?.revokedAt).toEqual(
+      expect.any(Number),
+    );
 
     // Malformed or forged credentials.
     const statuses = {
       none: (await rawMcpStatus(mcpUrl, {})).status,
-      emptyBearer: (await rawMcpStatus(mcpUrl, { Authorization: "Bearer " })).status,
-      notATdmToken: (await rawMcpStatus(mcpUrl, { Authorization: "Bearer not-a-token" })).status,
-      forgedTdm: (await rawMcpStatus(mcpUrl, { Authorization: `Bearer tdm_${"A".repeat(43)}` })).status,
-      humanJwt: (await rawMcpStatus(mcpUrl, { Authorization: `Bearer ${a.jwt}` })).status,
-      basicScheme: (await rawMcpStatus(mcpUrl, { Authorization: `Basic ${token}` })).status,
+      emptyBearer: (await rawMcpStatus(mcpUrl, { Authorization: "Bearer " }))
+        .status,
+      notATdmToken: (
+        await rawMcpStatus(mcpUrl, { Authorization: "Bearer not-a-token" })
+      ).status,
+      forgedTdm: (
+        await rawMcpStatus(mcpUrl, {
+          Authorization: `Bearer tdm_${"A".repeat(43)}`,
+        })
+      ).status,
+      humanJwt: (
+        await rawMcpStatus(mcpUrl, { Authorization: `Bearer ${a.jwt}` })
+      ).status,
+      basicScheme: (
+        await rawMcpStatus(mcpUrl, { Authorization: `Basic ${token}` })
+      ).status,
     };
     expect(statuses).toEqual({
       none: 401,
@@ -476,12 +802,18 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     });
     expect(mine).not.toHaveProperty("revokedAt");
     // B (a member) sees only their own connections.
-    expect((await b.dashboard.listAgentConnections(workspaceId)).map((x) => x.id)).toEqual([teammateConnectionId]);
+    expect(
+      (await b.dashboard.listAgentConnections(workspaceId)).map((x) => x.id),
+    ).toEqual([teammateConnectionId]);
 
     const info = await agent.ok<Record<string, unknown>>("get_workspace_info");
     expect(JSON.stringify(info)).not.toMatch(/online/i);
     // Members of A's workspace only (A and B, never C), by name, with no emails.
-    const members = info.members as { user_id: string; name: string; role: string }[];
+    const members = info.members as {
+      user_id: string;
+      name: string;
+      role: string;
+    }[];
     expect(members.map((m) => [m.name, m.role]).sort()).toEqual(
       [
         [a.name, "owner"],

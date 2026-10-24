@@ -37,6 +37,7 @@ export const contextFieldValidator = v.union(
 
 export const proposalStatusValidator = v.union(
   v.literal("pending"),
+  v.literal("applied"),
   v.literal("approved"),
   v.literal("rejected"),
   v.literal("stale"),
@@ -47,6 +48,7 @@ export const proposalValidator = v.object({
   workspaceId: v.id("workspaces"),
   field: contextFieldValidator,
   proposedValue: v.string(),
+  supersedes: v.union(v.string(), v.null()),
   rationale: v.string(),
   sourceFileIds: v.array(v.id("files")),
   status: proposalStatusValidator,
@@ -60,6 +62,15 @@ export const proposalValidator = v.object({
 });
 
 const contextEntryValidator = v.object({
+  id: v.string(),
+  status: v.union(
+    v.literal("active"),
+    v.literal("resolved"),
+    v.literal("superseded"),
+  ),
+  resolvedBy: v.union(actorValidator, v.null()),
+  resolvedAt: v.union(v.number(), v.null()),
+  supersededBy: v.union(v.string(), v.null()),
   text: v.string(),
   sourceFileIds: v.array(v.id("files")),
   updatedAt: v.number(),

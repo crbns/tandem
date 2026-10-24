@@ -17,7 +17,8 @@ async function errorData(promise: Promise<unknown>) {
     // convex-test rethrows across the function boundary; recover the payload.
     const data = (err as { data?: unknown }).data;
     if (typeof data === "string") return JSON.parse(data);
-    if (data && typeof data === "object") return data as Record<string, unknown>;
+    if (data && typeof data === "object")
+      return data as Record<string, unknown>;
     throw err;
   }
   throw new Error("expected the call to throw");
@@ -27,7 +28,10 @@ async function setup() {
   const t = convexTest(schema, modules);
   const insertUser = (name: string) =>
     t.run((ctx) =>
-      ctx.db.insert("users", { name, email: `${name.toLowerCase()}@example.com` }),
+      ctx.db.insert("users", {
+        name,
+        email: `${name.toLowerCase()}@example.com`,
+      }),
     );
   const alexId = await insertUser("Alex");
   const samId = await insertUser("Sam");
@@ -109,9 +113,7 @@ describe("agent connections", () => {
       await errorData(t.query(api.mcp.verifyToken, { token: created.token })),
     ).toMatchObject({ code: "UNAUTHENTICATED" });
     expect(
-      await errorData(
-        t.mutation(api.mcp.listFiles, { token: created.token }),
-      ),
+      await errorData(t.mutation(api.mcp.listFiles, { token: created.token })),
     ).toMatchObject({ code: "UNAUTHENTICATED" });
   });
 
@@ -301,7 +303,11 @@ describe("agent file writes", () => {
           content: "dup",
         }),
       ),
-    ).toMatchObject({ code: "NAME_EXISTS", fileId: first.id, currentVersion: 1 });
+    ).toMatchObject({
+      code: "NAME_EXISTS",
+      fileId: first.id,
+      currentVersion: 1,
+    });
   });
 
   it("searches names and content case-insensitively with snippets", async () => {
@@ -587,67 +593,116 @@ describe("sync cursor", () => {
 
 describe("sync published work", () => {
   it("returns full findings since a teammate's cursor and isolates tenants", async () => {
-    const { t, alex, sam, jordan, workspaceId, otherWorkspaceId } = await setup();
-    const publisher = await alex.mutation(api.agentConnections.createAgentConnection, {
-      workspaceId, client: "claude",
-    });
-    const reader = await sam.mutation(api.agentConnections.createAgentConnection, {
-      workspaceId, client: "chatgpt",
-    });
-    const outsider = await jordan.mutation(api.agentConnections.createAgentConnection, {
-      workspaceId: otherWorkspaceId, client: "claude",
-    });
+    const { t, alex, sam, jordan, workspaceId, otherWorkspaceId } =
+      await setup();
+    const publisher = await alex.mutation(
+      api.agentConnections.createAgentConnection,
+      {
+        workspaceId,
+        client: "claude",
+      },
+    );
+    const reader = await sam.mutation(
+      api.agentConnections.createAgentConnection,
+      {
+        workspaceId,
+        client: "chatgpt",
+      },
+    );
+    const outsider = await jordan.mutation(
+      api.agentConnections.createAgentConnection,
+      {
+        workspaceId: otherWorkspaceId,
+        client: "claude",
+      },
+    );
     const file = await t.mutation(api.mcp.createDocument, {
-      token: publisher.token, name: "latency.md", mimeType: "text/markdown", content: "p95",
+      token: publisher.token,
+      name: "latency.md",
+      mimeType: "text/markdown",
+      content: "p95",
     });
-    const publish = (token: string, title: string, fileIds: Id<"files">[] = []) =>
+    const publish = (
+      token: string,
+      title: string,
+      fileIds: Id<"files">[] = [],
+    ) =>
       t.mutation(api.mcp.publishWork, {
-        token, kind: "finding", title, summary: "Full result: p95 is 120ms; cache misses dominate.", fileIds,
+        token,
+        kind: "finding",
+        title,
+        summary: "Full result: p95 is 120ms; cache misses dominate.",
+        fileIds,
       });
     const old = await publish(publisher.token, "Before cursor");
-    const before = await t.mutation(api.mcp.syncWorkspace, { token: reader.token });
+    const before = await t.mutation(api.mcp.syncWorkspace, {
+      token: reader.token,
+    });
     expect(before.recentWork).toEqual([old]);
     expect(before.workTruncated).toBe(false);
     await publish(outsider.token, "Private finding");
     const work = await publish(publisher.token, "Latency", [file.id]);
     const after = await t.mutation(api.mcp.syncWorkspace, {
-      token: reader.token, sinceSeq: before.cursorSeq,
+      token: reader.token,
+      sinceSeq: before.cursorSeq,
     });
     expect(after.recentWork).toEqual([work]);
     expect(after.recentWork[0]).toMatchObject({
-      kind: "finding", title: "Latency", fileIds: [file.id],
+      kind: "finding",
+      title: "Latency",
+      fileIds: [file.id],
       summary: "Full result: p95 is 120ms; cache misses dominate.",
       createdBy: { type: "agent", agentConnectionId: publisher.connectionId },
       createdAt: expect.any(Number),
     });
     expect(after.workTruncated).toBe(false);
     const empty = await t.mutation(api.mcp.syncWorkspace, {
-      token: reader.token, sinceSeq: after.cursorSeq,
+      token: reader.token,
+      sinceSeq: after.cursorSeq,
     });
     expect(empty.recentWork).toEqual([]);
     expect(empty.workTruncated).toBe(false);
-    const snapshot = await t.mutation(api.mcp.syncWorkspace, { token: reader.token });
+    const snapshot = await t.mutation(api.mcp.syncWorkspace, {
+      token: reader.token,
+    });
     expect(snapshot.recentWork).toEqual([work, old]);
-    const other = await t.mutation(api.mcp.syncWorkspace, { token: outsider.token });
+    const other = await t.mutation(api.mcp.syncWorkspace, {
+      token: outsider.token,
+    });
     expect(other.recentWork.map((w) => w.title)).toEqual(["Private finding"]);
-    expect(await errorData(t.mutation(api.mcp.syncWorkspace, {
-      token: outsider.token, workspaceId,
-    }))).toMatchObject({ code: "FORBIDDEN" });
+    expect(
+      await errorData(
+        t.mutation(api.mcp.syncWorkspace, {
+          token: outsider.token,
+          workspaceId,
+        }),
+      ),
+    ).toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("caps snapshots and incremental work at the newest 20 independently of event pages", async () => {
     const { t, sam, workspaceId } = await setup();
-    const { token } = await sam.mutation(api.agentConnections.createAgentConnection, {
-      workspaceId, client: "claude",
-    });
+    const { token } = await sam.mutation(
+      api.agentConnections.createAgentConnection,
+      {
+        workspaceId,
+        client: "claude",
+      },
+    );
     const before = await t.mutation(api.mcp.syncWorkspace, { token });
     expect(before.recentWork).toEqual([]);
     expect(before.workTruncated).toBe(false);
     const published = [];
     for (let i = 0; i < 55; i++) {
-      published.push(await t.mutation(api.mcp.publishWork, {
-        token, kind: i % 2 ? "finding" : "deliverable", title: `Work ${i}`, summary: `Full summary ${i}`, fileIds: [],
-      }));
+      published.push(
+        await t.mutation(api.mcp.publishWork, {
+          token,
+          kind: i % 2 ? "finding" : "deliverable",
+          title: `Work ${i}`,
+          summary: `Full summary ${i}`,
+          fileIds: [],
+        }),
+      );
       if (i === 19) {
         const exact = await t.mutation(api.mcp.syncWorkspace, { token });
         expect(exact.recentWork).toHaveLength(20);
@@ -658,7 +713,10 @@ describe("sync published work", () => {
     const snapshot = await t.mutation(api.mcp.syncWorkspace, { token });
     expect(snapshot.recentWork).toEqual(expected);
     expect(snapshot.workTruncated).toBe(true);
-    const incremental = await t.mutation(api.mcp.syncWorkspace, { token, sinceSeq: before.cursorSeq });
+    const incremental = await t.mutation(api.mcp.syncWorkspace, {
+      token,
+      sinceSeq: before.cursorSeq,
+    });
     expect(incremental.eventsTruncated).toBe(true);
     expect(incremental.recentWork).toEqual(expected);
     expect(incremental.workTruncated).toBe(true);
@@ -667,7 +725,8 @@ describe("sync published work", () => {
 
 describe("ownership proposals (review M1)", () => {
   it("requires the proposed owner to be a current member, on propose and approve", async () => {
-    const { t, alex, sam, samId, alexId, jordanId, workspaceId } = await setup();
+    const { t, alex, sam, samId, alexId, jordanId, workspaceId } =
+      await setup();
     const { token } = await sam.mutation(
       api.agentConnections.createAgentConnection,
       { workspaceId, client: "claude" },
@@ -758,14 +817,17 @@ describe("ownership proposals (review M1)", () => {
 
     // Alex (still a member) is approved, and a later proposal for the same
     // area (trimmed, case-insensitive) replaces the owner instead of adding one.
-    const first = await alex.mutation(api.context.proposeContextChange, {
-      workspaceId,
-      field: "ownership",
-      proposedValue: "Payments",
-      rationale: "r",
-      sourceFileIds: [],
-      ownerUserId: alexId,
-    });
+    const { id: first } = await alex.mutation(
+      api.context.proposeContextChange,
+      {
+        workspaceId,
+        field: "ownership",
+        proposedValue: "Payments",
+        rationale: "r",
+        sourceFileIds: [],
+        ownerUserId: alexId,
+      },
+    );
     await alex.mutation(api.context.decideContextProposal, {
       proposalId: first,
       decision: "approved",
@@ -832,7 +894,10 @@ describe("sync cursor rows (review L3)", () => {
       content: "",
     });
     const b = await t.mutation(api.mcp.syncWorkspace, { token: work.token });
-    await t.mutation(api.mcp.syncWorkspace, { token: laptop.token, sinceSeq: a.cursorSeq });
+    await t.mutation(api.mcp.syncWorkspace, {
+      token: laptop.token,
+      sinceSeq: a.cursorSeq,
+    });
     const rows = await t.run((ctx) => ctx.db.query("sync_cursors").take(10));
     expect(
       rows
@@ -875,11 +940,17 @@ describe("list_files query (review L4)", () => {
     await insert("roadmap.md", 1);
     for (let i = 0; i < 205; i++) await insert(`notes ${i}.md`, 1000 + i);
 
-    const roadmap = await t.mutation(api.mcp.listFiles, { token, query: "roadmap" });
+    const roadmap = await t.mutation(api.mcp.listFiles, {
+      token,
+      query: "roadmap",
+    });
     expect(roadmap.files.map((f) => f.name)).toEqual(["roadmap.md"]);
     expect(roadmap.truncated).toBe(false);
 
-    const notes = await t.mutation(api.mcp.listFiles, { token, query: "notes" });
+    const notes = await t.mutation(api.mcp.listFiles, {
+      token,
+      query: "notes",
+    });
     expect(notes.files).toHaveLength(200);
     expect(notes.truncated).toBe(true);
   });
@@ -888,13 +959,16 @@ describe("list_files query (review L4)", () => {
 describe("decideContextProposal (review L5)", () => {
   it("checks the caller before revealing whether a proposal exists", async () => {
     const { t, alex, workspaceId } = await setup();
-    const proposalId = await alex.mutation(api.context.proposeContextChange, {
-      workspaceId,
-      field: "goal",
-      proposedValue: "Ship",
-      rationale: "r",
-      sourceFileIds: [],
-    });
+    const { id: proposalId } = await alex.mutation(
+      api.context.proposeContextChange,
+      {
+        workspaceId,
+        field: "goal",
+        proposedValue: "Ship",
+        rationale: "r",
+        sourceFileIds: [],
+      },
+    );
     await t.run((ctx) => ctx.db.delete(proposalId));
     expect(
       await errorData(
@@ -917,8 +991,16 @@ describe("decideContextProposal (review L5)", () => {
 
 describe("workspace members for agents (T5b)", () => {
   it("lists only the token's workspace members, with ids, names and roles but no emails", async () => {
-    const { t, sam, jordan, alexId, samId, jordanId, workspaceId, otherWorkspaceId } =
-      await setup();
+    const {
+      t,
+      sam,
+      jordan,
+      alexId,
+      samId,
+      jordanId,
+      workspaceId,
+      otherWorkspaceId,
+    } = await setup();
     const { token } = await sam.mutation(
       api.agentConnections.createAgentConnection,
       { workspaceId, client: "claude" },
@@ -940,7 +1022,9 @@ describe("workspace members for agents (T5b)", () => {
       api.agentConnections.createAgentConnection,
       { workspaceId: otherWorkspaceId, client: "claude" },
     );
-    const other = await t.mutation(api.mcp.listMembers, { token: theirs.token });
+    const other = await t.mutation(api.mcp.listMembers, {
+      token: theirs.token,
+    });
     expect(other.members).toEqual([
       { userId: jordanId, name: "Jordan", role: "owner" },
     ]);
@@ -1044,7 +1128,7 @@ describe("dashboard project context (#24)", () => {
       await errorData(sam.mutation(api.context.updateContextField, input)),
     ).toMatchObject({ code: "FORBIDDEN" });
     const { expectedVersion: _, ...proposalInput } = input;
-    const id = await sam.mutation(api.context.proposeContextChange, {
+    const { id } = await sam.mutation(api.context.proposeContextChange, {
       ...proposalInput,
       rationale: "Agreed in standup",
     });
@@ -1216,5 +1300,203 @@ describe("dashboard project context (#24)", () => {
         }),
       ),
     ).toMatchObject({ code: "INVALID_INPUT" });
+  });
+});
+
+describe("context tiers (#25)", () => {
+  it("records working context immediately and retains resolved questions with attribution", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    const { token } = await sam.mutation(
+      api.agentConnections.createAgentConnection,
+      { workspaceId, client: "claude" },
+    );
+    const before = await t.mutation(api.mcp.syncWorkspace, { token });
+    const { proposal } = await t.mutation(api.mcp.proposeContextChange, {
+      token,
+      field: "open_question",
+      proposedValue: "Who reviews the demo?",
+      rationale: "Needs an answer",
+      sourceFileIds: [],
+    });
+    expect(proposal.status).toBe("applied");
+    const added = await t.mutation(api.mcp.syncWorkspace, {
+      token,
+      sinceSeq: before.cursorSeq,
+    });
+    const question = added.context.openQuestions[0]!;
+    expect(question).toMatchObject({
+      text: "Who reviews the demo?",
+      status: "active",
+      updatedBy: { type: "agent" },
+    });
+    expect(question.id).toBeTruthy();
+    expect(added.context.revision).toBe(before.context.revision + 1);
+    expect(added.pendingProposals).toEqual([]);
+    expect(added.events.some((e) => e.kind === "context.recorded")).toBe(true);
+    const resolve = {
+      token,
+      field: "open_question" as const,
+      operation: "resolve" as const,
+      entryId: question.id,
+      proposedValue: "Resolved",
+      rationale: "Alex reviews",
+      sourceFileIds: [],
+      expectedVersion: added.context.revision,
+    };
+    expect(
+      (await t.mutation(api.mcp.proposeContextChange, resolve)).proposal.status,
+    ).toBe("applied");
+    const resolved = await t.mutation(api.mcp.syncWorkspace, { token });
+    expect(resolved.context.openQuestions).toHaveLength(1);
+    expect(resolved.context.openQuestions[0]).toMatchObject({
+      id: question.id,
+      status: "resolved",
+      resolvedBy: { type: "agent" },
+      resolvedAt: expect.any(Number),
+    });
+    expect(
+      await errorData(
+        t.mutation(api.mcp.proposeContextChange, {
+          ...resolve,
+          operation: "remove",
+          expectedVersion: resolved.context.revision,
+        }),
+      ),
+    ).toMatchObject({ code: "INVALID_INPUT" });
+    await alex.mutation(api.context.proposeContextChange, {
+      workspaceId,
+      field: "open_question",
+      operation: "remove",
+      entryId: question.id,
+      proposedValue: "Remove",
+      rationale: "Cleanup",
+      sourceFileIds: [],
+      expectedVersion: resolved.context.revision,
+    });
+    expect(
+      (await alex.query(api.context.getDetails, { workspaceId })).openQuestions,
+    ).toEqual([]);
+  });
+
+  it("keeps a superseding decision pending until approval and marks the previous entry as history", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId,
+      field: "decision",
+      proposedValue: "D1",
+      sourceFileIds: [],
+      expectedVersion: 1,
+    });
+    const { token } = await sam.mutation(
+      api.agentConnections.createAgentConnection,
+      { workspaceId, client: "claude" },
+    );
+    const initial = await t.mutation(api.mcp.syncWorkspace, { token });
+    const d1 = initial.context.decisions[0]!;
+    const { proposal } = await t.mutation(api.mcp.proposeContextChange, {
+      token,
+      field: "decision",
+      proposedValue: "D2",
+      rationale: "New evidence",
+      sourceFileIds: [],
+      supersedes: d1.id,
+    });
+    expect(proposal.status).toBe("pending");
+    const pending = await t.mutation(api.mcp.syncWorkspace, { token });
+    expect(pending.context.decisions).toMatchObject([
+      { id: d1.id, status: "active" },
+    ]);
+    expect(pending.pendingProposals).toMatchObject([
+      { status: "pending", proposedValue: "D2", supersedes: d1.id },
+    ]);
+    await alex.mutation(api.context.decideContextProposal, {
+      proposalId: proposal.id,
+      decision: "approved",
+    });
+    const approved = await t.mutation(api.mcp.syncWorkspace, { token });
+    expect(approved.context.decisions).toHaveLength(2);
+    expect(approved.context.decisions[0]).toMatchObject({
+      id: d1.id,
+      status: "superseded",
+      supersededBy: approved.context.decisions[1]!.id,
+    });
+    expect(approved.context.decisions[1]).toMatchObject({
+      text: "D2",
+      status: "active",
+    });
+    expect(approved.pendingProposals).toEqual([]);
+    // A second proposal based on the same old decision becomes stale on approval.
+    const stale = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("context_proposals", {
+        workspaceId,
+        field: "decision",
+        proposedValue: "D3",
+        rationale: "old",
+        sourceFileIds: [],
+        supersedes: d1.id,
+        contextRevision: 2,
+        status: "pending",
+        createdBy: d1.updatedBy,
+        updatedBy: d1.updatedBy,
+        createdAt: 1,
+        updatedAt: 1,
+        revision: 1,
+      });
+      return id;
+    });
+    await alex.mutation(api.context.decideContextProposal, {
+      proposalId: stale,
+      decision: "approved",
+    });
+    expect((await t.run((ctx) => ctx.db.get(stale)))?.status).toBe("stale");
+  });
+
+  it("backfills legacy IDs in pages, preserves read IDs and is idempotent", async () => {
+    const { t, alex, workspaceId } = await setup();
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("structured_context")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
+        .unique();
+      await ctx.db.patch(row!._id, {
+        constraints: [
+          {
+            text: "Legacy",
+            sourceFileIds: [],
+            updatedBy: row!.updatedBy,
+            updatedAt: 1,
+          },
+        ],
+        decisions: [
+          {
+            text: "Old decision",
+            sourceFileIds: [],
+            updatedBy: row!.updatedBy,
+            updatedAt: 1,
+          },
+        ],
+      });
+    });
+    const before = await alex.query(api.context.getDetails, { workspaceId });
+    const { internal } = await import("./_generated/api");
+    const result = await t.mutation(
+      internal.contextMigrations.backfillEntryIds,
+      { paginationOpts: { numItems: 50, cursor: null } },
+    );
+    expect(result.migrated).toBe(1);
+    const after = await alex.query(api.context.getDetails, { workspaceId });
+    expect(after.constraints[0]!.id).toBe(before.constraints[0]!.id);
+    expect(after.decisions[0]!.id).toBe(before.decisions[0]!.id);
+    expect(after.revision).toBe(before.revision + 1);
+    expect(
+      (
+        await t.mutation(internal.contextMigrations.backfillEntryIds, {
+          paginationOpts: { numItems: 50, cursor: null },
+        })
+      ).migrated,
+    ).toBe(0);
+    expect(
+      (await alex.query(api.context.getDetails, { workspaceId })).revision,
+    ).toBe(after.revision);
   });
 });

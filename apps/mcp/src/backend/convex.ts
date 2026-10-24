@@ -1,8 +1,5 @@
 import { ConvexHttpClient } from "convex/browser";
-import {
-  makeFunctionReference,
-  type FunctionReference,
-} from "convex/server";
+import { makeFunctionReference, type FunctionReference } from "convex/server";
 import { ConvexError, type Value } from "convex/values";
 import {
   TandemError,
@@ -18,6 +15,7 @@ import type {
   Actor,
   AgentConnection,
   Attribution,
+  ContextEntry,
   ContextProposal,
   CreateDocumentInput,
   FileMetadata,
@@ -65,12 +63,7 @@ interface ConvexFile {
 }
 
 type ConvexField =
-  | "goal"
-  | "scope"
-  | "constraint"
-  | "decision"
-  | "ownership"
-  | "open_question";
+  "goal" | "scope" | "constraint" | "decision" | "ownership" | "open_question";
 
 interface ConvexProposal {
   id: string;
@@ -79,7 +72,8 @@ interface ConvexProposal {
   proposedValue: string;
   rationale: string;
   sourceFileIds: string[];
-  status: "pending" | "approved" | "rejected" | "stale";
+  status: "pending" | "applied" | "approved" | "rejected" | "stale";
+  supersedes: string | null;
   createdBy: ConvexActor;
   createdAt: number;
   decidedBy: ConvexActor | null;
@@ -89,6 +83,11 @@ interface ConvexProposal {
 }
 
 interface ConvexContextEntry {
+  id: string;
+  status: "active" | "resolved" | "superseded";
+  resolvedBy: ConvexActor | null;
+  resolvedAt: number | null;
+  supersededBy: string | null;
   text: string;
   sourceFileIds: string[];
   updatedAt: number;
@@ -101,7 +100,10 @@ interface ConvexContext {
   constraints: ConvexContextEntry[];
   decisions: ConvexContextEntry[];
   /** Owner fields are null only on entries approved before owners were structured. */
-  ownership: (ConvexContextEntry & { ownerUserId: string | null; ownerArea: string | null })[];
+  ownership: (ConvexContextEntry & {
+    ownerUserId: string | null;
+    ownerArea: string | null;
+  })[];
   openQuestions: ConvexContextEntry[];
   revision: number;
   updatedAt: number;
@@ -132,31 +134,60 @@ interface ConvexPublishedWork {
 
 type Token = { token: string };
 type WorkspaceArg = { workspaceId?: string };
-type Mutation<Args, Ret> = FunctionReference<"mutation", "public", Token & Args, Ret>;
+type Mutation<Args, Ret> = FunctionReference<
+  "mutation",
+  "public",
+  Token & Args,
+  Ret
+>;
 
 const fn = {
   verifyToken: makeFunctionReference<
     "query",
     Token,
-    { userId: string; userName: string; client: string; connectionId: string; workspaceId: string }
+    {
+      userId: string;
+      userName: string;
+      client: string;
+      connectionId: string;
+      workspaceId: string;
+    }
   >("mcp:verifyToken"),
-  touchConnection: makeFunctionReference<"mutation", Token, null>("mcp:touchConnection"),
-  listWorkspaces: makeFunctionReference<"mutation", Token, {
-    id: string;
-    name: string;
-    role: WorkspaceSummary["role"];
-    memberCount: number;
-    isDefault: boolean;
-  }[]>("mcp:listWorkspaces"),
-  listMembers: makeFunctionReference<"mutation", Token, {
-    members: { userId: string; name: string; role: WorkspaceSummary["role"] }[];
-    truncated: boolean;
-  }>("mcp:listMembers"),
-  getConnection: makeFunctionReference<"mutation", Token, {
-    client: string;
-    lastMcpActionAt: number | null;
-    lastSyncAt: number | null;
-  }>("mcp:getConnection"),
+  touchConnection: makeFunctionReference<"mutation", Token, null>(
+    "mcp:touchConnection",
+  ),
+  listWorkspaces: makeFunctionReference<
+    "mutation",
+    Token,
+    {
+      id: string;
+      name: string;
+      role: WorkspaceSummary["role"];
+      memberCount: number;
+      isDefault: boolean;
+    }[]
+  >("mcp:listWorkspaces"),
+  listMembers: makeFunctionReference<
+    "mutation",
+    Token,
+    {
+      members: {
+        userId: string;
+        name: string;
+        role: WorkspaceSummary["role"];
+      }[];
+      truncated: boolean;
+    }
+  >("mcp:listMembers"),
+  getConnection: makeFunctionReference<
+    "mutation",
+    Token,
+    {
+      client: string;
+      lastMcpActionAt: number | null;
+      lastSyncAt: number | null;
+    }
+  >("mcp:getConnection"),
   listFiles: makeFunctionReference("mcp:listFiles") as Mutation<
     WorkspaceArg & { folderId?: string; query?: string },
     { files: ConvexFile[]; truncated: boolean }
@@ -173,11 +204,21 @@ const fn = {
     { fileId: string; limit: number },
     {
       file: ConvexFile;
-      versions: { version: number; createdAt: number; actor: ConvexActor; sizeBytes: number }[];
+      versions: {
+        version: number;
+        createdAt: number;
+        actor: ConvexActor;
+        sizeBytes: number;
+      }[];
     }
   >,
   createDocument: makeFunctionReference("mcp:createDocument") as Mutation<
-    WorkspaceArg & { parentId?: string; name: string; mimeType: string; content: string },
+    WorkspaceArg & {
+      parentId?: string;
+      name: string;
+      mimeType: string;
+      content: string;
+    },
     ConvexFile
   >,
   updateDocument: makeFunctionReference("mcp:updateDocument") as Mutation<
@@ -189,7 +230,16 @@ const fn = {
     {
       workspace: { id: string; name: string };
       context: ConvexContext;
-      pendingProposals: Pick<ConvexProposal, "id" | "field" | "rationale" | "createdBy" | "createdAt">[];
+      pendingProposals: Pick<
+        ConvexProposal,
+        | "id"
+        | "field"
+        | "proposedValue"
+        | "supersedes"
+        | "rationale"
+        | "createdBy"
+        | "createdAt"
+      >[];
       changedFiles: ConvexFile[];
       filesTruncated: boolean;
       recentWork: ConvexPublishedWork[];
@@ -200,8 +250,14 @@ const fn = {
       cursorSeq: number;
     }
   >,
-  proposeContextChange: makeFunctionReference("mcp:proposeContextChange") as Mutation<
+  proposeContextChange: makeFunctionReference(
+    "mcp:proposeContextChange",
+  ) as Mutation<
     WorkspaceArg & {
+      operation?: "add" | "resolve" | "remove";
+      entryId?: string;
+      supersedes?: string;
+      expectedVersion?: number;
       field: ConvexField;
       proposedValue: string;
       ownerUserId?: string;
@@ -234,7 +290,9 @@ export class ConvexBackend implements TandemBackend {
   private readonly client: Pick<ConvexHttpClient, "query" | "mutation">;
 
   /** `client` is for tests; production passes the deployment URL. */
-  constructor(urlOrClient: string | Pick<ConvexHttpClient, "query" | "mutation">) {
+  constructor(
+    urlOrClient: string | Pick<ConvexHttpClient, "query" | "mutation">,
+  ) {
     this.client =
       typeof urlOrClient === "string"
         ? new ConvexHttpClient(urlOrClient, { logger: false })
@@ -271,7 +329,11 @@ export class ConvexBackend implements TandemBackend {
   ): Promise<{ members: WorkspaceMember[]; truncated: boolean }> {
     const r = await this.call(actor, fn.listMembers, {});
     return {
-      members: r.members.map((m) => ({ user_id: m.userId, name: m.name, role: m.role })),
+      members: r.members.map((m) => ({
+        user_id: m.userId,
+        name: m.name,
+        role: m.role,
+      })),
       truncated: r.truncated,
     };
   }
@@ -285,7 +347,10 @@ export class ConvexBackend implements TandemBackend {
     };
   }
 
-  async listFiles(actor: Actor, input: ListFilesInput): Promise<FileMetadata[]> {
+  async listFiles(
+    actor: Actor,
+    input: ListFilesInput,
+  ): Promise<FileMetadata[]> {
     const { files } = await this.call(actor, fn.listFiles, {
       workspaceId: input.workspace_id,
       folderId: input.folder_id,
@@ -294,17 +359,29 @@ export class ConvexBackend implements TandemBackend {
     return files.map(toFile);
   }
 
-  async searchFiles(actor: Actor, input: SearchFilesInput): Promise<SearchResult[]> {
+  async searchFiles(
+    actor: Actor,
+    input: SearchFilesInput,
+  ): Promise<SearchResult[]> {
     const rows = await this.call(actor, fn.searchFiles, {
       workspaceId: input.workspace_id,
       query: input.query,
       limit: input.limit,
     });
-    return rows.map((r) => ({ file: toFile(r.file), snippet: r.snippet, match: r.match }));
+    return rows.map((r) => ({
+      file: toFile(r.file),
+      snippet: r.snippet,
+      match: r.match,
+    }));
   }
 
   async readFile(actor: Actor, fileId: string): Promise<FileWithContent> {
-    const { file, content } = await this.call(actor, fn.readFile, { fileId }, { fileId });
+    const { file, content } = await this.call(
+      actor,
+      fn.readFile,
+      { fileId },
+      { fileId },
+    );
     if (content === null) {
       // Binary uploads have no text content; don't pretend they're empty.
       throw new TandemError(
@@ -316,8 +393,17 @@ export class ConvexBackend implements TandemBackend {
     return { file: toFile(file), content };
   }
 
-  async getFileVersions(actor: Actor, fileId: string, limit: number): Promise<FileVersions> {
-    const r = await this.call(actor, fn.getFileVersions, { fileId, limit }, { fileId });
+  async getFileVersions(
+    actor: Actor,
+    fileId: string,
+    limit: number,
+  ): Promise<FileVersions> {
+    const r = await this.call(
+      actor,
+      fn.getFileVersions,
+      { fileId, limit },
+      { fileId },
+    );
     return {
       file: toFile(r.file),
       versions: r.versions.map((v) => ({
@@ -329,7 +415,10 @@ export class ConvexBackend implements TandemBackend {
     };
   }
 
-  async createDocument(actor: Actor, input: CreateDocumentInput): Promise<FileMetadata> {
+  async createDocument(
+    actor: Actor,
+    input: CreateDocumentInput,
+  ): Promise<FileMetadata> {
     const file = await this.call(actor, fn.createDocument, {
       workspaceId: input.workspace_id,
       parentId: input.parent_id,
@@ -340,7 +429,10 @@ export class ConvexBackend implements TandemBackend {
     return toFile(file);
   }
 
-  async updateDocument(actor: Actor, input: UpdateDocumentInput): Promise<FileMetadata> {
+  async updateDocument(
+    actor: Actor,
+    input: UpdateDocumentInput,
+  ): Promise<FileMetadata> {
     const file = await this.call(
       actor,
       fn.updateDocument,
@@ -355,7 +447,8 @@ export class ConvexBackend implements TandemBackend {
   }
 
   async syncWorkspace(actor: Actor, input: SyncInput): Promise<SyncResult> {
-    const since = input.since === undefined ? undefined : parseCursor(input.since);
+    const since =
+      input.since === undefined ? undefined : parseCursor(input.since);
     const r = await this.call(actor, fn.syncWorkspace, {
       workspaceId: input.workspace_id,
       sinceSeq: since?.seq,
@@ -366,6 +459,9 @@ export class ConvexBackend implements TandemBackend {
       context: toContext(r.context),
       context_version: r.context.revision,
       pending_proposals: r.pendingProposals.map((p) => ({
+        proposed_value: p.proposedValue,
+        supersedes: p.supersedes,
+        status: "pending" as const,
         id: p.id,
         field: toProposalField(p.field),
         rationale: p.rationale,
@@ -386,16 +482,28 @@ export class ConvexBackend implements TandemBackend {
     actor: Actor,
     input: ProposeContextChangeInput,
   ): Promise<ContextProposal> {
-    const r = await this.call(actor, fn.proposeContextChange, {
-      workspaceId: input.workspace_id,
-      ...toConvexProposal(input),
-      rationale: input.rationale,
-      sourceFileIds: input.source_ids ?? [],
-    });
+    const r = await this.call(
+      actor,
+      fn.proposeContextChange,
+      {
+        workspaceId: input.workspace_id,
+        ...toConvexProposal(input),
+        operation: input.operation ?? "add",
+        entryId: input.entry_id,
+        supersedes: input.supersedes,
+        expectedVersion: input.expected_version,
+        rationale: input.rationale,
+        sourceFileIds: input.source_ids ?? [],
+      },
+      { context: true, expectedVersion: input.expected_version },
+    );
     return toProposal(r.proposal, r.contextRevision);
   }
 
-  async getApprovals(actor: Actor, input: GetApprovalsInput): Promise<ContextProposal[]> {
+  async getApprovals(
+    actor: Actor,
+    input: GetApprovalsInput,
+  ): Promise<ContextProposal[]> {
     const rows = await this.call(actor, fn.getApprovals, {
       workspaceId: input.workspace_id,
       status: input.status === "all" ? undefined : input.status,
@@ -404,7 +512,10 @@ export class ConvexBackend implements TandemBackend {
     return rows.map((r) => toProposal(r.proposal, r.contextRevision));
   }
 
-  async publishWork(actor: Actor, input: PublishWorkInput): Promise<PublishedWork> {
+  async publishWork(
+    actor: Actor,
+    input: PublishWorkInput,
+  ): Promise<PublishedWork> {
     const w = await this.call(actor, fn.publishWork, {
       workspaceId: input.workspace_id,
       kind: input.kind,
@@ -459,9 +570,14 @@ export class ConvexBackend implements TandemBackend {
    * it), only for errors Convex raised past token checks, and never fatal.
    */
   private async recordFailedAction(token: string, err: unknown): Promise<void> {
-    if (!(err instanceof ConvexError) || codeOf(err) === "UNAUTHENTICATED") return;
+    if (!(err instanceof ConvexError) || codeOf(err) === "UNAUTHENTICATED")
+      return;
     try {
-      await this.client.mutation(fn.touchConnection, { token }, { skipQueue: true });
+      await this.client.mutation(
+        fn.touchConnection,
+        { token },
+        { skipQueue: true },
+      );
     } catch {
       // Presence is best effort; the caller gets the original error.
     }
@@ -469,6 +585,7 @@ export class ConvexBackend implements TandemBackend {
 }
 
 interface ErrorHint {
+  context?: boolean;
   fileId?: string;
   expectedVersion?: number;
 }
@@ -487,9 +604,13 @@ export function toTandemError(
 ): unknown {
   if (!(err instanceof ConvexError)) return err;
   const code = codeOf(err);
-  const data = (typeof err.data === "object" && err.data ? err.data : {}) as Record<string, unknown>;
-  const str = (k: string) => (typeof data[k] === "string" ? (data[k] as string) : undefined);
-  const num = (k: string) => (typeof data[k] === "number" ? (data[k] as number) : undefined);
+  const data = (
+    typeof err.data === "object" && err.data ? err.data : {}
+  ) as Record<string, unknown>;
+  const str = (k: string) =>
+    typeof data[k] === "string" ? (data[k] as string) : undefined;
+  const num = (k: string) =>
+    typeof data[k] === "number" ? (data[k] as number) : undefined;
   switch (code) {
     case "UNAUTHENTICATED":
       return new TandemError(
@@ -498,24 +619,43 @@ export function toTandemError(
       );
     case "FORBIDDEN":
     case "WORKSPACE_NOT_FOUND":
-      return forbidden(str("workspaceId") ?? args.workspaceId ?? "(this workspace)");
+      return forbidden(
+        str("workspaceId") ?? args.workspaceId ?? "(this workspace)",
+      );
     case "FILE_NOT_FOUND":
     case "INVALID_SOURCE_FILE":
       return fileNotFound(str("fileId") ?? hint.fileId ?? "(unknown)");
     case "VERSION_CONFLICT":
+      if (hint.context)
+        return new TandemError(
+          "VERSION_CONFLICT",
+          "The workspace context changed. Sync and reconcile before retrying.",
+          {
+            current_version: num("currentVersion") ?? 0,
+            expected_version:
+              num("expectedVersion") ?? hint.expectedVersion ?? 0,
+          },
+        );
       return versionConflict(
         str("fileId") ?? hint.fileId ?? "(unknown)",
         num("currentVersion") ?? 0,
         num("expectedVersion") ?? hint.expectedVersion ?? 0,
       );
     case "NAME_EXISTS":
-      return nameExists(str("fileId") ?? "", str("name") ?? "", num("currentVersion") ?? 1);
+      return nameExists(
+        str("fileId") ?? "",
+        str("name") ?? "",
+        num("currentVersion") ?? 1,
+      );
     case "APPROVAL_REQUIRED":
       return approvalRequired(str("field") ?? "context");
     case "INVALID_CURSOR":
       return invalidCursor();
     case "INVALID_NAME":
-      return new TandemError("INVALID_INPUT", "name must contain 1–255 visible characters.");
+      return new TandemError(
+        "INVALID_INPUT",
+        "name must contain 1–255 visible characters.",
+      );
     case "INVALID_PARENT_FOLDER":
       return new TandemError(
         "INVALID_INPUT",
@@ -525,7 +665,11 @@ export function toTandemError(
     case "PROPOSAL_NOT_FOUND":
     case "PROPOSAL_ALREADY_DECIDED":
     case "CONTEXT_NOT_INITIALIZED":
-      return new TandemError("INVALID_INPUT", `Invalid request (${code}).`, data);
+      return new TandemError(
+        "INVALID_INPUT",
+        `Invalid request (${code}).`,
+        data,
+      );
     default:
       return err;
   }
@@ -539,28 +683,45 @@ function toConvexProposal(input: ProposeContextChangeInput): {
 } {
   const value = input.proposed_value;
   const invalid = (expected: string) =>
-    new TandemError("INVALID_INPUT", `proposed_value for ${input.field} must be ${expected}.`, {
-      field: input.field,
-    });
+    new TandemError(
+      "INVALID_INPUT",
+      `proposed_value for ${input.field} must be ${expected}.`,
+      {
+        field: input.field,
+      },
+    );
   switch (input.field) {
     case "goal":
     case "scope":
-      if (typeof value !== "string") throw invalid("the full new text, as a string");
+      if (typeof value !== "string")
+        throw invalid("the full new text, as a string");
       return { field: input.field, proposedValue: value };
+    case "open_questions":
+      if (typeof value !== "string")
+        throw invalid("question text, as a string");
+      return { field: "open_question", proposedValue: value };
     case "decisions":
-      if (typeof value !== "string") throw invalid("the decision text, as a string");
+      if (typeof value !== "string")
+        throw invalid("the decision text, as a string");
       return { field: "decision", proposedValue: value };
     case "constraints":
       // Approval appends one constraint; lists can't be replaced.
-      if (typeof value === "string") return { field: "constraint", proposedValue: value };
+      if (typeof value === "string")
+        return { field: "constraint", proposedValue: value };
       throw invalid(
         "one new constraint, as a string: approval appends it, and existing constraints can't be removed through a proposal",
       );
     case "ownership":
       // Convex checks that the owner is a current member, now and on approval.
       if (value && typeof value === "object" && !Array.isArray(value))
-        return { field: "ownership", proposedValue: value.area, ownerUserId: value.owner_user_id };
-      throw invalid("{ area, owner_user_id }, where owner_user_id is a workspace member");
+        return {
+          field: "ownership",
+          proposedValue: value.area,
+          ownerUserId: value.owner_user_id,
+        };
+      throw invalid(
+        "{ area, owner_user_id }, where owner_user_id is a workspace member",
+      );
   }
 }
 
@@ -577,7 +738,10 @@ function toProposalField(field: ConvexField): ProposalField {
   }
 }
 
-function toProposal(p: ConvexProposal, contextRevision: number): ContextProposal {
+function toProposal(
+  p: ConvexProposal,
+  contextRevision: number,
+): ContextProposal {
   return {
     base_context_version: contextRevision,
     id: p.id,
@@ -590,14 +754,32 @@ function toProposal(p: ConvexProposal, contextRevision: number): ContextProposal
     rationale: p.rationale,
     source_ids: p.sourceFileIds,
     status: p.status,
+    supersedes: p.supersedes,
     proposed_by: toAttribution(p.createdBy),
     created_at: isoRequired(p.createdAt),
     ...(p.decidedBy && p.decidedAt !== null
       ? {
-          decided_by: { user_id: p.decidedBy.userId ?? "", actor_type: "human" as const },
+          decided_by: {
+            user_id: p.decidedBy.userId ?? "",
+            actor_type: "human" as const,
+          },
           decided_at: isoRequired(p.decidedAt),
         }
       : {}),
+  };
+}
+
+function toContextEntry(e: ConvexContextEntry): ContextEntry {
+  return {
+    source_ids: e.sourceFileIds,
+    updated_at: isoRequired(e.updatedAt),
+    updated_by: toAttribution(e.updatedBy),
+    id: e.id,
+    text: e.text,
+    status: e.status,
+    resolved_by: e.resolvedBy ? toAttribution(e.resolvedBy) : null,
+    resolved_at: e.resolvedAt,
+    superseded_by: e.supersededBy,
   };
 }
 
@@ -605,27 +787,31 @@ function toContext(c: ConvexContext): StructuredContext {
   return {
     goal: c.goal?.text ?? "",
     scope: c.scope?.text ?? "",
-    constraints: c.constraints.map((e) => e.text),
-    // Decisions and open questions are append-only, so the position is a stable id.
-    decisions: c.decisions.map((e, i) => ({
-      id: `decision_${i + 1}`,
-      text: e.text,
-      status: "approved" as const,
+    constraints: c.constraints.map(toContextEntry),
+    decisions: c.decisions.map((e) => ({
+      ...toContextEntry(e),
       decided_at: isoRequired(e.updatedAt),
       source_ids: e.sourceFileIds,
     })),
     ownership: c.ownership.map((e) => {
       if (e.ownerUserId !== null && e.ownerArea !== null)
-        return { area: e.ownerArea, owner_user_id: e.ownerUserId };
+        return {
+          ...toContextEntry(e),
+          area: e.ownerArea,
+          owner_user_id: e.ownerUserId,
+        };
       // Legacy free-text entry ("area: owner").
       const sep = e.text.lastIndexOf(": ");
       return sep > 0
-        ? { area: e.text.slice(0, sep), owner_user_id: e.text.slice(sep + 2) }
-        : { area: e.text, owner_user_id: "" };
+        ? {
+            ...toContextEntry(e),
+            area: e.text.slice(0, sep),
+            owner_user_id: e.text.slice(sep + 2),
+          }
+        : { ...toContextEntry(e), area: e.text, owner_user_id: "" };
     }),
-    open_questions: c.openQuestions.map((e, i) => ({
-      id: `question_${i + 1}`,
-      text: e.text,
+    open_questions: c.openQuestions.map((e) => ({
+      ...toContextEntry(e),
       created_at: isoRequired(e.updatedAt),
       created_by: toAttribution(e.updatedBy),
     })),
@@ -664,8 +850,12 @@ export function toAttribution(a: ConvexActor): Attribution {
   return {
     actor_type: agent ? "agent" : "human",
     user_id: a.userId ?? "",
-    client: a.client ?? (a.type === "system" ? "system" : agent ? "agent" : "dashboard"),
-    ...(a.agentConnectionId ? { agent_connection_id: a.agentConnectionId } : {}),
+    client:
+      a.client ??
+      (a.type === "system" ? "system" : agent ? "agent" : "dashboard"),
+    ...(a.agentConnectionId
+      ? { agent_connection_id: a.agentConnectionId }
+      : {}),
     label: a.label,
   };
 }
@@ -673,11 +863,18 @@ export function toAttribution(a: ConvexActor): Attribution {
 /** Same base64url JSON as cursor.ts; Convex checks the seq against its head. */
 function parseCursor(cursor: string): { workspaceId: string; seq: number } {
   try {
-    const { w, s } = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+    const { w, s } = JSON.parse(
+      Buffer.from(cursor, "base64url").toString("utf8"),
+    ) as {
       w?: unknown;
       s?: unknown;
     };
-    if (typeof w === "string" && typeof s === "number" && Number.isSafeInteger(s) && s >= 0)
+    if (
+      typeof w === "string" &&
+      typeof s === "number" &&
+      Number.isSafeInteger(s) &&
+      s >= 0
+    )
       return { workspaceId: w, seq: s };
   } catch {
     // Fall through.

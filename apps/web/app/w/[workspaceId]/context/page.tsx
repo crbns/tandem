@@ -52,7 +52,8 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
       </div>
       <p className="-mt-2 text-sm text-muted-foreground">
         The team&apos;s current shared understanding. Owners and admins save
-        decisions directly; members propose changes for{" "}
+        decisions directly; constraints and open questions are recorded immediately.
+        Members propose major changes for{" "}
         <Link
           href={`/w/${workspaceId}/approvals`}
           className="underline underline-offset-2"

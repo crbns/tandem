@@ -122,7 +122,7 @@ export interface NewAgentConnection {
 }
 
 export type ContextField = "goal" | "scope" | "constraint" | "decision" | "ownership" | "open_question";
-export type ProposalStatus = "pending" | "approved" | "rejected" | "stale";
+export type ProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
 
 /** A proposed change to the project context, waiting on (or decided by) a person. */
 export interface ContextProposal {
@@ -133,6 +133,7 @@ export interface ContextProposal {
   rationale: string;
   sourceFileIds: string[];
   status: ProposalStatus;
+  supersedes: string | null;
   createdBy: Actor;
   createdAt: number;
   decidedBy: Actor | null;
@@ -141,6 +142,11 @@ export interface ContextProposal {
 
 /** Context entries retain their canonical sources and the human decision's attribution. */
 export interface ContextEntry {
+  id: string;
+  status: "active" | "resolved" | "superseded";
+  resolvedBy: Actor | null;
+  resolvedAt: number | null;
+  supersededBy: string | null;
   text: string;
   sourceFileIds: string[];
   updatedBy: Actor;
@@ -186,4 +192,12 @@ export interface PublishedWorkPage {
 export interface WorkspaceMember {
   userId: string;
   name: string;
+}
+
+export interface ContextProposalInput extends ContextChangeInput {
+  rationale: string;
+  operation?: "add" | "resolve" | "remove";
+  entryId?: string;
+  supersedes?: string;
+  expectedVersion?: number;
 }
