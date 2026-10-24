@@ -47,16 +47,19 @@ limits.
 
 Measured via `skills/tandem/eval` on 2026-10-23: Claude Code CLI 2.1.310,
 headless `claude -p`, model `sonnet` (`claude-sonnet-5-5`), mock backend. Raw
-data: [`eval/results/2026-10-23-claude-code.md`](./eval/results/2026-10-23-claude-code.md).
+data: [`eval/results/2026-10-23-claude-code.md`](./eval/results/2026-10-23-claude-code.md)
+(bare), [`-realistic.md`](./eval/results/2026-10-23-claude-code-realistic.md)
+and [`-conflict-bare.md`](./eval/results/2026-10-23-claude-code-conflict-bare.md).
 
 | Check | Result | Date | Tester | Notes |
 |---|---|---|---|---|
-| Connector added | pass | 2026-10-23 | eval harness | `--mcp-config` HTTP server + `api-key` header; connected in 28/28 runs. OAuth untested |
+| Connector added | pass | 2026-10-23 | eval harness | `--mcp-config` HTTP server + `api-key` header; connected in 82/82 runs (28 bare + 48 realistic + 6 conflict-bare). OAuth untested |
 | Tool discovery (all exposed tools listed) | pass | 2026-10-23 | eval harness | All 11 `mcp__tandem__*` tools in every session's tool list (loaded on demand via ToolSearch) |
-| `read_file` | pass | 2026-10-23 | eval harness | Called in 14 runs, no errors |
+| `read_file` | pass | 2026-10-23 | eval harness | Called in 35/82 runs (14 bare, 15 realistic, 6 conflict-bare). 1 input-validation error: realistic p3 NO_SKILL rep 2 called it without `file_id` |
 | `create_document` | pass | 2026-10-23 | eval harness | 2 successful calls (p1, p3 WITH_SKILL rep 1) |
-| `update_document` with `expected_version` | untested | | | Never called: seed has no spec, so p5 stopped and asked |
-| `VERSION_CONFLICT` recovery (reread, merge, retry once) | untested | | | Not exercised by the harness |
+| `update_document` with `expected_version` | pass | 2026-10-23 | eval harness | 11 runs called it (9 p6, 2 p5), always with the version just read; all 11 ended in a saved new version (the 9 p6 runs after one injected conflict). p5 ("our spec") has no spec in the seed: 2/3 realistic WITH_SKILL runs edited `brief.md` as a guess, without asking first, and offered to revert |
+| `VERSION_CONFLICT` recovery (reread, merge, retry once) | pass | 2026-10-23 | eval harness | Teammate edit injected right after the agent's read. Bare env: recovered 6/6 (3/3 with skill, 3/3 without): re-read, one retry, teammate line kept, no loops, no clobbers, every answer told the user. Realistic env: 3/3 recovered with skill; without it 0/3 reached Tandem at all (see next row). n=3 per cell |
+| Skill changes *whether* Tandem is used when alternatives exist | pass | 2026-10-23 | eval harness | Realistic env (stale local files + `notes`/`tracker` MCP stubs): any Tandem call 15/15 project runs with skill vs 8/15 without; answer built on the stale local goal 0/15 vs 8/15; on p6 (edit the brief) 3/3 vs 0/3 used Tandem, as the NO_SKILL runs tried to `Edit` the stale local copy instead (Edit is disallowed in the harness). n=3 per cell |
 | Skill installed | pass | 2026-10-23 | eval harness | Project-scoped `.claude/skills/tandem` (only `SKILL.md`); listed in `init.skills` in 14/14 WITH_SKILL runs |
 | Skill auto-invokes sync in fresh chat without mentioning Tandem | pass | 2026-10-23 | eval harness | `sync_workspace` first in 10/10 project runs with skill vs 0/10 without; 0/4 tool calls on unrelated controls in both conditions |
 | Write-confirmation prompts (does the client ask before write tools?) | untested | | | Headless runs pre-approve `mcp__tandem__*`; interactive prompting not measured |
@@ -182,8 +185,104 @@ What the numbers do and don't show:
 - Both conditions sent "cut mobile" through `propose_context_change` and
   reported it as pending (4/4).
 - The setup is favorable to Tandem: an empty project dir with Tandem as the
-  only MCP server. In a real repo with local files or other connectors, the
-  baseline (and maybe the skill) may use Tandem less. That isn't measured here.
+  only MCP server. The realistic run below measures the less favorable case.
 - p5 ("tighten the intro of our spec") never reached `update_document`, because
   the mock seed has no spec. Both conditions correctly declined to edit.
 - n=2 per cell. Treat the rates as directional, not as precise.
+
+### Claude Code, 2026-10-23, realistic env
+
+`node skills/tandem/eval/run.mjs --env realistic --model sonnet --reps 3
+--max-turns 8 --timeout 240 --concurrency 3 --tag realistic`: 8 prompts (5
+project, `p6-conflict-edit`, 2 controls) × 2 conditions × 3 reps = 48 runs,
+$1.88 total. Each temp project held an out-of-date local tree (`README.md`,
+`docs/brief.md`, a standup note, `src/index.ts`) whose goal is "launch a
+mobile-first beta at the Spring Builders Summit". Read/Glob/Grep were allowed
+inside the project (`Read(./**)`). Two distractor MCP servers, `notes` and
+`tracker`, sat next to `tandem`. Tandem's `brief.md` was saved as v2 by
+`user_sam` first. Isolation was clean: `tandem`, `notes` and `tracker` were
+connected in 48/48 runs, all four distractor tools were listed in `init` in
+48/48, there were no other servers, plugins or skills, and no errors or
+timeouts. Full table:
+[`eval/results/2026-10-23-claude-code-realistic.md`](./eval/results/2026-10-23-claude-code-realistic.md).
+
+| Prompts | Condition | Any Tandem call | First Tandem call = sync | Local files (Read/Glob/Grep) | Distractor MCP | Answer from stale local goal | Mentions distractor-only phrase | Cost |
+|---|---|---|---|---|---|---|---|---|
+| 5 project prompts | WITH_SKILL | 15/15 | 15/15 | 1/15 | 3/15 | 0/15 | 0/15 | $0.82 |
+| 5 project prompts | NO_SKILL | 8/15 | 0/15 | 12/15 | 9/15 | 8/15 | 3/15¹ | $0.60 |
+| p6 conflict edit | WITH_SKILL | 3/3 | 3/3 | 1/3 | 0/3 | 0/3 | 0/3 | $0.22 |
+| p6 conflict edit | NO_SKILL | 0/3 | 0/3 | 3/3 | 0/3 | 3/3 | 0/3 | $0.09 |
+| 2 unrelated controls | WITH_SKILL | 0/6 | 0/6 | 0/6 | 0/6 | 0/6 | 0/6 | $0.08 |
+| 2 unrelated controls | NO_SKILL | 0/6 | 0/6 | 0/6 | 0/6 | 0/6 | 0/6 | $0.08 |
+
+"Answer from stale local goal" = the final answer contains a phrase only the
+local tree has and not "Cal Hacks" (the Tandem value). "Mentions
+distractor-only phrase" is the same substring check for the `notes`/`tracker`
+phrase ("Bay Area Dev Days").
+
+¹ All 3 (the p1 NO_SKILL drafts) cite it as a discrepancy; 0/15 used it as the
+answer.
+
+What this shows:
+
+- **When there are alternatives, the skill does decide whether Tandem gets
+  used.** Without it, Claude Code reached for the local files first (12/15)
+  and used Tandem in only 8/15 project runs: p4 (`propose_context_change`, 3/3)
+  and p5 (3/3, which found both briefs and asked which one was meant) account
+  for 6, plus one `get_workspace_info` on p2 and one p3 run that read both.
+  p1 and p2 never read Tandem's content, and 8/15 answers stated the stale
+  local goal as current: all 3 p1 drafts ("Launch Brief: Mobile-First Beta"),
+  all 3 p2 answers, and 2/3 p3 status updates (a 9th, p3 NO_SKILL rep 2, used
+  the stale goal as the draft's goal and flagged the conflict). With the skill,
+  all 15 synced first, and 0/15 answers used the stale goal.
+- The skill didn't stop all use of other sources. The 3/15 WITH_SKILL
+  distractor calls are p3 reading `tracker` tickets for the status update,
+  next to Tandem, which is a reasonable use.
+- Writes: WITH_SKILL saved 3/3 status drafts with `create_document` and
+  proposed "cut mobile" 3/3. NO_SKILL's only Tandem writes were the 3 p4
+  proposals. Its p1 runs (3/3) tried the disallowed `Write` and then gave the
+  draft inline; its p3 drafts were inline.
+- p5 with the skill: 2/3 runs edited Tandem's `brief.md` as their best guess
+  for "our spec" without asking first (each said so and offered to revert);
+  1/3 asked. In the bare run, both conditions declined to edit.
+- Caveat: the harness disallows Edit/Write. On p6 all 3 NO_SKILL runs read the
+  local `docs/brief.md` and tried `Edit` on it, so in a real repo they would
+  likely have edited the stale local copy and never touched Tandem.
+- Limits: one model (`sonnet` / `claude-sonnet-5-5`), one CLI version
+  (2.1.310), headless `claude -p` only. The fixtures are synthetic: the local
+  tree is stale by construction and Tandem is the truth, so this measures the
+  case the skill is written for, not a repo where local files are newer. The
+  conflict's teammate edit is a single trivial end-of-file append, so
+  overlapping merges are untested. n=3 per cell; directional only.
+
+### VERSION_CONFLICT recovery, 2026-10-23
+
+For `p6-conflict-edit` ("Tighten the intro paragraph of our project brief and
+save the change."), the harness injects a teammate edit (as `user_sam`, adding
+the line `Teammate note (sam): budget approved — keep this line.`) right after
+the agent's first successful `read_file` of the brief. The edit landed in 4–9
+ms, before the agent's next tool call in 9/9 injected runs. The final head is
+read back at the end.
+
+| Env | Condition | n | Injected | Conflict hit | Re-read | Retried once | Looped | Recovered | Clobbered | Asked user | Cost |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| bare | WITH_SKILL | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 3/3 | 0/3 | 0/3 | $0.21 |
+| bare | NO_SKILL | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 3/3 | 0/3 | 0/3 | $0.14 |
+| realistic | WITH_SKILL | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 3/3 | 0/3 | 0/3 | $0.22 |
+| realistic | NO_SKILL | 3 | 0/3 (never read Tandem) | - | - | - | - | - | - | - | $0.09 |
+
+- Bare: [`eval/results/2026-10-23-claude-code-conflict-bare.md`](./eval/results/2026-10-23-claude-code-conflict-bare.md)
+  (`--prompts p6-conflict-edit --reps 3 --max-turns 8 --timeout 240 --tag
+  conflict-bare`, 6 runs, $0.35, isolation clean).
+- Every run that hit the conflict recovered the same way: one re-read, one
+  retry with the new version, the teammate's line kept, and the agent's
+  tightened intro on top (v4). None looped or clobbered. All 9 final answers
+  told the user a teammate had changed the file in between (checked by hand).
+- **The skill isn't what makes recovery work in the bare env:** NO_SKILL
+  recovered 3/3 too. The server's `VERSION_CONFLICT` message and the
+  `update_document` description already say "re-read, merge, retry". The
+  skill's contribution is getting the agent to Tandem in the first place
+  (realistic: 3/3 vs 0/3).
+- "Asked user" was 0/9, which is correct here: the teammate's line and the
+  intro don't overlap, so SKILL.md §4 says retry once. The "overlapping edit,
+  ask the user" branch and "retry conflicts again, stop" were not exercised.
