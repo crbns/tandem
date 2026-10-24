@@ -943,6 +943,262 @@ describe("workspace members for agents (T5b)", () => {
   });
 });
 
+describe("dashboard project context (#24)", () => {
+  it.each(["owner", "admin"] as const)(
+    "lets a human %s edit with revision, attribution, event, and next-sync visibility",
+    async (role) => {
+      const { t, alex, sam, alexId, workspaceId } = await setup();
+      if (role === "admin")
+        await t.run(async (ctx) => {
+          const member = await ctx.db
+            .query("workspace_members")
+            .withIndex("by_workspace_and_user", (q) =>
+              q.eq("workspaceId", workspaceId).eq("userId", alexId),
+            )
+            .unique();
+          await ctx.db.patch(member!._id, { role: "admin" });
+        });
+      const { token, apiKey } = await connect(sam, { workspaceId, client: "claude" });
+      const before = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
+      const file = await alex.mutation(api.files.createDocument, {
+        workspaceId,
+        name: "plan.md",
+        mimeType: "text/markdown",
+        content: "Ship",
+      });
+      const result = await alex.mutation(api.context.updateContextField, {
+        workspaceId,
+        field: "goal",
+        proposedValue: "Ship the demo",
+        sourceFileIds: [file.id],
+        expectedVersion: before.context.revision,
+      });
+      const after = await t.mutation(internal.mcpTools.syncWorkspace, {
+        principal: token,
+        sinceSeq: before.cursorSeq,
+      });
+      const sync = await callTool(t, apiKey, "sync_workspace");
+      expect(sync.isError).not.toBe(true);
+      expect(sync.structuredContent.context.goal).toBe("Ship the demo");
+      expect(sync.structuredContent.context_version).toBe(result.version);
+      expect(result.version).toBe(before.context.revision + 1);
+      expect(after.context.goal).toMatchObject({
+        text: "Ship the demo",
+        sourceFileIds: [file.id],
+        updatedBy: { type: "human", userId: alexId },
+      });
+      expect(
+        after.events.find((event) => event.kind === "context.updated"),
+      ).toMatchObject({
+        actor: { type: "human", userId: alexId },
+        entityType: "structured_context",
+      });
+      expect(
+        await alex.query(api.context.getApprovals, { workspaceId }),
+      ).toEqual([]);
+      expect(
+        await errorData(
+          alex.mutation(api.context.updateContextField, {
+            workspaceId,
+            field: "goal",
+            proposedValue: "Old edit",
+            sourceFileIds: [],
+            expectedVersion: before.context.revision,
+          }),
+        ),
+      ).toMatchObject({ code: "VERSION_CONFLICT" });
+      expect(
+        (await alex.query(api.context.getDetails, { workspaceId })).goal?.text,
+      ).toBe("Ship the demo");
+    },
+  );
+
+  it("rejects member edits but lists their proposals for approval, and rejects agent-bound direct edits", async () => {
+    const { t, alex, sam, alexId, workspaceId } = await setup();
+    const input = {
+      workspaceId,
+      field: "goal" as const,
+      proposedValue: "Team goal",
+      sourceFileIds: [],
+      expectedVersion: 1,
+    };
+    expect(
+      await errorData(sam.mutation(api.context.updateContextField, input)),
+    ).toMatchObject({ code: "FORBIDDEN" });
+    const { expectedVersion: _, ...proposalInput } = input;
+    const id = await sam.mutation(api.context.proposeContextChange, {
+      ...proposalInput,
+      rationale: "Agreed in standup",
+    });
+    expect(
+      await alex.query(api.context.getApprovals, {
+        workspaceId,
+        status: "pending",
+      }),
+    ).toMatchObject([
+      { id, proposedValue: "Team goal", createdBy: { type: "human" } },
+    ]);
+    const { connectionId } = await connect(alex, { workspaceId, client: "claude" });
+    // API-key and OAuth MCP principals have no dashboard Convex Auth session.
+    expect(
+      await errorData(t.mutation(api.context.updateContextField, input)),
+    ).toMatchObject({ code: "UNAUTHENTICATED" });
+    for (const claims of [
+      { agentConnectionId: connectionId },
+      { agent_connection_id: connectionId },
+    ]) {
+      const agent = t.withIdentity({ subject: `${alexId}|session`, ...claims });
+      expect(
+        await errorData(agent.mutation(api.context.updateContextField, input)),
+      ).toMatchObject({ code: "APPROVAL_REQUIRED" });
+    }
+    expect(
+      (await alex.query(api.context.getDetails, { workspaceId })).revision,
+    ).toBe(1);
+  });
+
+  it("edits each context section, guards positional edits with revisions, and validates owners and sources", async () => {
+    const {
+      alex,
+      sam,
+      jordan,
+      samId,
+      jordanId,
+      workspaceId,
+      otherWorkspaceId,
+    } = await setup();
+    let expectedVersion = 1;
+    for (const field of [
+      "scope",
+      "constraint",
+      "decision",
+      "open_question",
+      "ownership",
+    ] as const) {
+      await alex.mutation(api.context.updateContextField, {
+        workspaceId,
+        field,
+        proposedValue: `${field} value`,
+        sourceFileIds: [],
+        expectedVersion: expectedVersion++,
+        ...(field === "ownership" ? { ownerUserId: samId } : {}),
+      });
+    }
+    await alex.mutation(api.context.updateContextField, {
+      workspaceId,
+      field: "decision",
+      proposedValue: "Revised decision",
+      sourceFileIds: [],
+      expectedVersion: expectedVersion++,
+      entryIndex: 0,
+    });
+    const details = await sam.query(api.context.getDetails, { workspaceId });
+    expect(details.decisions.map((e) => e.text)).toEqual(["Revised decision"]);
+    expect(details.ownership[0]).toMatchObject({
+      ownerUserId: samId,
+      ownerArea: "ownership value",
+      text: "ownership value: Sam",
+    });
+    const foreign = await jordan.mutation(api.files.createDocument, {
+      workspaceId: otherWorkspaceId,
+      name: "secret.md",
+      mimeType: "text/markdown",
+      content: "secret",
+    });
+    expect(
+      await errorData(
+        alex.mutation(api.context.updateContextField, {
+          workspaceId,
+          field: "scope",
+          proposedValue: "Bad source",
+          sourceFileIds: [foreign.id],
+          expectedVersion,
+        }),
+      ),
+    ).toMatchObject({ code: "INVALID_SOURCE_FILE" });
+    expect(
+      await errorData(
+        alex.mutation(api.context.updateContextField, {
+          workspaceId,
+          field: "ownership",
+          proposedValue: "Area",
+          ownerUserId: jordanId,
+          sourceFileIds: [],
+          expectedVersion,
+        }),
+      ),
+    ).toMatchObject({ code: "INVALID_INPUT" });
+    expect(
+      await errorData(
+        alex.mutation(api.context.updateContextField, {
+          workspaceId,
+          field: "decision",
+          proposedValue: "Bad index",
+          sourceFileIds: [],
+          expectedVersion,
+          entryIndex: 99,
+        }),
+      ),
+    ).toMatchObject({ code: "INVALID_INPUT" });
+    expect(
+      (await alex.query(api.context.getDetails, { workspaceId })).revision,
+    ).toBe(expectedVersion);
+  });
+
+  it("paginates published work newest first and checks membership on every page", async () => {
+    const { t, alex, sam, jordan, workspaceId } = await setup();
+    const { token } = await connect(sam, { workspaceId, client: "claude" });
+    const ids = [];
+    for (let i = 0; i < 3; i++) {
+      const work = await t.mutation(internal.mcpTools.publishWork, {
+        principal: token,
+        kind: "finding",
+        title: `Finding ${i}`,
+        summary: `Result ${i}`,
+        fileIds: [],
+      });
+      ids.push(work.id);
+    }
+    const first = await alex.query(api.context.listPublishedWork, {
+      workspaceId,
+      paginationOpts: { numItems: 2, cursor: null },
+    });
+    const last = await sam.query(api.context.listPublishedWork, {
+      workspaceId,
+      paginationOpts: { numItems: 2, cursor: first.continueCursor },
+    });
+    expect(first.isDone).toBe(false);
+    expect(last.isDone).toBe(true);
+    expect([...first.page, ...last.page].map((work) => work.id)).toEqual(
+      ids.reverse(),
+    );
+    expect(first.page[0]?.createdBy).toMatchObject({
+      type: "agent",
+      userName: "Sam",
+      client: "claude",
+    });
+    expect(
+      await errorData(
+        jordan.query(api.context.listPublishedWork, {
+          workspaceId,
+          paginationOpts: { numItems: 2, cursor: first.continueCursor },
+        }),
+      ),
+    ).toMatchObject({ code: "FORBIDDEN" });
+    expect(
+      await errorData(jordan.query(api.context.getDetails, { workspaceId })),
+    ).toMatchObject({ code: "FORBIDDEN" });
+    expect(
+      await errorData(
+        alex.query(api.context.listPublishedWork, {
+          workspaceId,
+          paginationOpts: { numItems: 101, cursor: null },
+        }),
+      ),
+    ).toMatchObject({ code: "INVALID_INPUT" });
+  });
+});
+
 describe("MCP endpoint", () => {
   it("serves the snake_case tool contract and coded errors over HTTP", async () => {
     const { t, alex, sam, samId, workspaceId } = await setup();

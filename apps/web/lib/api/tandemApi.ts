@@ -1,4 +1,8 @@
 import type {
+  ContextChangeInput,
+  ContextDetails,
+  PublishedWorkPage,
+  WorkspaceMember,
   AgentClient,
   AgentConnection,
   ConsentRequest,
@@ -46,6 +50,12 @@ export interface TandemApi {
   getRevision(fileId: string, version: number): Promise<Revision | null>;
   /** The approved project context, or null when nothing has been approved yet. */
   getContext(workspaceId: string): Promise<ProjectContext | null>;
+  getContextDetails(workspaceId: string): Promise<ContextDetails>;
+  listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]>;
+  updateContextField(workspaceId: string, input: ContextChangeInput & { expectedVersion: number; entryIndex?: number }): Promise<{ version: number }>;
+  proposeContextChange(workspaceId: string, input: ContextChangeInput & { rationale: string }): Promise<string>;
+  /** Newest first, cursor-paginated; maximum page size is 100. */
+  listPublishedWork(workspaceId: string, cursor?: string | null, pageSize?: number): Promise<PublishedWorkPage>;
   /** Newest first, at most 100. Every member may read them. */
   listProposals(workspaceId: string, status?: ProposalStatus): Promise<ContextProposal[]>;
   /**

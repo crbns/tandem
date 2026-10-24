@@ -4,6 +4,10 @@ const MOCK_MCP_URL = "https://mock-deployment.convex.site/mcp";
 import type { TandemApi } from "./tandemApi";
 import {
   AGENT_CLIENTS,
+  type ContextChangeInput,
+  type ContextDetails,
+  type ContextEntry,
+  type PublishedWork,
   type Actor,
   type AgentConnection,
   type ContextProposal,
@@ -20,6 +24,7 @@ export const MOCK_WORKSPACE_ID = "ws_demo";
 export interface MockTandemApi extends TandemApi {
   /** Dev-only: pretend an assistant saved a new version through MCP. */
   __simulateExternalEdit(fileId: string, content: string, actor: Actor): void;
+  __simulatePublishedWork(workspaceId: string, work: Omit<PublishedWork, "id" | "workspaceId" | "createdAt">): void;
 }
 
 interface MockOptions {
@@ -147,6 +152,19 @@ export function createMockApi({
   const contexts = new Map<string, ProjectContext>([
     [MOCK_WORKSPACE_ID, context],
   ]);
+  const seedEntry = (text: string): ContextEntry => ({
+    text, sourceFileIds: ["file_proposal"], updatedBy: { ...ALEX }, updatedAt: context.approvedAt,
+  });
+  const details = new Map<string, ContextDetails>([[MOCK_WORKSPACE_ID, {
+    goal: seedEntry(context.goal), scope: seedEntry(context.scope),
+    constraints: context.constraints.map(seedEntry), decisions: context.decisions.map(seedEntry),
+    ownership: [], openQuestions: [], version: context.version,
+  }]]);
+  const publishedWork: PublishedWork[] = [{
+    id: "work_seed", workspaceId: MOCK_WORKSPACE_ID, kind: "finding", title: "Demo fallback",
+    summary: "Keep a recorded fallback ready for venue Wi-Fi.", fileIds: ["file_proposal"],
+    createdBy: { ...CLAUDE }, createdAt: Date.now() - 3 * MINUTE,
+  }];
   let nextId = 1;
   const invites = new Map<string, WorkspaceInvite & { token: string }>();
   const memberships = new Map<string, Map<string, "owner" | "admin" | "member">>();
@@ -166,9 +184,48 @@ export function createMockApi({
     if (role !== "owner" && role !== "admin") throw new TandemApiError("FORBIDDEN");
   };
 
+  const requireMember = (workspaceId: string) => {
+    const userId = signedInUser();
+    if (!membersFor(workspaceId).has(userId)) throw new TandemApiError("FORBIDDEN");
+  };
+  const validateChange = (workspaceId: string, input: ContextChangeInput) => {
+    if (!input.proposedValue.trim() || input.proposedValue.length > 10000)
+      throw new TandemApiError("INVALID_INPUT");
+    if (input.sourceFileIds.some((id) => files.get(id)?.summary.workspaceId !== workspaceId))
+      throw new TandemApiError("INVALID_INPUT");
+    if (input.field === "ownership") {
+      if (!input.ownerUserId || !membersFor(workspaceId).has(input.ownerUserId) || input.proposedValue.trim().length > 200)
+        throw new TandemApiError("INVALID_INPUT");
+    } else if (input.ownerUserId !== undefined) throw new TandemApiError("INVALID_INPUT");
+  };
+  const applyChange = (workspaceId: string, input: ContextChangeInput, actor: Actor, entryIndex?: number) => {
+    const ctx = details.get(workspaceId)!;
+    const now = Date.now();
+    const text = input.proposedValue.trim();
+    const value: ContextEntry = { text, sourceFileIds: [...input.sourceFileIds], updatedBy: { ...actor }, updatedAt: now };
+    if (input.field === "goal" || input.field === "scope") ctx[input.field] = value;
+    else {
+      const key = { constraint: "constraints", decision: "decisions", ownership: "ownership", open_question: "openQuestions" } as const;
+      const entries = ctx[key[input.field]];
+      if (input.field === "ownership") {
+        value.ownerUserId = input.ownerUserId;
+        value.ownerArea = text;
+        value.text = `${text}: ${memberNames.get(input.ownerUserId!) ?? "Workspace member"}`;
+        ctx.ownership = [...entries.filter((entry, index) => index !== entryIndex && entry.ownerArea?.trim().toLowerCase() !== text.toLowerCase()), value];
+      } else if (entryIndex === undefined) entries.push(value);
+      else entries[entryIndex] = value;
+    }
+    ctx.version++;
+    contexts.set(workspaceId, {
+      goal: ctx.goal?.text ?? "", scope: ctx.scope?.text ?? "", constraints: ctx.constraints.map((e) => e.text),
+      decisions: ctx.decisions.map((e) => e.text), version: ctx.version,
+      approvedBy: ctx.goal?.updatedBy ?? actor, approvedAt: ctx.goal?.updatedAt ?? now,
+    });
+  };
+  const memberNames = new Map<string, string>();
   // Proposals keep the value they were based on (goal/scope only), like the
   // backend's baseValue, so a mock approval can go stale.
-  type StoredProposal = ContextProposal & { baseValue?: string };
+  type StoredProposal = ContextProposal & { baseValue?: string; ownerUserId?: string; ownerArea?: string };
   const proposals: StoredProposal[] = seedProposals(Date.now(), context);
   type StoredConnection = AgentConnection & { workspaceId: string };
   const connections: StoredConnection[] = [
@@ -191,7 +248,7 @@ export function createMockApi({
   // Async like a backend push, so a watcher never runs inside the write itself.
   const notify = (workspaceId: string) =>
     watchers.get(workspaceId)?.forEach((listener) => queueMicrotask(listener));
-  const cloneProposal = ({ baseValue: _baseValue, ...p }: StoredProposal): ContextProposal => ({
+  const cloneProposal = ({ baseValue: _baseValue, ownerUserId: _ownerUserId, ownerArea: _ownerArea, ...p }: StoredProposal): ContextProposal => ({
     ...p,
     sourceFileIds: [...p.sourceFileIds],
     createdBy: { ...p.createdBy },
@@ -237,6 +294,7 @@ export function createMockApi({
   return {
     async listWorkspaces() {
       await delay();
+      memberNames.set(signedInUser(), getActor().userName ?? "Workspace member");
       return workspaces.map((w) => ({ ...w, role: membersFor(w.id).get(signedInUser()) })).filter((w) => w.role);
     },
 
@@ -247,6 +305,7 @@ export function createMockApi({
       const id = `ws_new_${nextId++}`;
       workspaces.push({ id, name: trimmedName });
       memberships.set(id, new Map([[signedInUser(), "owner"]]));
+      details.set(id, { goal: null, scope: null, constraints: [], decisions: [], ownership: [], openQuestions: [], version: 1 });
       return id;
     },
 
@@ -265,6 +324,7 @@ export function createMockApi({
     async acceptInvite(token) {
       await delay();
       const userId = signedInUser();
+      memberNames.set(userId, getActor().userName ?? "Workspace member");
       const invite = [...invites.values()].find((i) => i.token === token);
       if (!invite) throw new TandemApiError("INVITE_INVALID");
       if (invite.revokedAt !== undefined) throw new TandemApiError("INVITE_REVOKED");
@@ -384,6 +444,63 @@ export function createMockApi({
         : null;
     },
 
+    async getContextDetails(workspaceId) {
+      await delay();
+      requireMember(workspaceId);
+      return structuredClone(details.get(workspaceId)!);
+    },
+
+    async listWorkspaceMembers(workspaceId) {
+      await delay();
+      requireMember(workspaceId);
+      memberNames.set(signedInUser(), getActor().userName ?? "Workspace member");
+      return [...membersFor(workspaceId).keys()].map((userId) => ({ userId, name: memberNames.get(userId) ?? "Workspace member" }));
+    },
+
+    async updateContextField(workspaceId, input) {
+      await delay();
+      if (getActor().actorType === "agent") throw new TandemApiError("APPROVAL_REQUIRED");
+      requireAdmin(workspaceId);
+      const ctx = details.get(workspaceId)!;
+      if (input.expectedVersion !== ctx.version) throw new TandemApiError("VERSION_CONFLICT", { currentVersion: ctx.version });
+      validateChange(workspaceId, input);
+      const key = { constraint: "constraints", decision: "decisions", ownership: "ownership", open_question: "openQuestions" } as const;
+      if (input.entryIndex !== undefined && (input.field === "goal" || input.field === "scope" || !Number.isInteger(input.entryIndex) || input.entryIndex < 0 || input.entryIndex >= ctx[key[input.field]].length))
+        throw new TandemApiError("INVALID_INPUT");
+      applyChange(workspaceId, input, getActor(), input.entryIndex);
+      notify(workspaceId);
+      return { version: ctx.version };
+    },
+
+    async proposeContextChange(workspaceId, input) {
+      await delay();
+      requireMember(workspaceId);
+      validateChange(workspaceId, input);
+      const ctx = details.get(workspaceId)!;
+      const id = `proposal_${nextId++}`;
+      const area = input.proposedValue.trim();
+      proposals.push({
+        id, workspaceId, field: input.field, rationale: input.rationale, sourceFileIds: [...input.sourceFileIds],
+        proposedValue: input.field === "ownership" ? `${area}: ${memberNames.get(input.ownerUserId!) ?? "Workspace member"}` : input.proposedValue,
+        ...(input.field === "ownership" ? { ownerArea: area, ownerUserId: input.ownerUserId } : {}),
+        ...(input.field === "goal" || input.field === "scope" ? { baseValue: ctx[input.field]?.text ?? "" } : {}),
+        status: "pending", createdBy: { ...getActor() }, createdAt: Date.now(), decidedBy: null, decidedAt: null,
+      });
+      notify(workspaceId);
+      return id;
+    },
+
+    async listPublishedWork(workspaceId, cursor = null, pageSize = 20) {
+      await delay();
+      requireMember(workspaceId);
+      const offset = cursor === null ? 0 : Number(cursor);
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)
+        throw new TandemApiError("INVALID_INPUT");
+      const rows = publishedWork.filter((work) => work.workspaceId === workspaceId).slice().reverse();
+      const end = offset + pageSize;
+      return { page: structuredClone(rows.slice(offset, end)), isDone: end >= rows.length, continueCursor: String(end) };
+    },
+
     async listProposals(workspaceId, status) {
       await delay();
       membersFor(workspaceId);
@@ -410,7 +527,9 @@ export function createMockApi({
           notify(workspaceId);
           throw new TandemApiError("VERSION_CONFLICT");
         }
-        if (ctx) applyApproved(ctx, proposal, actor, now);
+        const input = { ...proposal, proposedValue: proposal.ownerArea ?? proposal.proposedValue };
+        validateChange(workspaceId, input);
+        applyChange(workspaceId, input, actor);
       }
       Object.assign(proposal, { status: decision, decidedBy: { ...actor }, decidedAt: now });
       notify(workspaceId);
@@ -513,6 +632,12 @@ export function createMockApi({
       return () => listeners.delete(onChange);
     },
 
+    __simulatePublishedWork(workspaceId, work) {
+      requireMember(workspaceId);
+      publishedWork.push(structuredClone({ ...work, workspaceId, id: `work_${nextId++}`, createdAt: Date.now() }));
+      notify(workspaceId);
+    },
+
     __simulateExternalEdit(fileId, content, actor) {
       commit(getFile(fileId), content, actor);
     },
@@ -569,25 +694,4 @@ function seedProposals(now: number, context: ProjectContext): Array<ContextPropo
       decidedAt: now - 2 * 60 * MINUTE,
     },
   ];
-}
-
-function applyApproved(ctx: ProjectContext, proposal: ContextProposal, actor: Actor, now: number) {
-  switch (proposal.field) {
-    case "goal":
-      Object.assign(ctx, { goal: proposal.proposedValue, approvedBy: { ...actor }, approvedAt: now });
-      break;
-    case "scope":
-      ctx.scope = proposal.proposedValue;
-      break;
-    case "constraint":
-      ctx.constraints = [...ctx.constraints, proposal.proposedValue];
-      break;
-    case "decision":
-      ctx.decisions = [...ctx.decisions, proposal.proposedValue];
-      break;
-    // The dashboard's context view has no ownership or open-questions section yet.
-    default:
-      break;
-  }
-  ctx.version += 1;
 }

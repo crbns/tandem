@@ -168,3 +168,52 @@ export interface ContextProposal {
   decidedBy: Actor | null;
   decidedAt: number | null;
 }
+
+/** Context entries retain their canonical sources and the human decision's attribution. */
+export interface ContextEntry {
+  text: string;
+  sourceFileIds: string[];
+  updatedBy: Actor;
+  updatedAt: number;
+  ownerUserId?: string | null;
+  ownerArea?: string | null;
+}
+
+export interface ContextDetails {
+  goal: ContextEntry | null;
+  scope: ContextEntry | null;
+  constraints: ContextEntry[];
+  decisions: ContextEntry[];
+  ownership: ContextEntry[];
+  openQuestions: ContextEntry[];
+  version: number;
+}
+
+export interface ContextChangeInput {
+  field: ContextField;
+  proposedValue: string;
+  sourceFileIds: string[];
+  ownerUserId?: string;
+}
+
+export interface PublishedWork {
+  id: string;
+  workspaceId: string;
+  kind: "deliverable" | "finding";
+  title: string;
+  summary: string;
+  fileIds: string[];
+  createdBy: Actor;
+  createdAt: number;
+}
+
+export interface PublishedWorkPage {
+  page: PublishedWork[];
+  isDone: boolean;
+  continueCursor: string;
+}
+
+export interface WorkspaceMember {
+  userId: string;
+  name: string;
+}
