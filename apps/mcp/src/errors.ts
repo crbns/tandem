@@ -70,6 +70,21 @@ export function versionAhead(
   );
 }
 
+export function invalidCursor(): TandemError {
+  return new TandemError(
+    "INVALID_INPUT",
+    "cursor is invalid or for another workspace; call sync_workspace without since",
+  );
+}
+
+export function approvalRequired(field: string): TandemError {
+  return new TandemError(
+    "APPROVAL_REQUIRED",
+    "Changes to goal, scope, decisions or ownership need human approval. Use propose_context_change.",
+    { field },
+  );
+}
+
 export function nameExists(
   fileId: string,
   name: string,
