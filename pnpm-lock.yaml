@@ -182,9 +182,18 @@ importers:
 
   packages/backend:
     dependencies:
+      '@auth/core':
+        specifier: 0.41.1
+        version: 0.41.1
+      '@convex-dev/auth':
+        specifier: ^0.0.96
+        version: 0.0.96(@auth/core@0.41.1)(convex@1.46.0(react@19.2.8))(react@19.2.8)
       convex:
         specifier: 1.46.0
         version: 1.46.0(react@19.2.8)
+      jose:
+        specifier: ^6.2.13
+        version: 6.2.13
     devDependencies:
       typescript:
         specifier: 7.0.2

@@ -52,3 +52,17 @@ Core tables: users, workspaces, workspace_members, agent_connections, files, fol
 - **P2:** don't build these now (broad binary previews, office editors, search ranking, CRDT co-editing, enterprise permissions).
 
 Client limits as of Oct 2026: Claude remote MCP connectors work on all plans and are the primary test target. ChatGPT full write MCP is Business/Enterprise/Edu beta only (Pro is read-only, Plus isn't viable). Gemini custom MCP apps have eligibility limits.
+
+<!-- convex-ai-start -->
+
+This project uses [Convex](https://convex.dev) as its backend.
+
+When working on Convex code, **always read
+`convex/_generated/ai/guidelines.md` first** for important guidelines on
+how to correctly use Convex APIs and patterns. The file contains rules that
+override what you may have learned about Convex from training data.
+
+Convex agent skills for common tasks can be installed by running
+`npx convex ai-files install`.
+
+<!-- convex-ai-end -->
