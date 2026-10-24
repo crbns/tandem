@@ -3,16 +3,33 @@
   "ui": "tui",
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "env": ["NEXT_PUBLIC_CONVEX_URL"],
-      "outputs": [".next/**", "!.next/cache/**", "!.next/dev/**"]
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env*"
+      ],
+      "env": [
+        "NEXT_PUBLIC_CONVEX_URL",
+        "NEXT_PUBLIC_DEFAULT_WORKSPACE_ID",
+        "NEXT_PUBLIC_USE_MOCKS"
+      ],
+      "outputs": [
+        ".next/**",
+        "!.next/cache/**",
+        "!.next/dev/**"
+      ]
     },
     "lint": {
-      "dependsOn": ["^lint"]
+      "dependsOn": [
+        "^lint"
+      ]
     },
     "check-types": {
-      "dependsOn": ["^check-types"]
+      "dependsOn": [
+        "^check-types"
+      ]
     },
     "dev": {
       "cache": false,
