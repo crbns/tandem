@@ -153,7 +153,7 @@ components:
 
 Every file in Tandem is handled like an archived object that carries its own chain of custody. The dashboard reads as an accession register rather than a SaaS file list. It sits on a cool acid-free grey board, with white paper panels drawn in 1px rules and ink-dark text. Condensed catalogue caps are used for accession numbers, version tags and column heads. Identity is the system's main subject. Each save is marked by who held the file, an assistant or a person, and that mark keeps the same shape and colour wherever it appears.
 
-The surface is dense, quiet and daylight-legible: 14px body on a 20px line, tabular numerals everywhere, flat panels and almost no decoration. Colour is scarce and always means something. Slate gives structure and selection, verdigris marks agents, ink-blue marks humans, ochre marks unsaved or contested work, and accession red appears only on things you can press. The one authored motion is the custody record sliding into place when you select a file.
+The surface is dense, quiet and daylight-legible: 14px body on a 20px line, tabular numerals everywhere, flat panels and almost no decoration. Colour is scarce and always means something. Slate gives structure and selection, verdigris marks agents, ink-blue marks humans, ochre marks unsaved or contested work, and accession red appears only on things you can press. There are two authored motions: the custody record sliding into place when you select a file, and a row an assistant just saved taking the agent tint before fading back.
 
 The build rejects the neutral SaaS file table with pill badges: actor identity is a fixed mark plus a catalogue label, never a coloured lozenge.
 
@@ -163,7 +163,7 @@ The build rejects the neutral SaaS file table with pill badges: actor identity i
 - Archivo Narrow caps for codes, versions and column heads; Public Sans for everything else.
 - Accession red reserved for pressable primary actions.
 - Flat at rest; shadow only on floating layers.
-- One motion: the custody record's 180ms slide-in.
+- Two motions: the custody record's 180ms slide-in, and the arrival fade (a row an assistant just created or saved holds the agent tint and a 3px verdigris rule, then fades out over 8s, with a toast like "Alex via Claude created proposal.md").
 
 ## Colors
 
@@ -313,4 +313,4 @@ The conflict alert is an ochre wash with an ochre rule and ochre text, a 16px ic
 - **Don't** say "online" or show live presence dots; the plate is attribution, and times read "last edited" or "saved".
 - **Don't** use catalogue caps as an eyebrow or kicker above headings.
 - **Don't** add shadows to panels, the register or the custody record; shadows belong to dialogs, toasts and menus.
-- **Don't** add motion beyond the custody-in slide and functional spinners, and honour reduced-motion.
+- **Don't** add motion beyond the custody-in slide, the arrival fade and functional spinners, and honour reduced-motion (the arrival holds its tint without fading).

@@ -6,7 +6,7 @@ import { useSession } from "@/lib/auth/useSession";
 import { isSigningOut } from "@/lib/auth/signOutIntent";
 import { useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
-import { WorkspaceFilesContext } from "@/lib/api/useWorkspace";
+import { ArrivalsContext, useArrivals, useWorkspaceRefresh, WorkspaceFilesContext } from "@/lib/api/useWorkspace";
 import { AppShell } from "@/components/shell/AppShell";
 import { FullPageSpinner } from "@/components/common/FullPageSpinner";
 
@@ -27,15 +27,20 @@ function WorkspaceShell({ workspaceId, children }: { workspaceId: string; childr
     reloadFiles();
   }, [pathname, reload, reloadFiles]);
   // The name is cosmetic: a failed lookup falls back instead of blocking the app.
+  // An assistant's save through MCP refreshes the list, which is how arrivals are noticed.
+  useWorkspaceRefresh(workspaceId, reloadFiles);
+  const arrived = useArrivals(workspaceId, files.resource);
   const name = resource.status === "ready" ? resource.data : "Workspace";
   // The count is decoration too; a failed listing just hides it.
   const fileCount = files.resource.status === "ready" ? files.resource.data.length : null;
 
   return (
     <WorkspaceFilesContext.Provider value={files}>
-      <AppShell workspaceId={workspaceId} workspaceName={name} fileCount={fileCount}>
-        {children}
-      </AppShell>
+      <ArrivalsContext.Provider value={arrived}>
+        <AppShell workspaceId={workspaceId} workspaceName={name} fileCount={fileCount}>
+          {children}
+        </AppShell>
+      </ArrivalsContext.Provider>
     </WorkspaceFilesContext.Provider>
   );
 }

@@ -507,7 +507,8 @@ async function seedStory(
   ] as const;
   for (const change of approved) {
     const proposal = await proposeContextChangeCore(ctx, {
-      workspaceId, ...change, rationale: "Agreed in the kickoff.", actor: owner,
+      workspaceId, ...change, sourceFileIds: [...change.sourceFileIds],
+      rationale: "Agreed in the kickoff.", actor: owner,
     });
     if (proposal.status === "pending") await decideProposalCore(ctx, proposal, "approved", alex);
   }

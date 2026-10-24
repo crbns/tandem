@@ -1,9 +1,13 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { ARRIVAL_MS, arrivalMessage, detectArrivals } from "@/lib/arrivals";
 import { useTandemApi } from "./index";
 import { useResource } from "./useResource";
 import type { FileSummary, Workspace } from "./types";
+import type { Resource } from "./useResource";
 
 export type WorkspaceFiles = ReturnType<typeof useResource<FileSummary[]>>;
 
@@ -38,4 +42,50 @@ export function useWorkspaceRefresh(workspaceId: string, reload: () => void) {
     window.addEventListener("focus", reload);
     return () => window.removeEventListener("focus", reload);
   }, [reload]);
+}
+
+/** Ids of files an assistant just created or saved; the file table marks their rows. */
+export const ArrivalsContext = createContext<ReadonlySet<string>>(new Set());
+
+export function useArrivedFiles(): ReadonlySet<string> {
+  return useContext(ArrivalsContext);
+}
+
+/**
+ * Watches the workspace's file list for agent writes. Each one gets a toast
+ * ("Alex via Claude created proposal.md", with Open) and stays in the
+ * returned set for ARRIVAL_MS so its row can be marked. No toast for the
+ * file already open: its editor reports the newer version itself.
+ */
+export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>): ReadonlySet<string> {
+  const router = useRouter();
+  const pathname = usePathname();
+  const openPath = useRef(pathname);
+  openPath.current = pathname;
+  const previous = useRef<{ workspaceId: string; files: FileSummary[] } | null>(null);
+  const [arrived, setArrived] = useState<ReadonlySet<string>>(new Set());
+
+  useEffect(() => {
+    if (files.status !== "ready") return;
+    const before = previous.current?.workspaceId === workspaceId ? previous.current.files : null;
+    previous.current = { workspaceId, files: files.data };
+    const arrivals = detectArrivals(before, files.data);
+    if (arrivals.length === 0) return;
+    const ids = arrivals.map((a) => a.file.id);
+    setArrived((current) => new Set([...current, ...ids]));
+    for (const arrival of arrivals) {
+      const href = `/w/${workspaceId}/files/${arrival.file.id}`;
+      if (openPath.current === href) continue;
+      toast(arrivalMessage(arrival), {
+        id: `arrival-${arrival.file.id}-${arrival.file.version}`,
+        action: { label: "Open", onClick: () => router.push(href) },
+      });
+    }
+    // Each batch clears itself; a later save of the same file re-adds it.
+    setTimeout(() => {
+      setArrived((current) => new Set([...current].filter((id) => !ids.includes(id))));
+    }, ARRIVAL_MS);
+  }, [files, workspaceId, router]);
+
+  return arrived;
 }

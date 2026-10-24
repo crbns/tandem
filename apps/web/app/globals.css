@@ -97,6 +97,24 @@
   }
 }
 
+/* An assistant's save lands: the row takes the agent tint and a verdigris
+   rule, then fades back over 8s (ARRIVAL_MS in lib/arrivals.ts). */
+@keyframes arrival {
+  from,
+  40% {
+    background-color: var(--agent-tint);
+    box-shadow: inset 3px 0 0 var(--agent);
+  }
+}
+@utility animate-arrival {
+  animation: arrival 8s ease-out forwards;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    background-color: var(--agent-tint);
+    box-shadow: inset 3px 0 0 var(--agent);
+  }
+}
+
 /* Catalogue label: condensed caps for column heads, codes and version tags. */
 @utility label-caps {
   font-family: var(--font-label);

@@ -8,6 +8,7 @@ import { displayId } from "@/lib/files";
 import { folderHref } from "@/lib/folders";
 import { formatAbsolute, formatRelative } from "@/lib/time";
 import { useNow } from "@/lib/useNow";
+import { useArrivedFiles } from "@/lib/api/useWorkspace";
 import { ActorBadge } from "@/components/common/ActorBadge";
 import { FileActions } from "./FileActions";
 import { FolderActions } from "./FolderActions";
@@ -51,6 +52,7 @@ interface FileTableProps {
 export function FileTable({ workspaceId, folders = [], files, selectedId, onSelect, onChanged }: FileTableProps) {
   const router = useRouter();
   const now = useNow();
+  const arrivedFiles = useArrivedFiles();
 
   return (
     <Table>
@@ -96,12 +98,18 @@ export function FileTable({ workspaceId, folders = [], files, selectedId, onSele
         {files.map((file) => {
           const href = fileHref(workspaceId, file.id);
           const selected = file.id === selectedId;
+          const arrived = arrivedFiles.has(file.id);
           return (
             <TableRow
               key={file.id}
               tabIndex={0}
               aria-selected={selected}
-              className={cn("cursor-pointer outline-none focus-visible:bg-accent", selected && "bg-accent")}
+              data-arrived={arrived || undefined}
+              className={cn(
+                "cursor-pointer outline-none focus-visible:bg-accent",
+                selected && "bg-accent",
+                arrived && "animate-arrival",
+              )}
               onClick={() => onSelect?.(file.id)}
               onFocus={() => onSelect?.(file.id)}
               onDoubleClick={() => router.push(href)}
