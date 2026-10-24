@@ -2172,3 +2172,112 @@ describe("restore revision (#26)", () => {
     expect(await alex.query(api.files.getFileVersions, { fileId: file.id })).toHaveLength(1);
   });
 });
+
+describe("sync brief and server instructions", () => {
+  /** A workspace with an active and a superseded decision, an open and a resolved question, and a pending goal. */
+  async function seeded() {
+    const s = await setup();
+    const { t, alex, sam, workspaceId } = s;
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const tool = async (name: string, args: Record<string, unknown> = {}) => {
+      const result = await callTool(t, apiKey, name, args);
+      expect(result.isError).toBeUndefined();
+      return result.structuredContent;
+    };
+    const decide = async (text: string) => {
+      const { context_version } = await tool("sync_workspace");
+      await alex.mutation(api.context.updateContextField, { workspaceId, field: "decision", proposedValue: text, sourceFileIds: [], expectedVersion: context_version });
+    };
+    await decide("Old pricing");
+    const old = (await tool("sync_workspace")).context.decisions[0];
+    const replacement = (await tool("propose_context_change", {
+      field: "decisions", proposed_value: "Usage pricing", rationale: "Research", supersedes: old.id,
+    })).proposal;
+    await alex.mutation(api.context.decideContextProposal, { proposalId: replacement.id, decision: "approved" });
+    const blocker = (await tool("propose_context_change", {
+      field: "open_questions", proposed_value: "Who signs off on launch?", rationale: "Blocks launch",
+    })).proposal;
+    await tool("propose_context_change", { field: "open_questions", proposed_value: "Logo color?", rationale: "Design" });
+    const answered = (await tool("sync_workspace")).context;
+    const logo = answered.open_questions.find((q: { text: string }) => q.text === "Logo color?");
+    await tool("propose_context_change", {
+      field: "open_questions", operation: "resolve", entry_id: logo.id,
+      expected_version: (await tool("sync_workspace")).context_version, rationale: "Blue",
+    });
+    const goal = (await tool("propose_context_change", {
+      field: "goal", proposed_value: "Ship the beta", rationale: "Kickoff",
+    })).proposal;
+    const doc = await tool("create_document", { name: "plan.md", content: "# Plan" });
+    await tool("publish_work", { kind: "finding", title: "Pricing research", summary: "Long details ".repeat(20), file_ids: [doc.id] });
+    return { ...s, apiKey, tool, old, blocker, goal, doc };
+  }
+
+  it("puts a brief of decisions, blockers and recent changes first in the full result", async () => {
+    const { tool, old, blocker, goal, doc } = await seeded();
+    const sync = await tool("sync_workspace");
+    expect(Object.keys(sync)[0]).toBe("brief");
+    // Every existing field is still there.
+    for (const key of ["workspace", "context", "context_version", "pending_proposals", "changed_files", "files_truncated",
+      "recent_work", "work_truncated", "events", "events_truncated", "cursor"])
+      expect(sync).toHaveProperty(key);
+    const { brief } = sync;
+    expect(brief.active_decisions).toEqual([{ id: expect.any(String), text: "Usage pricing" }]);
+    expect(brief.active_decisions[0].id).not.toBe(old.id);
+    expect(brief.blockers).toEqual({
+      open_questions: [{ id: expect.any(String), text: "Who signs off on launch?" }],
+      pending_approvals: [{ id: goal.id, field: "goal", proposed_value: "Ship the beta" }],
+    });
+    expect(blocker.status).toBe("applied");
+    expect(brief.goal).toBe("");
+    expect(brief.changed_file_count).toBe(1);
+    // Newest first, at most BRIEF_LIMIT, with actor labels.
+    expect(brief.recent_changes.length).toBeLessThanOrEqual(10);
+    expect(brief.recent_changes[0]).toMatchObject({ type: "work.published", actor: "Sam's claude assistant", at: expect.any(String) });
+    expect(brief.recent_changes[1]).toMatchObject({ type: "file.created", subject_id: doc.id });
+    const ats = brief.recent_changes.map((c: { at: string }) => c.at);
+    expect([...ats].sort().reverse()).toEqual(ats);
+    expect(brief.truncated).toBe(sync.events.length > 10);
+  });
+
+  it("returns a compact payload for detail brief whose cursor continues incrementally", async () => {
+    const { t, alex, tool, doc, workspaceId } = await seeded();
+    const compact = await tool("sync_workspace", { detail: "brief" });
+    expect(Object.keys(compact)).toEqual(["brief", "workspace", "context_version", "changed_files", "files_truncated",
+      "recent_work", "work_truncated", "events_truncated", "cursor"]);
+    expect(compact).not.toHaveProperty("context");
+    expect(compact).not.toHaveProperty("events");
+    expect(compact).not.toHaveProperty("pending_proposals");
+    expect(compact.changed_files).toEqual([{ id: doc.id, name: "plan.md", version: 1 }]);
+    expect(compact.recent_work).toEqual([{ id: expect.any(String), kind: "finding", title: "Pricing research" }]);
+    expect(compact.brief.blockers.pending_approvals).toHaveLength(1);
+    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(await tool("sync_workspace")).length / 2);
+
+    await alex.mutation(api.files.updateDocument, { fileId: doc.id, content: "# Plan v2", expectedVersion: 1 });
+    const next = await tool("sync_workspace", { since: compact.cursor, detail: "brief" });
+    expect(next.changed_files).toEqual([{ id: doc.id, name: "plan.md", version: 2 }]);
+    expect(next.brief.recent_changes).toMatchObject([{ type: "file.updated", subject_id: doc.id, actor: expect.any(String) }]);
+    expect(next.brief.changed_file_count).toBe(1);
+    expect(next.recent_work).toEqual([]);
+    // The compact cursor is an ordinary cursor: a full incremental sync sees nothing newer.
+    const full = await tool("sync_workspace", { since: next.cursor });
+    expect(full.events).toEqual([]);
+    expect(full.brief.recent_changes).toEqual([]);
+    const bad = await callTool(t, (await connect(alex, { workspaceId, client: "chatgpt" })).apiKey, "sync_workspace", { detail: "everything" });
+    expect(bad.isError).toBe(true);
+  });
+
+  it("tells assistants when to sync and how to share work back, in a short instructions string", async () => {
+    const { MCP_INSTRUCTIONS } = await import("./mcp");
+    for (const term of ["sync_workspace", "since", "cursor", "publish_work", "propose_context_change", "expected_version", "best effort", "untrusted"])
+      expect(MCP_INSTRUCTIONS).toContain(term);
+    expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
+    expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1200);
+
+    const { t, sam, workspaceId } = await setup();
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const init = await mcpRequest(t, apiKey, "initialize", {
+      protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" },
+    });
+    expect(init.body.result.instructions).toBe(MCP_INSTRUCTIONS);
+  });
+});
