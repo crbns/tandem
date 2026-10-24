@@ -1,11 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { CircleAlertIcon, CopyIcon, GitMergeIcon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { Theirs } from "@/lib/editor/saveMachine";
-import { sideBySide, type DiffLine } from "@/lib/editor/lineDiff";
 import { ActorBadge } from "@/components/common/ActorBadge";
+import { DiffView } from "@/components/common/DiffView";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +16,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { cn } from "@/lib/utils";
 
 interface ConflictPanelProps {
   mine: string;
@@ -25,39 +24,8 @@ interface ConflictPanelProps {
   onKeepMine: () => void;
 }
 
-function Column({
-  title,
-  lines,
-  tone,
-}: {
-  title: React.ReactNode;
-  lines: DiffLine[];
-  tone: "mine" | "theirs";
-}) {
-  return (
-    <div className="flex min-w-0 flex-col overflow-hidden rounded-md border">
-      <div className="flex items-center gap-2 border-b bg-muted/50 px-3 py-2 text-sm font-medium">{title}</div>
-      <pre className="max-h-[55vh] overflow-auto py-2 font-mono text-xs leading-relaxed">
-        {lines.length === 0 && <span className="px-3 text-muted-foreground italic">(empty)</span>}
-        {lines.map((line, i) => (
-          <div
-            key={i}
-            className={cn(
-              "whitespace-pre-wrap px-3",
-              line.changed && (tone === "mine" ? "bg-amber-100" : "bg-sky-100"),
-            )}
-          >
-            {line.text || " "}
-          </div>
-        ))}
-      </pre>
-    </div>
-  );
-}
-
 export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: ConflictPanelProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const diff = useMemo(() => sideBySide(mine, theirs.content), [mine, theirs.content]);
 
   async function copyMine() {
     try {
@@ -81,10 +49,11 @@ export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: Confl
         </AlertDescription>
       </Alert>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Column title="Your unsaved changes" lines={diff.mine} tone="mine" />
-        <Column
-          title={
+      <DiffView
+        left={{ title: "Your unsaved changes", content: mine }}
+        right={{
+          content: theirs.content,
+          title: (
             <>
               Version {theirs.version}
               {theirs.updatedBy && (
@@ -94,11 +63,9 @@ export function ConflictPanel({ mine, theirs, onDiscardMine, onKeepMine }: Confl
                 </>
               )}
             </>
-          }
-          lines={diff.theirs}
-          tone="theirs"
-        />
-      </div>
+          ),
+        }}
+      />
 
       <div className="flex flex-wrap gap-2">
         <Button onClick={onKeepMine}>

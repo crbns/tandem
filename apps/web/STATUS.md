@@ -40,3 +40,11 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | Never auto-retries; errors keep the draft | PASS | covered by `saveMachine.test.ts` |
 | UNAUTHENTICATED → draft stashed in sessionStorage, restored after sign-in | PASS (code + reducer tests) | not exercisable in mock mode; check in Phase 6 |
 | Tests pass | PASS | |
+
+## Gate 5: revision history
+
+| Check | Status | Notes |
+|---|---|---|
+| `brief.md` history: v1 agent, v2 human, labeled correctly | PASS | "Agent · Claude" / "Human · Alex"; head marked Current |
+| A Phase 4 save appears with the signed-in human as author | PASS | proposal.md v2/v4 "Human · Demo Human" between Claude's v1/v3/v5 |
+| View prior version read-only (rendered/raw) + compare with current | PASS | no restore in P0 |
