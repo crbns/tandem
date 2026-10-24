@@ -5,8 +5,8 @@ import { cn } from "@/lib/utils";
 
 /**
  * Identity plate: one fixed form for every actor, everywhere: mark, catalogue
- * label (AGENT / HUMAN), name, and for agents whose assistant it is.
- * Attribution only, never presence.
+ * label (AGENT / HUMAN), then the name. An agent write names the person whose
+ * assistant it was, "Alex via Claude". Attribution only, never presence.
  */
 export function ActorBadge({ actor, className }: { actor: Actor; className?: string }) {
   const isAgent = actor.actorType === "agent";
@@ -18,8 +18,8 @@ export function ActorBadge({ actor, className }: { actor: Actor; className?: str
         {isAgent ? "Agent" : "Human"}
       </span>
       <span className="truncate font-medium text-foreground">
-        {actorName(actor)}
-        {person && <span className="font-normal text-muted-foreground"> for {person}</span>}
+        {person ?? actorName(actor)}
+        {person && <span className="font-normal text-muted-foreground"> via {actorName(actor)}</span>}
       </span>
     </span>
   );

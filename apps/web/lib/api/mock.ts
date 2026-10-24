@@ -1,13 +1,16 @@
 import { TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
-import type {
-  Actor,
-  FileDetail,
-  FileSummary,
-  ProjectContext,
-  Revision,
-  Workspace,
-  WorkspaceInvite,
+import {
+  AGENT_CLIENTS,
+  type Actor,
+  type AgentConnection,
+  type ContextProposal,
+  type FileDetail,
+  type FileSummary,
+  type ProjectContext,
+  type Revision,
+  type Workspace,
+  type WorkspaceInvite,
 } from "./types";
 
 export const MOCK_WORKSPACE_ID = "ws_demo";
@@ -161,6 +164,36 @@ export function createMockApi({
     if (role !== "owner" && role !== "admin") throw new TandemApiError("FORBIDDEN");
   };
 
+  // Proposals keep the value they were based on (goal/scope only), like the
+  // backend's baseValue, so a mock approval can go stale.
+  type StoredProposal = ContextProposal & { baseValue?: string };
+  const proposals: StoredProposal[] = seedProposals(Date.now(), context);
+  type StoredConnection = AgentConnection & { workspaceId: string };
+  const connections: StoredConnection[] = [
+    {
+      id: "conn_alex_claude",
+      workspaceId: MOCK_WORKSPACE_ID,
+      userId: CLAUDE.userId,
+      userName: CLAUDE.userName,
+      client: "claude",
+      displayName: "Alex's Claude",
+      createdAt: Date.now() - 26 * 60 * MINUTE,
+      lastMcpActionAt: Date.now() - 3 * MINUTE,
+      lastSyncAt: Date.now() - 12 * MINUTE,
+    },
+  ];
+  const watchers = new Map<string, Set<() => void>>();
+  // Async like a backend push, so a watcher never runs inside the write itself.
+  const notify = (workspaceId: string) =>
+    watchers.get(workspaceId)?.forEach((listener) => queueMicrotask(listener));
+  const cloneProposal = ({ baseValue: _baseValue, ...p }: StoredProposal): ContextProposal => ({
+    ...p,
+    sourceFileIds: [...p.sourceFileIds],
+    createdBy: { ...p.createdBy },
+    decidedBy: p.decidedBy ? { ...p.decidedBy } : null,
+  });
+  const cloneConnection = ({ workspaceId: _workspaceId, ...c }: StoredConnection): AgentConnection => ({ ...c });
+
   const delay = () => {
     const [min, max] = latencyMs;
     const ms = min + Math.random() * (max - min);
@@ -186,6 +219,7 @@ export function createMockApi({
       updatedBy: actor,
     };
     file.revisions.push({ ...actor, version, createdAt: now, content });
+    notify(file.summary.workspaceId);
     return version;
   };
 
@@ -292,6 +326,7 @@ export function createMockApi({
           updatedBy: actor,
         },
       });
+      notify(workspaceId);
       return { id, version: 1 };
     },
 
@@ -344,8 +379,157 @@ export function createMockApi({
         : null;
     },
 
+    async listProposals(workspaceId, status) {
+      await delay();
+      membersFor(workspaceId);
+      return proposals
+        .filter((p) => p.workspaceId === workspaceId && (!status || p.status === status))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 100)
+        .map(cloneProposal);
+    },
+
+    async decideProposal({ id, workspaceId }, decision) {
+      await delay();
+      const proposal = proposals.find((p) => p.id === id && p.workspaceId === workspaceId);
+      if (!proposal) throw new TandemApiError("PROPOSAL_DECIDED");
+      requireAdmin(workspaceId);
+      if (proposal.status !== "pending") throw new TandemApiError("PROPOSAL_DECIDED");
+      const actor = getActor();
+      const now = Date.now();
+      const ctx = contexts.get(workspaceId);
+      if (decision === "approved") {
+        const current = proposal.field === "goal" ? ctx?.goal : proposal.field === "scope" ? ctx?.scope : undefined;
+        if (current !== undefined && current !== proposal.baseValue) {
+          proposal.status = "stale";
+          notify(workspaceId);
+          throw new TandemApiError("VERSION_CONFLICT");
+        }
+        if (ctx) applyApproved(ctx, proposal, actor, now);
+      }
+      Object.assign(proposal, { status: decision, decidedBy: { ...actor }, decidedAt: now });
+      notify(workspaceId);
+    },
+
+    async createAgentConnection(workspaceId, { client, displayName }) {
+      await delay();
+      const userId = signedInUser();
+      membersFor(workspaceId);
+      if (!(AGENT_CLIENTS as readonly string[]).includes(client)) throw new TandemApiError("INVALID_INPUT");
+      const name = displayName?.trim();
+      if (name && name.length > 80) throw new TandemApiError("INVALID_INPUT");
+      const token = `tdm_${Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      const createdAt = Date.now();
+      const id = `conn_${nextId++}`;
+      connections.push({
+        id, workspaceId, userId, userName: getActor().userName, client, createdAt,
+        ...(name ? { displayName: name } : {}),
+      });
+      return { connectionId: id, token, createdAt };
+    },
+
+    async listAgentConnections(workspaceId) {
+      await delay();
+      const userId = signedInUser();
+      const role = membersFor(workspaceId).get(userId);
+      const seesAll = role === "owner" || role === "admin";
+      return connections
+        .filter((c) => c.workspaceId === workspaceId && (seesAll || c.userId === userId))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(cloneConnection);
+    },
+
+    async revokeAgentConnection(connectionId) {
+      await delay();
+      const userId = signedInUser();
+      const connection = connections.find((c) => c.id === connectionId);
+      if (!connection) throw new TandemApiError("FORBIDDEN");
+      if (connection.userId !== userId) requireAdmin(connection.workspaceId);
+      connection.revokedAt ??= Date.now();
+    },
+
+    watchWorkspace(workspaceId, onChange) {
+      const listeners = watchers.get(workspaceId) ?? new Set();
+      watchers.set(workspaceId, listeners);
+      listeners.add(onChange);
+      return () => listeners.delete(onChange);
+    },
+
     __simulateExternalEdit(fileId, content, actor) {
       commit(getFile(fileId), content, actor);
     },
   };
+}
+
+function seedProposals(now: number, context: ProjectContext): Array<ContextProposal & { baseValue?: string }> {
+  const base = { workspaceId: MOCK_WORKSPACE_ID, decidedBy: null, decidedAt: null, status: "pending" as const };
+  return [
+    {
+      ...base,
+      id: "proposal_goal",
+      field: "goal",
+      proposedValue: "Ship the Tandem P0 demo, plus a recorded fallback video, by Saturday night.",
+      rationale: "Live demos fail on venue Wi-Fi. proposal.md now lists a recorded fallback as a deliverable.",
+      sourceFileIds: ["file_proposal"],
+      createdBy: { ...CLAUDE },
+      createdAt: now - 8 * MINUTE,
+      baseValue: context.goal,
+    },
+    {
+      ...base,
+      id: "proposal_decision",
+      field: "decision",
+      proposedValue: "Demo ChatGPT as the second client, read-only",
+      rationale: "ChatGPT Pro only gets read-only MCP; the brief needs two clients and Claude covers writes.",
+      sourceFileIds: ["file_brief"],
+      createdBy: { ...CLAUDE },
+      createdAt: now - 20 * MINUTE,
+    },
+    {
+      // Based on an older scope, so approving it reports that the context moved on.
+      ...base,
+      id: "proposal_scope",
+      field: "scope",
+      proposedValue: "One workspace, one shared text file, edited only through MCP.",
+      rationale: "Drafted before the team agreed the dashboard edits files too.",
+      sourceFileIds: [],
+      createdBy: { ...ALEX },
+      createdAt: now - 70 * MINUTE,
+      baseValue: "One workspace and a shared text file.",
+    },
+    {
+      ...base,
+      id: "proposal_constraint",
+      field: "constraint",
+      proposedValue: "No agent-to-agent messaging",
+      rationale: "Cut from scope on purpose; assistants meet only through files and context.",
+      sourceFileIds: [],
+      createdBy: { ...CLAUDE },
+      createdAt: now - 3 * 60 * MINUTE,
+      status: "approved",
+      decidedBy: { ...ALEX },
+      decidedAt: now - 2 * 60 * MINUTE,
+    },
+  ];
+}
+
+function applyApproved(ctx: ProjectContext, proposal: ContextProposal, actor: Actor, now: number) {
+  switch (proposal.field) {
+    case "goal":
+      Object.assign(ctx, { goal: proposal.proposedValue, approvedBy: { ...actor }, approvedAt: now });
+      break;
+    case "scope":
+      ctx.scope = proposal.proposedValue;
+      break;
+    case "constraint":
+      ctx.constraints = [...ctx.constraints, proposal.proposedValue];
+      break;
+    case "decision":
+      ctx.decisions = [...ctx.decisions, proposal.proposedValue];
+      break;
+    // The dashboard's context view has no ownership or open-questions section yet.
+    default:
+      break;
+  }
+  ctx.version += 1;
 }

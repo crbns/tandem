@@ -1,4 +1,9 @@
 import type {
+  AgentClient,
+  AgentConnection,
+  ContextProposal,
+  NewAgentConnection,
+  ProposalStatus,
   CreateFileInput,
   FileDetail,
   FileSummary,
@@ -40,4 +45,29 @@ export interface TandemApi {
   getRevision(fileId: string, version: number): Promise<Revision | null>;
   /** The approved project context, or null when nothing has been approved yet. */
   getContext(workspaceId: string): Promise<ProjectContext | null>;
+  /** Newest first, at most 100. Every member may read them. */
+  listProposals(workspaceId: string, status?: ProposalStatus): Promise<ContextProposal[]>;
+  /**
+   * Owner/admin humans only. Rejects with VERSION_CONFLICT when the field the
+   * proposal was based on changed since (the backend marks it stale), and with
+   * PROPOSAL_DECIDED when someone else decided it first.
+   */
+  decideProposal(
+    proposal: Pick<ContextProposal, "id" | "workspaceId">,
+    decision: "approved" | "rejected",
+  ): Promise<void>;
+  /** Only the signed-in person's own connection; the token is returned once. */
+  createAgentConnection(
+    workspaceId: string,
+    input: { client: AgentClient; displayName?: string },
+  ): Promise<NewAgentConnection>;
+  /** The caller's own connections; owners/admins see everyone's. Never includes tokens. */
+  listAgentConnections(workspaceId: string): Promise<AgentConnection[]>;
+  revokeAgentConnection(connectionId: string): Promise<void>;
+  /**
+   * Calls `onChange` whenever a new workspace event lands (a file saved through
+   * MCP, a proposal, an approval), so lists can refetch without a reload.
+   * Returns an unsubscribe function.
+   */
+  watchWorkspace(workspaceId: string, onChange: () => void): () => void;
 }

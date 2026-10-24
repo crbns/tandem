@@ -1,7 +1,8 @@
 # Build from the repo root:
 #   docker build -f apps/web/Dockerfile \
 #     --build-arg NEXT_PUBLIC_CONVEX_URL=https://<deployment>.convex.cloud \
-#     --build-arg NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=<optional> -t web .
+#     --build-arg NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=<optional> \
+#     --build-arg NEXT_PUBLIC_MCP_URL=<optional, e.g. https://mcp.example.com> -t web .
 FROM node:24-alpine AS base
 RUN apk add --no-cache libc6-compat
 RUN corepack enable
@@ -41,9 +42,13 @@ COPY --from=prepare /app/out/full/ .
 # NEXT_PUBLIC_* values are inlined into the client bundle at build time.
 ARG NEXT_PUBLIC_CONVEX_URL
 ARG NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=
+# MCP server base URL shown on the Assistants page (the UI appends /mcp). Optional:
+# unset, the page shows a <MCP_URL> placeholder.
+ARG NEXT_PUBLIC_MCP_URL=
 RUN test -n "$NEXT_PUBLIC_CONVEX_URL" || (echo "NEXT_PUBLIC_CONVEX_URL build arg is required" >&2; exit 1)
 ENV NEXT_PUBLIC_CONVEX_URL=$NEXT_PUBLIC_CONVEX_URL
 ENV NEXT_PUBLIC_DEFAULT_WORKSPACE_ID=$NEXT_PUBLIC_DEFAULT_WORKSPACE_ID
+ENV NEXT_PUBLIC_MCP_URL=$NEXT_PUBLIC_MCP_URL
 # Production images never ship the mock backend or its dev controls.
 ENV NEXT_PUBLIC_USE_MOCKS=false
 RUN pnpm turbo run build --filter=web

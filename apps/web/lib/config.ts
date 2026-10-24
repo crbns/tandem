@@ -3,3 +3,5 @@ export const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 export const CONVEX_URL = process.env.NEXT_PUBLIC_CONVEX_URL ?? "";
 export const DEFAULT_WORKSPACE_ID =
   process.env.NEXT_PUBLIC_DEFAULT_WORKSPACE_ID ?? "";
+/** Public base URL of Tandem's MCP server (no trailing /mcp). Shown in assistant setup steps. */
+export const MCP_URL = process.env.NEXT_PUBLIC_MCP_URL ?? "";

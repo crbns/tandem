@@ -35,6 +35,14 @@ describe("normalizeError", () => {
     },
   );
 
+  it("maps NAME_EXISTS from createDocument and keeps the existing file's version", () => {
+    const err = normalizeError(
+      new ConvexError({ code: "NAME_EXISTS", fileId: "file_1", name: "proposal.md", currentVersion: 2 }),
+    );
+    expect(err.code).toBe("NAME_EXISTS");
+    expect(err.details.currentVersion).toBe(2);
+  });
+
   it("maps a ConvexError whose data is the bare code string", () => {
     expect(normalizeError(new ConvexError("VERSION_CONFLICT")).code).toBe("VERSION_CONFLICT");
   });

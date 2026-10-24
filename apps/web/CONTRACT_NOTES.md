@@ -1,79 +1,69 @@
 # Contract notes (web ↔ Convex backend)
 
-The dashboard calls Convex directly. PR #10's adapter maps its UI methods to the generated backend references below. The MCP server remains mock-only and is not yet a Convex caller.
+The dashboard calls Convex directly through the `TandemApi` boundary (`lib/api/tandemApi.ts`). `lib/api/convex.ts` maps each method to a generated `@repo/backend` function reference; `lib/api/mock.ts` implements the same interface in memory. Components never import Convex.
 
-## Backend functions
+All arguments use camelCase; timestamps are epoch milliseconds; IDs are Convex IDs. Fixtures in `test/convexAdapter.test.ts` and `test/approvalsAndConnections.test.ts` are typed from the generated function types, so a backend shape change fails `check-types`.
 
-All arguments use camelCase; timestamps are epoch milliseconds. IDs are Convex IDs.
+## Function map
 
-| Dashboard operation | Convex reference | Arguments | Return |
-| --- | --- | --- | --- |
-| List workspaces | `workspaces.listWorkspaces` | `{}` | Workspaces for the signed-in user |
-| List files | `files.listFiles` | `{ workspaceId, folderId?, query?, paginationOpts }` | `{ page, isDone, continueCursor }` |
-| Create file | `files.createDocument` | `{ workspaceId, parentId?, name, mimeType, content }` | Created file metadata |
-| Read file | `files.readFile` | `{ fileId }` | `{ file, content }` |
-| Update file | `files.updateDocument` | `{ fileId, expectedVersion, content }` | Updated file metadata |
-| List revision history | `files.getFileVersions` | `{ fileId, limit? }` | Metadata, newest first |
-| Read one revision | `files.getFileRevision` | `{ fileId, version }` | Revision content and metadata, or `null` |
-| Read approved context | `workspaces.getWorkspaceContext` | `{ workspaceId }` | Context or `null` |
-
-## Current backend
-
-The dashboard imports the generated API through the declared `@repo/backend` workspace dependency. Convex Auth and the functions below are connected in real mode; the in-memory mock implements the same TandemApi interface.
-
-`workspaceId` is required for both listing and creating files. The caller must
-select the intended workspace; the backend never guesses from memberships.
-
-Revision-history results omit document bodies to keep reads bounded. Fetch a
-selected revision's body with `files.getFileRevision`.
-
-## Attribution and errors
-
-Convex stores actors as `{ type, userId?, agentConnectionId?, label, client?, userName? }`.
-The dashboard adapter maps this to its frontend `Actor` shape. MCP's development
-identities are not Convex identities and must not be used for production writes.
-
-Every business error is a `ConvexError({ code, ... })`. The frontend normalizes
-backend-specific validation and membership codes into its stable UI error codes.
-A `VERSION_CONFLICT` may include `currentVersion`, `currentContent`, and
-`updatedBy` (the stored Convex actor shape).
-
-## Context approvals
-
-Proposals to change the goal or scope record the field value they were based on.
-An approval becomes stale only if that same field changed; independent pending
-proposals remain approvable. Legacy proposals without a base revision are marked
-stale when approved. Append-only proposals (constraints, decisions, ownership,
-and open questions) do not conflict with unrelated updates.
-
-| Dashboard method | Convex function | Args / return |
+| Dashboard method | Convex function | Args → return |
 |---|---|---|
 | `listWorkspaces()` | `workspaces:listWorkspaces` | `{}` → `{ id, name, role }[]` |
 | `createWorkspace(name)` | `workspaces:createWorkspace` | `{ name }` → workspace ID |
-| `listFiles(workspaceId)` | `files:listFiles` | `{ workspaceId, paginationOpts: { numItems: 100, cursor } }` → `{ page, isDone, continueCursor }` |
-| `createFile(workspaceId, input)` | `files:createDocument` | `{ workspaceId, name, mimeType, content }` → `{ id, version }` |
-| `readFile(fileId)` | `files:readFile` | `{ fileId }` → `{ file, content }`, mapped to FileDetail |
-| `updateFileContent(fileId, update)` | `files:updateDocument` | `{ fileId, expectedVersion, content }` → file metadata |
-| `listRevisions(fileId)` | `files:getFileVersions` | `{ fileId, limit: 100 }` → newest-first revisions |
-| `getContext(workspaceId)` | `workspaces:getWorkspaceContext` | `{ workspaceId }` → approved context or null |
 | `createInvite(workspaceId, role)` | `workspaces:createWorkspaceInvite` | `{ workspaceId, role }` → `{ inviteId, token, expiresAt }`; owner/admin only |
-| `acceptInvite(token)` | `workspaces:acceptWorkspaceInvite` | `{ token }` → `{ workspaceId }`; signed-in user |
-| `listInvites(workspaceId)` | `workspaces:listWorkspaceInvites` | `{ workspaceId }` → newest 100 safe metadata; owner/admin only |
-| `revokeInvite(inviteId)` | `workspaces:revokeWorkspaceInvite` | `{ inviteId }` → null; owner/admin of invite workspace |
+| `acceptInvite(token)` | `workspaces:acceptWorkspaceInvite` | `{ token }` → `{ workspaceId }` |
+| `listInvites(workspaceId)` | `workspaces:listWorkspaceInvites` | `{ workspaceId }` → newest 100, safe metadata; owner/admin only |
+| `revokeInvite(inviteId)` | `workspaces:revokeWorkspaceInvite` | `{ inviteId }` → null |
+| `listFiles(workspaceId)` | `files:listFiles` | `{ workspaceId, paginationOpts: { numItems: 100, cursor } }` → `{ page, isDone, continueCursor }`, every page followed |
+| `createFile(workspaceId, input)` | `files:createDocument` | `{ workspaceId, name, mimeType, content }` → file metadata |
+| `readFile(fileId)` | `files:readFile` | `{ fileId }` → `{ file, content }` |
+| `updateFileContent(fileId, update)` | `files:updateDocument` | `{ fileId, expectedVersion, content }` → file metadata, or `VERSION_CONFLICT` |
+| `listRevisions(fileId)` | `files:getFileVersions` | `{ fileId, limit: 100 }` → newest-first metadata, no bodies |
+| `getRevision(fileId, version)` | `files:getFileRevision` | `{ fileId, version }` → revision with content, or null |
+| `getContext(workspaceId)` | `workspaces:getWorkspaceContext` | `{ workspaceId }` → approved context or null |
+| `listProposals(workspaceId, status?)` | `context:getApprovals` | `{ workspaceId, status? }` → newest 100 proposals; any member |
+| `decideProposal(proposal, decision)` | `context:decideContextProposal` (+ `context:getApprovals` with `status: "stale"` after an approval) | `{ proposalId, decision }` → null |
+| `createAgentConnection(workspaceId, input)` | `agentConnections:createAgentConnection` | `{ workspaceId, client, displayName? }` → `{ connectionId, token, createdAt }` |
+| `listAgentConnections(workspaceId)` | `agentConnections:listAgentConnections` | `{ workspaceId }` → caller's own; owner/admin see all. Never a token or hash |
+| `revokeAgentConnection(connectionId)` | `agentConnections:revokeAgentConnection` | `{ connectionId }` → null; the connection's person or an owner/admin |
+| `watchWorkspace(workspaceId, onChange)` | `workspaces:getWorkspaceInfo` (reactive `watchQuery`) | fires `onChange` when the newest of `recentEvents` changes |
 
-Invites replace `addWorkspaceMember`: no verified-email dependency. Raw tokens are returned once, hashes remain private, expiry is seven days, and consumption is atomic with membership/event creation. Existing members do not consume an unused invite. Invalid/expired/revoked/used errors map to distinct `INVITE_*` error codes and user copy. The invite route preserves `/invite/<token>` through sign-in using `safeNext`.
+`workspaceId` is always explicit: the backend never guesses a workspace from memberships.
 
-Approving a proposal requires an owner/admin human session. Agent-bound Convex
-identities must carry a signed `agentConnectionId` claim and receive
-`APPROVAL_REQUIRED`. The future MCP OAuth adapter must issue that claim; until
-then MCP remains disconnected from Convex.
+## Attribution
 
-## Authentication and membership
+Convex stores actors as `{ type: "human" | "agent" | "system", userId?, agentConnectionId?, label, client?, userName? }`. `toActor` (exported from `lib/api/convex.ts`) maps them to the dashboard `Actor`:
 
-The current Password provider does not send verification email. Workspace
-owners/admins create single-use token invites; signed-in recipients accept
-them without relying on email as proof of account ownership.
+- **agent** → `{ actorType: "agent", userId, userName, agentName: label, agentClient: client }`. `agentConnectionId` is never surfaced (issue #12 fix). `client` is omitted when the backend didn't record one.
+- **human** → `{ actorType: "human", userId, userName: userName ?? label }`.
+- **system** → rendered as a human-shaped actor named by its label (e.g. "Tandem"), never as an agent.
+
+The identity plate (`components/common/ActorBadge.tsx`) renders an agent write as **"Alex via Claude"**: the person, then the client's product name (`lib/actors.ts` maps `claude`/`chatgpt`/`gemini`; other clients fall back to the label). Human writes show the person only. This applies to the file register, custody record, file header, save bar, conflict panel and revision history.
+
+## Approvals
+
+- Every member can read proposals; only owner/admin humans see Approve/Reject (`lib/proposals.ts` `canDecideProposals`). The backend enforces this independently: `decideContextProposal` calls `requireHumanSession` (agent-bound identities get `APPROVAL_REQUIRED`) and rejects non-owner/admin members with `FORBIDDEN`.
+- **Stale approvals.** Goal/scope proposals record the value they were based on. When that field changed since, the backend marks the proposal `stale` and returns `null` instead of throwing. The adapter therefore re-reads `getApprovals({ status: "stale" })` after an approval and rejects with `VERSION_CONFLICT` if the proposal is there; the approvals screen shows it as contested (ochre) with an explanation. If the backend later throws `VERSION_CONFLICT` or `PROPOSAL_STALE` directly, that maps to the same code and the extra read becomes a no-op. Append-only proposals (constraint, decision, ownership, open question) don't go stale.
+- `PROPOSAL_ALREADY_DECIDED` and `PROPOSAL_NOT_FOUND` map to the dashboard's `PROPOSAL_DECIDED` ("Already decided").
+
+## Agent connections
+
+- Tokens are `tdm_` + 256 random bits. The backend stores only the SHA-256 hash and returns the plaintext once from `createAgentConnection`; the dialog shows it once with a copy button and a Claude Code command: `claude mcp add --transport http tandem <NEXT_PUBLIC_MCP_URL>/mcp --header "Authorization: Bearer <token>"`. The token lives only in that dialog's state and is gone when it closes.
+- Connections are created for the signed-in person only. The list shows **Last MCP action** and **Last sync** as relative times ("never" when unset). There is no "online" state anywhere.
+- Revoke asks for confirmation; history written through the connection is kept.
+
+## Freshness
+
+`watchWorkspace` holds one bounded reactive subscription (`getWorkspaceInfo`, newest 20 events) per mounted list. Every commit, proposal, decision and connect/revoke records a workspace event, so an assistant's new file or save shows up in the file list, approved goal and pending approvals without a reload. Lists also refetch on window focus. Read-only MCP calls update `lastMcpActionAt` without an event, so those times refresh on focus or Refresh.
+
+## Errors
+
+Every business error is a `ConvexError({ code, ... })`. `lib/api/errors.ts` normalizes backend codes into stable UI codes (e.g. `INVALID_NAME` → `INVALID_INPUT`, `WORKSPACE_NOT_FOUND` → `FORBIDDEN`). A `VERSION_CONFLICT` on save may include `currentVersion`, `currentContent` and `updatedBy` (Convex actor shape); the save machine keeps the draft and shows the conflict panel without retrying.
+
+## Invites and authentication
+
+The Password provider sends no verification email. Owners/admins create single-use invite links (seven-day expiry, hash stored, atomic consumption); signed-in recipients accept them. `/invite/<token>` survives sign-in via `safeNext`. Invalid/expired/revoked/used invites map to distinct `INVITE_*` codes.
 
 ## Paginated file lists
 
-The Convex adapter follows every `files:listFiles` cursor and maps all page metadata before returning a `FileSummary[]`. It rejects `LIST_LIMIT_EXCEEDED` at 10,000 files / 100 pages (and on repeated or empty nonterminal cursors), so it never silently returns an incomplete list. Backend page sizes are 1–200. Optional `query` uses the `search_name` index with required workspace equality and optional parent equality; search matches terms/prefixes, not arbitrary substrings.
+The adapter follows every `files:listFiles` cursor and rejects with `LIST_LIMIT_EXCEEDED` past 10,000 files / 100 pages (or on a repeated or empty nonterminal cursor), so it never returns a silently partial list.

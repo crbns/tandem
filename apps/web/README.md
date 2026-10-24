@@ -1,6 +1,6 @@
 # Tandem web dashboard (`apps/web`)
 
-Next.js (App Router) dashboard where people sign in, browse workspace files, edit Markdown/text with version-aware saves, and read revision history. It talks to Convex directly through one-shot queries and mutations. The same Convex functions back the MCP server, so permission checks, `expectedVersion` locking, and revision inserts live in the backend, not here.
+Next.js (App Router) dashboard where people sign in, browse workspace files, edit Markdown/text with version-aware saves, and read revision history. It talks to Convex directly through one-shot queries and mutations, plus one small reactive subscription that tells lists to refetch when something lands in the workspace. The same Convex functions back the MCP server, so permission checks, `expectedVersion` locking, and revision inserts live in the backend, not here.
 
 - Gate status: [`STATUS.md`](STATUS.md)
 - Backend contract and requests for Person 2: [`CONTRACT_NOTES.md`](CONTRACT_NOTES.md)
@@ -40,6 +40,7 @@ Sign in with a user Person 2 seeded. Convex Auth secrets (`JWT_PRIVATE_KEY`, `JW
 | `NEXT_PUBLIC_CONVEX_URL` | real mode | Inlined at **build** time |
 | `NEXT_PUBLIC_DEFAULT_WORKSPACE_ID` | no | Skip workspace lookup after sign-in |
 | `NEXT_PUBLIC_USE_MOCKS` | no | `true` = in-memory backend + fake session. Forced to `false` in the Docker image |
+| `NEXT_PUBLIC_MCP_URL` | no | Public base URL of the MCP server (e.g. `https://mcp.<domain>`). Used in the "Connect an assistant" setup command; inlined at **build** time |
 
 ## Scripts
 
@@ -53,11 +54,11 @@ pnpm --filter web build
 ## Layout
 
 ```
-app/                     routes: /, /sign-in, /w/[workspaceId], …/files/[fileId], …/history
+app/                     routes: /, /sign-in, /invite/[token], /w/[workspaceId], …/approvals, …/assistants, …/files/[fileId], …/history
 proxy.ts                 Convex Auth route protection (Next 16's name for middleware; no-op in mock mode)
 lib/api/                 TandemApi interface, Convex + mock adapters, error normalization
 lib/editor/saveMachine   pure save/conflict reducer: never discards a draft, never auto-retries
-components/              shell, file table, editor, conflict panel, history
+components/              shell, file table, editor, conflict panel, history, approvals, assistant connections
 deploy/                  compose + Caddy snippets for Vultr
 ```
 

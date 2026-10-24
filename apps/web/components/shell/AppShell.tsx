@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
-import { ChevronDownIcon, FileTextIcon, LogOutIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, FileTextIcon, LogOutIcon, StampIcon, type LucideIcon } from "lucide-react";
 import { useSession } from "@/lib/auth/useSession";
 import { signOutAndLeave } from "@/lib/auth/signOutAndLeave";
 import { countDraftStashes } from "@/lib/editor/draftStash";
@@ -41,7 +41,40 @@ interface AppShellProps {
 function crumbFor(pathname: string, filesHref: string): string {
   if (pathname.endsWith("/history")) return "History";
   if (pathname.startsWith(`${filesHref}/files/`)) return "File";
+  if (pathname.startsWith(`${filesHref}/approvals`)) return "Approvals";
+  if (pathname.startsWith(`${filesHref}/assistants`)) return "Assistants";
   return "Files";
+}
+
+function NavItem({
+  href,
+  icon: Icon,
+  label,
+  active,
+  current,
+  children,
+}: {
+  href: string;
+  icon: LucideIcon;
+  label: string;
+  active: boolean;
+  current: boolean;
+  children?: ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      aria-current={current ? "page" : undefined}
+      className={cn(
+        "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium transition-colors",
+        active ? "bg-archive-tint text-archive" : "text-foreground hover:bg-accent",
+      )}
+    >
+      <Icon className="size-4" />
+      {label}
+      {children}
+    </Link>
+  );
 }
 
 export function AppShell({ workspaceId, workspaceName, fileCount = null, children }: AppShellProps) {
@@ -65,20 +98,25 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
           </div>
         </div>
         <nav aria-label="Workspace" className="flex flex-col gap-0.5 px-3">
-          <Link
-            href={filesHref}
-            aria-current={pathname === filesHref ? "page" : undefined}
-            className={cn(
-              "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium transition-colors",
-              onFiles ? "bg-archive-tint text-archive" : "text-foreground hover:bg-accent",
-            )}
-          >
-            <FileTextIcon className="size-4" />
-            Files
+          <NavItem href={filesHref} icon={FileTextIcon} label="Files" active={onFiles} current={pathname === filesHref}>
             {fileCount !== null && (
               <span className="label-caps ml-auto font-normal text-muted-foreground">{fileCount}</span>
             )}
-          </Link>
+          </NavItem>
+          <NavItem
+            href={`${filesHref}/approvals`}
+            icon={StampIcon}
+            label="Approvals"
+            active={pathname.startsWith(`${filesHref}/approvals`)}
+            current={pathname === `${filesHref}/approvals`}
+          />
+          <NavItem
+            href={`${filesHref}/assistants`}
+            icon={BotIcon}
+            label="Assistants"
+            active={pathname.startsWith(`${filesHref}/assistants`)}
+            current={pathname === `${filesHref}/assistants`}
+          />
         </nav>
         <div className="mt-auto border-t px-4 py-4 text-xs leading-[1.125rem] text-muted-foreground">
           <p className="mb-2 font-semibold text-foreground">Assistants</p>
@@ -135,6 +173,16 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
                   <div className="truncate text-xs text-muted-foreground">{user?.email}</div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
+                {/* The rail is hidden on small screens; these keep its sections reachable. */}
+                <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/approvals`)}>
+                  <StampIcon />
+                  Approvals
+                </DropdownMenuItem>
+                <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/assistants`)}>
+                  <BotIcon />
+                  Assistants
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="md:hidden" />
                 <DropdownMenuItem
                   onSelect={() => {
                     const unsaved = countDraftStashes();

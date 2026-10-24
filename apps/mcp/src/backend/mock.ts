@@ -13,6 +13,7 @@ import { nameKey, storedName } from "../names.js";
 import type {
   Actor,
   AgentConnection,
+  WorkspaceMember,
   ApplyContextChangeInput,
   Attribution,
   ContextField,
@@ -175,6 +176,21 @@ export class MockBackend implements TandemBackend {
       member_count: ws.members.size,
       is_default: i === 0,
     }));
+  }
+
+  async listMembers(
+    actor: Actor,
+  ): Promise<{ members: WorkspaceMember[]; truncated: boolean }> {
+    // The default workspace is the actor's first one (see listWorkspaces).
+    const ws = [...this.workspaces.values()].find((w) =>
+      w.members.has(actor.user_id),
+    );
+    const members = [...(ws?.members ?? [])].map(([user_id, role]) => ({
+      user_id,
+      name: mockName(user_id),
+      role,
+    }));
+    return { members: members.slice(0, 100), truncated: members.length > 100 };
   }
 
   async getConnection(actor: Actor): Promise<AgentConnection> {
@@ -518,7 +534,8 @@ export class MockBackend implements TandemBackend {
       }
       this.applyToContext(
         proposal.workspace_id,
-        proposal.field,
+        // Mock proposals only come from the MCP tool, which never sends open_questions.
+        proposal.field as ContextField,
         proposal.proposed_value,
         actor,
         proposal.source_ids,
@@ -578,7 +595,8 @@ export class MockBackend implements TandemBackend {
         context[field] = value as string;
         break;
       case "constraints":
-        context.constraints = [...(value as string[])];
+        // Same as Convex: one constraint per proposal, appended on approval.
+        context.constraints = [...context.constraints, (value as string).trim()];
         break;
       case "decisions":
         context.decisions.push({
@@ -626,9 +644,9 @@ export class MockBackend implements TandemBackend {
           throw fail("the decision text, as a non-empty string");
         return;
       case "constraints":
-        if (!Array.isArray(value) || !value.every(isNonEmptyString)) {
+        if (!isNonEmptyString(value)) {
           throw fail(
-            "the full new list of constraints, as an array of non-empty strings",
+            "one new constraint, as a non-empty string: approval appends it, and existing constraints can't be removed through a proposal",
           );
         }
         return;
@@ -775,15 +793,28 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+/** Mock users have no profile: "user_alex" is shown as "Alex". */
+function mockName(userId: string): string {
+  const base = userId.replace(/^user_/, "");
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
 function connectionKey(actor: Actor): string {
   return JSON.stringify([actor.user_id, actor.client]);
 }
 
+/** Mock connections are keyed by person and client (see connectionKey). */
 function attribution(actor: Actor): Attribution {
   return {
     actor_type: actor.actor_type,
     user_id: actor.user_id,
     client: actor.client,
+    ...(actor.actor_type === "agent"
+      ? {
+          agent_connection_id: `conn_${actor.user_id}_${actor.client}`,
+          label: `${actor.user_id}'s ${actor.client} assistant`,
+        }
+      : {}),
   };
 }
 

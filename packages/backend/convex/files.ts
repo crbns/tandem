@@ -1,13 +1,13 @@
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import type { Doc, Id } from "./_generated/dataModel";
+import type { Id } from "./_generated/dataModel";
+import { humanActor, requireMembership, requireUser } from "./lib/auth";
 import {
-  humanActor,
-  recordWorkspaceEvent,
-  requireMembership,
-  requireUser,
-} from "./lib/auth";
+  createDocumentCore,
+  toFileMetadata,
+  updateDocumentCore,
+} from "./lib/ops";
 
 const actorValidator = v.object({
   type: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
@@ -29,18 +29,7 @@ const fileValidator = v.object({
   updatedBy: actorValidator,
 });
 
-function toMetadata(file: Doc<"files">) {
-  return {
-    id: file._id,
-    workspaceId: file.workspaceId,
-    parentId: file.parentId ?? null,
-    name: file.name,
-    mimeType: file.mimeType,
-    version: file.version,
-    updatedAt: file.updatedAt,
-    updatedBy: file.updatedBy,
-  };
-}
+const toMetadata = toFileMetadata;
 
 async function getAuthorizedFile(
   ctx: Parameters<typeof requireUser>[0],
@@ -120,47 +109,11 @@ export const createDocument = mutation({
   },
   returns: fileValidator,
   handler: async (ctx, args) => {
-    const workspaceId = args.workspaceId;
-    const { user } = await requireMembership(ctx, workspaceId);
-    if (args.parentId) {
-      const folder = await ctx.db.get(args.parentId);
-      if (!folder || folder.workspaceId !== workspaceId)
-        throw new ConvexError({ code: "INVALID_PARENT_FOLDER" });
-    }
-    if (!args.name.trim()) throw new ConvexError({ code: "INVALID_NAME" });
-    const now = Date.now();
-    const actor = humanActor(user);
-    const fileId = await ctx.db.insert("files", {
-      workspaceId,
-      parentId: args.parentId,
-      name: args.name.trim(),
-      mimeType: args.mimeType,
-      content: args.content,
-      version: 1,
-      createdBy: actor,
-      updatedBy: actor,
-      revision: 1,
-      createdAt: now,
-      updatedAt: now,
+    const { user } = await requireMembership(ctx, args.workspaceId);
+    const file = await createDocumentCore(ctx, {
+      ...args,
+      actor: humanActor(user),
     });
-    await ctx.db.insert("file_revisions", {
-      workspaceId,
-      fileId,
-      version: 1,
-      content: args.content,
-      actor,
-      createdAt: now,
-    });
-    await recordWorkspaceEvent(ctx, {
-      workspaceId,
-      kind: "file.created",
-      entityType: "file",
-      entityId: fileId,
-      summary: `Created ${args.name.trim()}`,
-      actor,
-    });
-    const file = await ctx.db.get(fileId);
-    if (!file) throw new ConvexError({ code: "FILE_NOT_FOUND" });
     return toMetadata(file);
   },
 });
@@ -174,43 +127,13 @@ export const updateDocument = mutation({
   returns: fileValidator,
   handler: async (ctx, args) => {
     const file = await getAuthorizedFile(ctx, args.fileId);
-    if (file.version !== args.expectedVersion) {
-      throw new ConvexError({
-        code: "VERSION_CONFLICT",
-        currentVersion: file.version,
-        currentContent: file.content ?? null,
-        updatedBy: file.updatedBy,
-      });
-    }
     const user = await requireUser(ctx);
-    const actor = humanActor(user);
-    const now = Date.now();
-    const version = file.version + 1;
-    await ctx.db.patch(file._id, {
+    const updated = await updateDocumentCore(ctx, {
+      file,
       content: args.content,
-      version,
-      updatedBy: actor,
-      revision: file.revision + 1,
-      updatedAt: now,
+      expectedVersion: args.expectedVersion,
+      actor: humanActor(user),
     });
-    await ctx.db.insert("file_revisions", {
-      workspaceId: file.workspaceId,
-      fileId: file._id,
-      version,
-      content: args.content,
-      actor,
-      createdAt: now,
-    });
-    await recordWorkspaceEvent(ctx, {
-      workspaceId: file.workspaceId,
-      kind: "file.updated",
-      entityType: "file",
-      entityId: file._id,
-      summary: `Updated ${file.name} to revision ${version}`,
-      actor,
-    });
-    const updated = await ctx.db.get(file._id);
-    if (!updated) throw new ConvexError({ code: "FILE_NOT_FOUND" });
     return toMetadata(updated);
   },
 });

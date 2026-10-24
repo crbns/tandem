@@ -8,6 +8,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
     "test": "turbo run test",
+    "test:e2e": "pnpm --filter @repo/e2e test:e2e",
     "skill:zip": "sh skills/package.sh"
   },
   "devDependencies": {

@@ -92,3 +92,49 @@ export interface FileUpdate {
   expectedVersion: number;
   content: string;
 }
+
+/** Assistant apps a person can connect through MCP. */
+export const AGENT_CLIENTS = ["claude", "chatgpt", "gemini", "other"] as const;
+export type AgentClient = (typeof AGENT_CLIENTS)[number];
+
+/**
+ * One assistant a person connected to one workspace. Its token is only ever
+ * returned by `createAgentConnection`, once. Times are what the backend last
+ * saw over MCP; they never mean the assistant is "online".
+ */
+export interface AgentConnection {
+  id: string;
+  userId: string;
+  userName?: string;
+  client: string;
+  displayName?: string;
+  createdAt: number;
+  lastMcpActionAt?: number;
+  lastSyncAt?: number;
+  revokedAt?: number;
+}
+
+export interface NewAgentConnection {
+  connectionId: string;
+  /** Plaintext bearer token. Shown once; the backend only keeps its hash. */
+  token: string;
+  createdAt: number;
+}
+
+export type ContextField = "goal" | "scope" | "constraint" | "decision" | "ownership" | "open_question";
+export type ProposalStatus = "pending" | "approved" | "rejected" | "stale";
+
+/** A proposed change to the project context, waiting on (or decided by) a person. */
+export interface ContextProposal {
+  id: string;
+  workspaceId: string;
+  field: ContextField;
+  proposedValue: string;
+  rationale: string;
+  sourceFileIds: string[];
+  status: ProposalStatus;
+  createdBy: Actor;
+  createdAt: number;
+  decidedBy: Actor | null;
+  decidedAt: number | null;
+}

@@ -7,7 +7,7 @@ This document describes the integration boundary between the dashboard, MCP serv
 | Surface                             | Current implementation                                                                                 | Shared data?                                                                         |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
 | Dashboard (`apps/web`)              | Existing session/provider and `TandemApi` layers, backed by Convex Auth and generated Convex functions | Yes, uses `NEXT_PUBLIC_CONVEX_URL`                                                   |
-| MCP (`apps/mcp`)                    | Stateless Streamable HTTP, static development bearer tokens, `MockBackend`                             | No, mock state is process-local and resets on restart                                |
+| MCP (`apps/mcp`)                    | Stateless Streamable HTTP; `MockBackend` (dev tokens) by default, `ConvexBackend` with `TANDEM_BACKEND=convex` | Yes with `TANDEM_BACKEND=convex`: agent connection tokens verified by Convex (see "Agent path" below) |
 | Backend (`packages/backend/convex`) | Workspace membership, files, revisions, workspace context, proposals, approvals                        | Dashboard functions are authenticated; MCP has no Convex adapter or OAuth bridge yet |
 
 The dashboard supports sign-in, workspace selection and first-workspace creation, file listing and creation, text editing with optimistic version checks, revision history, and the approved goal. It uses bounded one-shot Convex calls through `TandemApi`; file lists refresh on window focus. It does not yet expose context proposal approvals. The existing MCP server exposes only `list_files`, `read_file`, `create_document`, and `update_document`.
@@ -30,11 +30,17 @@ Convex is the source of truth. Use the backend functions under `packages/backend
 | Create text document     | `api.files.createDocument`           | Creates file version 1 and a workspace event atomically                                |
 | Update text document     | `api.files.updateDocument`           | Requires `expectedVersion`; stale writes throw `VERSION_CONFLICT`                      |
 | File history             | `api.files.getFileVersions`          | Bounded by `limit` (maximum 100)                                                       |
-| Propose context change   | `api.context.proposeContextChange`   | Goal, scope, decisions, constraints, ownership, or open question; approval is separate |
+| Propose context change   | `api.context.proposeContextChange`   | Goal, scope, decisions, constraints, ownership, or open question; approval is separate. Ownership takes `ownerUserId` (a current member, re-checked on approval) with the area as `proposedValue` |
 | Read proposals/approvals | `api.context.getApprovals`           | Returns proposals, optionally filtered by status                                       |
 | Approve/reject proposal  | `api.context.decideContextProposal`  | Human-only workflow; check backend role enforcement before exposing in UI              |
 
 Convex uses camelCase fields and table IDs. The MCP tool contract currently uses snake_case (`workspace_id`, `file_id`, `expected_version`, `updated_at`, `updated_by`). Keep that translation in the MCP backend adapter; don't change public tool argument names independently. A version conflict must surface as MCP error code `VERSION_CONFLICT`, preserving the current and expected versions so the assistant can reread and reconcile.
+
+## Agent path (MCP → Convex)
+
+A signed-in member creates an agent connection for one workspace (`api.agentConnections.createAgentConnection({ workspaceId, client, displayName? })` → `{ connectionId, token, createdAt }`, token shown once, only its SHA-256 hash stored). `listAgentConnections({ workspaceId })` returns the caller's connections (owners/admins: all) with `lastMcpActionAt`/`lastSyncAt`/`revokedAt`; `revokeAgentConnection({ connectionId })` is for the connection's person or an owner/admin.
+
+The MCP server forwards the token to `api.mcp.*` (`verifyToken`, `listWorkspaces`, `getConnection`, `listFiles`, `searchFiles`, `readFile`, `getFileVersions`, `createDocument`, `updateDocument`, `syncWorkspace`, `proposeContextChange`, `getApprovals`, `publishWork`). Each verifies the token, revocation, and current membership, and writes with `{ type: "agent", userId, agentConnectionId, client, label }` attribution through the same core helpers as the dashboard (`convex/lib/ops.ts`). There is no agent function for deciding proposals, and `decideContextProposal` rejects agent-bound identities itself. `workspace_events` carry a per-workspace `seq` assigned in the writing transaction; `syncWorkspace` pages by it. `createDocument` (dashboard and MCP) rejects a duplicate name in the same folder (`nameKey`: trimmed, case-folded) with `NAME_EXISTS`, and `updateDocument` returns `VERSION_CONFLICT` with `currentVersion`/`expectedVersion` for any mismatch. Local setup: [`docs/local-dev.md`](local-dev.md).
 
 ## Required before MCP can use shared Convex data
 

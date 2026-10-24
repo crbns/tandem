@@ -8,6 +8,11 @@ export interface Actor {
    * "human" is only for signed-in dashboard calls (and tests).
    */
   actor_type: "agent" | "human";
+  /**
+   * The caller's bearer token, for backends where the backend itself is the
+   * authority (Convex verifies it on every call). Never echo or log it.
+   */
+  credential?: string;
 }
 
 export interface Attribution {
@@ -16,6 +21,13 @@ export interface Attribution {
   user_id: string;
   /** The agent client, or "dashboard" for human edits. */
   client: string;
+  /**
+   * The agent connection that made the change (agent writes only). One person
+   * can have several connections for the same client, e.g. laptop and work.
+   */
+  agent_connection_id?: string;
+  /** Display label: the connection's name for agents, the person's name for humans. */
+  label?: string;
 }
 
 export type WorkspaceRole = "owner" | "admin" | "member";
@@ -159,28 +171,36 @@ export type ContextField =
 /**
  * Must match the field, else INVALID_INPUT:
  * - goal, scope: the full new text (string).
- * - constraints: the full new list (string[]); it replaces the old list.
+ * - constraints: one new constraint (string); approval appends it. Existing
+ *   constraints can't be edited or removed through a proposal.
  * - decisions: the text of one new decision (string); approval appends it.
  * - ownership: one { area, owner_user_id }; approval replaces that area's owner
  *   (area compared trimmed, case-insensitively). owner_user_id must be a member
  *   of the workspace, checked on proposal and again on approval.
- * Decisions are append-only and ownership is upsert-by-area: no proposal can
- * remove either yet (intentional for the MVP).
+ * Constraints and decisions are append-only and ownership is upsert-by-area:
+ * no proposal can remove any of them yet (intentional for the MVP).
  */
-export type ProposedValue = string | string[] | Ownership;
+export type ProposedValue = string | Ownership;
 
 export type ProposalStatus = "pending" | "approved" | "rejected";
+
+/**
+ * Convex also stores open-question proposals (made in the dashboard) and marks
+ * proposals "stale" when the context they were based on changed before
+ * approval. Neither can be requested through the MCP tools.
+ */
+export type ProposalField = ContextField | "open_questions";
 
 export interface ContextProposal {
   /** Context version this proposal was based on; stale proposals cannot be approved. */
   base_context_version: number;
   id: string;
   workspace_id: string;
-  field: ContextField;
+  field: ProposalField;
   proposed_value: ProposedValue;
   rationale: string;
   source_ids: string[];
-  status: ProposalStatus;
+  status: ProposalStatus | "stale";
   proposed_by: Attribution;
   created_at: string;
   /** Set once a human owner or admin decides; agents can never decide. */
@@ -212,7 +232,16 @@ export type WorkspaceEventType =
   | "context.proposed"
   | "context.approved"
   | "context.rejected"
-  | "work.published";
+  | "work.published"
+  // Recorded by the Convex backend only:
+  | "context.stale"
+  | "workspace.created"
+  | "workspace.member_added"
+  | "workspace.invite_created"
+  | "workspace.invite_revoked"
+  | "folder.created"
+  | "agent.connected"
+  | "agent.revoked";
 
 /**
  * Appended in the same commit as the change it records. `seq` is monotonic per
@@ -228,6 +257,17 @@ export interface WorkspaceEvent {
   actor: Attribution;
   at: string;
   summary: string;
+}
+
+/**
+ * A current member of the actor's default workspace, for naming an owner in
+ * an ownership proposal. Never includes email addresses.
+ */
+export interface WorkspaceMember {
+  user_id: string;
+  /** Display name; "Workspace member" when the person has none. */
+  name: string;
+  role: WorkspaceRole;
 }
 
 /**
@@ -280,7 +320,7 @@ export interface ProposeContextChangeInput {
 
 export interface GetApprovalsInput {
   workspace_id?: string;
-  status: ProposalStatus | "all";
+  status: ProposalStatus | "stale" | "all";
   /** 1–50. */
   limit: number;
 }
@@ -315,6 +355,11 @@ export interface TandemBackend {
   readonly kind: string;
   /** Only workspaces the actor is a member of. Returns [] (not FORBIDDEN) if there are none. */
   listWorkspaces(actor: Actor): Promise<WorkspaceSummary[]>;
+  /**
+   * Members of the actor's default workspace only (at most 100; `truncated`
+   * when there are more). Empty if the actor has no workspace.
+   */
+  listMembers(actor: Actor): Promise<{ members: WorkspaceMember[]; truncated: boolean }>;
   /** The actor's own (user, client) presence; nulls if it never synced or wrote. */
   getConnection(actor: Actor): Promise<AgentConnection>;
   /**

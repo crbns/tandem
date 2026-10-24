@@ -41,7 +41,7 @@ Assistants never message each other. They meet only through the files and the co
 
 - **How assistants connect:** through Tandem's remote MCP server (Streamable HTTP + OAuth), guided by the Agent Skill. Claude remote connectors are the primary client. ChatGPT write access and Gemini custom apps have plan/eligibility limits (as of Oct 2026).
 - **How people work:** in the web dashboard. Binary uploads go through the dashboard first, because native chats can't be assumed to send binaries over MCP.
-- **Freshness:** native chats can't be woken by Tandem events. The dashboard refreshes on demand and when the window regains focus, so an assistant's new file appears after a refresh; there is no realtime in P0.
+- **Freshness:** native chats can't be woken by Tandem events. The dashboard watches the workspace's event log and refetches when an assistant saves or proposes something, and also on focus and on demand. Assistant connections show when Tandem last heard from them over MCP, never whether they are "online".
 - **Current setting:** built for Cal Hacks 13.0 (Oct 23–25, 2026). The P0 demo shows Claude creating `proposal.md` at v1, a human editing and saving v2, Claude rereading v2, a stale write rejected, and history attributing every version.
 
 ## Capabilities and Constraints
@@ -71,7 +71,7 @@ Assistants never message each other. They meet only through the files and the co
 - workspace; file; version / revision; head; conflict; actor (human or agent); assistant; context; proposal; approval.
 
 **Not decided yet**
-- Members/invite flows, the approvals screen, the activity feed, folders, binary previews, and how project context appears in the dashboard (beyond the approved goal named as P0). These are P1+.
+- The activity feed, folders, binary previews, and how the rest of the project context (ownership, open questions) appears in the dashboard. Invites, the approvals screen and assistant connections now exist.
 
 ## Brand Commitments
 

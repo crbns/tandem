@@ -1,0 +1,10 @@
+# Site block for the MCP server. Merge into the root Caddyfile when it exists.
+# MCP_DOMAIN is e.g. mcp.example.com; its DNS A record must point at the Vultr instance.
+# Caddy provisions HTTPS automatically. Clients connect to https://{$MCP_DOMAIN}/mcp,
+# and the dashboard's NEXT_PUBLIC_MCP_URL should be https://{$MCP_DOMAIN}.
+
+{$MCP_DOMAIN} {
+	header Strict-Transport-Security "max-age=31536000"
+	header -Server
+	reverse_proxy mcp:8787
+}

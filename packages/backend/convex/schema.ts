@@ -16,6 +16,10 @@ const contextValue = v.object({
   sourceFileIds: v.array(v.id("files")),
   updatedBy: actor,
   updatedAt: v.number(),
+  // Ownership entries only: the owning member and the area they own. `text`
+  // is the display form ("area: member name"). Absent on legacy entries.
+  ownerUserId: v.optional(v.id("users")),
+  ownerArea: v.optional(v.string()),
 });
 
 export default defineSchema({
@@ -79,14 +83,20 @@ export default defineSchema({
     userId: v.id("users"),
     client: v.string(),
     displayName: v.optional(v.string()),
+    // SHA-256 hex of the bearer token; the plaintext is returned once at
+    // creation and never stored. Optional only for rows created before tokens.
+    tokenHash: v.optional(v.string()),
+    revokedAt: v.optional(v.number()),
     updatedBy: actor,
     revision: v.number(),
     createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
     lastMcpActionAt: v.optional(v.number()),
     lastSyncAt: v.optional(v.number()),
   })
     .index("by_workspace_and_user", ["workspaceId", "userId"])
-    .index("by_user_and_client", ["userId", "client"]),
+    .index("by_user_and_client", ["userId", "client"])
+    .index("by_token_hash", ["tokenHash"]),
 
   folders: defineTable({
     workspaceId: v.id("workspaces"),
@@ -105,6 +115,9 @@ export default defineSchema({
     workspaceId: v.id("workspaces"),
     parentId: v.optional(v.id("folders")),
     name: v.string(),
+    // Collision key for NAME_EXISTS (lib/names.ts). Optional only for rows
+    // created before uniqueness was enforced.
+    nameKey: v.optional(v.string()),
     mimeType: v.string(),
     content: v.optional(v.string()),
     storageId: v.optional(v.id("_storage")),
@@ -117,6 +130,12 @@ export default defineSchema({
   })
     .index("by_workspace_and_parent", ["workspaceId", "parentId"])
     .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_and_updated_at", ["workspaceId", "updatedAt"])
+    .index("by_workspace_and_parent_and_name_key", [
+      "workspaceId",
+      "parentId",
+      "nameKey",
+    ])
     .searchIndex("search_name", {
       searchField: "name",
       filterFields: ["workspaceId", "parentId"],
@@ -163,6 +182,10 @@ export default defineSchema({
     // Snapshot the scalar field a proposal is based on. Append-only fields do
     // not need a base value because separate proposals do not overwrite them.
     baseValue: v.optional(v.union(v.string(), v.null())),
+    // Ownership proposals only: a member of the workspace when proposed, and
+    // re-checked on approval. proposedValue is the display form.
+    ownerUserId: v.optional(v.id("users")),
+    ownerArea: v.optional(v.string()),
     status: v.union(
       v.literal("pending"),
       v.literal("approved"),
@@ -190,8 +213,24 @@ export default defineSchema({
     .index("by_workspace_and_decided", ["workspaceId", "decidedAt"])
     .index("by_proposal", ["proposalId"]),
 
+  published_work: defineTable({
+    workspaceId: v.id("workspaces"),
+    kind: v.union(v.literal("deliverable"), v.literal("finding")),
+    title: v.string(),
+    summary: v.string(),
+    fileIds: v.array(v.id("files")),
+    createdBy: actor,
+    createdAt: v.number(),
+    updatedBy: actor,
+    revision: v.number(),
+    updatedAt: v.number(),
+  }).index("by_workspace_and_created", ["workspaceId", "createdAt"]),
+
   workspace_events: defineTable({
     workspaceId: v.id("workspaces"),
+    // Per-workspace, gapless, assigned in the same transaction as the write
+    // (lib/auth.ts recordWorkspaceEvent). Optional only for legacy rows.
+    seq: v.optional(v.number()),
     kind: v.string(),
     entityType: v.string(),
     entityId: v.string(),
@@ -200,6 +239,7 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_workspace_and_created", ["workspaceId", "createdAt"])
+    .index("by_workspace_and_seq", ["workspaceId", "seq"])
     .index("by_workspace_and_entity", [
       "workspaceId",
       "entityType",
@@ -224,15 +264,19 @@ export default defineSchema({
     .index("by_status_and_created", ["status", "createdAt"])
     .index("by_event", ["eventId"]),
 
+  // Last cursor handed to each agent connection by sync_workspace. Clients
+  // send their own cursor (`since`); this row is a server-side record of it.
+  // Optional only for rows written before cursors were per connection.
   sync_cursors: defineTable({
     workspaceId: v.id("workspaces"),
     userId: v.id("users"),
     client: v.string(),
+    agentConnectionId: v.optional(v.id("agent_connections")),
     cursor: v.number(),
     updatedBy: actor,
     revision: v.number(),
     updatedAt: v.number(),
-  }).index("by_workspace_user_client", ["workspaceId", "userId", "client"]),
+  }).index("by_agent_connection", ["agentConnectionId"]),
 
   storage_objects: defineTable({
     workspaceId: v.id("workspaces"),
