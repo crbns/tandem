@@ -27,7 +27,7 @@ export default function InvitePage() {
       pending.current = { token, result: api.acceptInvite(token) };
     }
     pending.current.result.then(
-      ({ workspaceId }) => { if (!cancelled) router.replace(`/w/${workspaceId}`); },
+      ({ workspaceId }) => { if (!cancelled) router.replace(`/w/${workspaceId}/overview`); },
       (err: unknown) => { if (!cancelled) setError(normalizeError(err)); },
     );
     return () => { cancelled = true; };

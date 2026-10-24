@@ -105,7 +105,8 @@ Treat the password and tokens as secrets on a public deployment. Anyone who has 
 ## Connecting the assistants
 
 - **Claude Code:** run the `claude mcp add …` line printed for Alex (and for Blake, if you need a second Claude). If an older `tandem` server is configured, remove it first with `claude mcp remove tandem`.
-- **claude.ai:** Settings → Connectors → Add custom connector with the printed MCP server URL. Claude opens Tandem's consent page: sign in as Alex (or Blake), pick "Onboarding refresh", choose Claude, Allow. This adds a new OAuth connection next to the seeded one; for the consent page to be the deployed dashboard, set `MCP_CONSENT_URL` (or `SITE_URL`) on the Convex deployment to the dashboard origin.
+- **A reset disconnects claude.ai.** It deletes every connection to the demo workspace, OAuth ones included, and the rebuilt workspace has a new id. Pinned `DEMO_TOKEN_*` keep only the seeded API keys (Claude Code) working. So do the final reset first, then connect claude.ai, and don't reset again after connecting the chat client you'll demo with.
+- **claude.ai:** Settings → Connectors → Add custom connector with the printed MCP server URL. After a reset, Disconnect and Connect again. Claude opens Tandem's consent page: sign in as Alex (or Blake), pick "Onboarding refresh", choose Claude, Allow. This adds a new OAuth connection next to the seeded one; for the consent page to be the deployed dashboard, set `MCP_CONSENT_URL` (or `SITE_URL`) on the Convex deployment to the dashboard origin.
 - **ChatGPT, Gemini:** not tested. Casey's Gemini key exists so the connection shows up on the Assistants page.
 - **Dashboard:** sign in as any of the three emails with the printed password.
 
@@ -118,7 +119,7 @@ pnpm test:demo
 This command does the following:
 
 1. Resets the demo.
-2. Runs the P0 slice on it: Alex's Claude creates `proposal.md` v1, Blake signs in with the seeded password and saves v2, the agent reads v2, a stale v1 update gets `VERSION_CONFLICT`, and history names both editors.
+2. Checks the seed (brief.md v1 alone at the root, approved goal and scope, exactly one pending proposal from Casey's Gemini), then runs the P0 slice on it: Alex's Claude creates `proposal.md` v1, Blake signs in with the seeded password and saves v2, the agent reads v2, a stale v1 update gets `VERSION_CONFLICT`, and history names both editors.
 3. Resets again and prints the new credentials.
 
 It follows `DEMO_PASSWORD` and `DEMO_TOKEN_*`, so pin them first if you don't want them to change. It talks to `CONVEX_URL` (default `http://127.0.0.1:3210`) and that deployment's own `/mcp` (`MCP_URL` overrides it). Against the cloud demo deployment, run it like this:
@@ -135,8 +136,9 @@ It doesn't run as part of `pnpm test:e2e`, where the suite shows as skipped.
 2. Run `pnpm test:demo` against the demo deployment. All 6 steps should pass, and it leaves the demo clean.
 3. Configure Claude Code with Alex's token. Sign in to the dashboard as Blake in a second browser profile.
 4. Rehearse.
-5. Run `pnpm demo:reset`. The output should match your pinned values. Sign out and back in as Blake: the reset ends sessions, though an open tab can keep working for up to an hour on its current token.
-6. Check the dashboard: only `brief.md` (v1), the approved goal is shown, and there are no pending approvals.
+5. Run `pnpm demo:reset` (the final reset). The output should match your pinned values. Sign out and back in as Alex and Blake: the reset ends sessions, though an open tab can keep working for up to an hour on its current token. Open the printed `/w/<id>/overview` link.
+6. Check the Overview against the seed: 4 files (`brief.md` v1, `research/interview-notes.md` v2, `research/support-tickets.md` v1, `requirements/setup-checklist.md` v1) in 2 folders, no `proposal.md`, the approved goal, exactly one pending proposal (Casey's Gemini: move the guides to a new help-center platform), and 3 tasks.
+7. Only now connect claude.ai, if you're demoing it (see "Connecting the assistants"). Have each assistant sync once off stage so the Assistants page shows when it was last heard from.
 
 ## Troubleshooting
 
@@ -146,6 +148,7 @@ It doesn't run as part of `pnpm test:e2e`, where the suite shows as skipped.
 | Dashboard sign-in fails right after a reset on a new deployment | The Convex Auth keys are missing. Run `node scripts/setup-auth-env.mjs` in `packages/backend`. |
 | Sign-in fails with the old password | Expected: each reset sets a new password unless `DEMO_PASSWORD` is pinned. Use the password from the last reset. |
 | Claude Code gets 401 after a reset | Expected without pinned tokens, because the old connections were deleted. Re-add with the new token, or pin `DEMO_TOKEN_*`. |
+| claude.ai gets 401 or sees no workspace after a reset | Expected: a reset deletes OAuth connections and the workspace id changes. Disconnect and Connect the connector again, consent as Alex, and pick "Onboarding refresh". |
 | `WEAK_PASSWORD` | `DEMO_PASSWORD` is shorter than 8 characters. |
 | `INVALID_INPUT` with `field: "tokens.<name>"` | That pinned token is malformed, pinned for two people, or used by a connection outside the demo. Drop the pin to get a new one. |
 | The reset fails | Input errors (`WEAK_PASSWORD`, `INVALID_INPUT`) are caught before any account changes. If it fails later, the passwords may already be reset but the rebuild is one transaction, so the demo workspace is either fully replaced or left as it was. Fix the cause and rerun; the passwords and tokens printed by the next successful reset are the valid ones. |

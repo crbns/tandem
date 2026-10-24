@@ -5,7 +5,7 @@
 // Resets again at the end so the deployment is left clean for the demo.
 //
 // Opt-in, because it rotates the demo password and tokens unless DEMO_PASSWORD
-// and DEMO_TOKEN_* are set: E2E_DEMO=1 pnpm test:demo
+// and DEMO_TOKEN_* are set: `pnpm test:demo` (or E2E_DEMO=1 with vitest).
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, inject, it } from "vitest";
@@ -42,7 +42,11 @@ function resetDemo(): Demo {
 type Attribution = { actor_type: string; user_id: string; client: string; agent_connection_id?: string };
 type McpFile = { id: string; name: string; version: number; updated_by: Attribution };
 
-describe.runIf(process.env.E2E_DEMO)("demo seed: P0 slice on the seeded workspace", () => {
+// pnpm sets npm_lifecycle_event, so `pnpm test:demo` opts in on every shell
+// (cmd.exe can't run `E2E_DEMO=1 vitest ...`).
+const optedIn = !!process.env.E2E_DEMO || process.env.npm_lifecycle_event === "test:demo";
+
+describe.runIf(optedIn)("demo seed: P0 slice on the seeded workspace", () => {
   let demo: Demo;
   let alex: Demo["members"][number];
   let blake: Human;
@@ -55,7 +59,7 @@ describe.runIf(process.env.E2E_DEMO)("demo seed: P0 slice on the seeded workspac
     await blake?.close();
   });
 
-  it("1. reset gives one workspace: brief.md v1 by Alex, approved goal and scope, three members", async () => {
+  it("1. reset gives one workspace: brief.md v1 by Alex, approved goal and scope, three members, Casey's pending proposal", async () => {
     demo = resetDemo();
     alex = demo.members.find((m) => m.key === "alex")!;
     expect(demo.members.map((m) => [m.key, m.role])).toEqual([
@@ -68,12 +72,15 @@ describe.runIf(process.env.E2E_DEMO)("demo seed: P0 slice on the seeded workspac
     const sync = await agent.ok<{
       workspace: { id: string };
       context: { goal: string; scope: string };
-      pending_proposals: unknown[];
+      pending_proposals: { field: string; status: string; proposed_by: Attribution }[];
     }>("sync_workspace");
     expect(sync.workspace.id).toBe(demo.workspaceId);
     expect(sync.context.goal).toBeTruthy();
     expect(sync.context.scope).toBeTruthy();
-    expect(sync.pending_proposals).toEqual([]);
+    // The seed leaves exactly one decision for a person to reject on stage.
+    expect(sync.pending_proposals).toMatchObject([
+      { field: "decisions", status: "pending", proposed_by: { actor_type: "agent", client: "gemini" } },
+    ]);
 
     const { files } = await agent.ok<{ files: McpFile[] }>("list_files");
     expect(files.map((f) => f.name)).toEqual(["brief.md"]);
@@ -136,7 +143,7 @@ describe.runIf(process.env.E2E_DEMO)("demo seed: P0 slice on the seeded workspac
     expect(revisions.find((r) => r.version === 2)).toMatchObject({ actorType: "human", userName: "Blake" });
   });
 
-  it("6. a second reset leaves a clean demo: proposal.md gone, brief.md v1 only", async () => {
+  it("6. a second reset leaves a clean demo: proposal.md gone, brief.md v1 alone at the root", async () => {
     await agent.close();
     demo = resetDemo();
     alex = demo.members.find((m) => m.key === "alex")!;

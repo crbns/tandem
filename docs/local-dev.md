@@ -64,7 +64,7 @@ OAuth clients (claude.ai custom connectors) need a public HTTPS URL, so they can
 pnpm demo:reset
 ```
 
-Deletes and rebuilds only the demo workspace (Alex, Blake and Casey, `brief.md` v1, an approved goal and scope, one agent connection each), then prints sign-in credentials and agent tokens. `pnpm test:demo` runs the P0 slice on the seeded workspace. See [demo-seed.md](demo-seed.md) for pinning the password and tokens, cloud deployments, and the rehearsal checklist.
+Deletes and rebuilds only the demo workspace (Alex, Blake and Casey, research and requirements files, approved context, three tasks, one pending proposal, and one agent connection each; the full list is in [demo-seed.md](demo-seed.md#what-it-creates)), then prints sign-in credentials and agent tokens. `pnpm test:demo` runs the P0 slice on the seeded workspace. See [demo-seed.md](demo-seed.md) for pinning the password and tokens, cloud deployments, and the rehearsal checklist.
 
 ## Existing deployments: context entry IDs
 

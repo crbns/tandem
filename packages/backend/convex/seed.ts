@@ -114,10 +114,14 @@ ${DEMO_GOAL}
 - $5k budget for design and copy.
 - Launch before the January 15 billing cycle.
 
+## Decided at kickoff
+
+- Blake owns the welcome email sequence.
+- First value means "first project created", not "first teammate invited".
+
 ## Open questions
 
-- Who owns the email sequence: Blake (lifecycle) or Casey (support)?
-- Is first value "first project created" or "first teammate invited"?
+- Do the how-to guides live in the app or in the existing help center?
 
 ## Next step
 

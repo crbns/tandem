@@ -28,9 +28,11 @@ const args = {
   ...(Object.keys(tokens).length ? { tokens } : {}),
 };
 
+// Node runs the CLI's entry file directly: node_modules/.bin/convex is a shell
+// shim that execFileSync can't start on Windows.
 const stdout = execFileSync(
-  `${backendDir}node_modules/.bin/convex`,
-  ["run", "seed:resetDemo", JSON.stringify(args), ...passthrough],
+  process.execPath,
+  [`${backendDir}node_modules/convex/bin/main.js`, "run", "seed:resetDemo", JSON.stringify(args), ...passthrough],
   { cwd: backendDir, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
 );
 const demo = JSON.parse(stdout.slice(stdout.indexOf("{")));
@@ -44,7 +46,7 @@ const webUrl = process.env.TANDEM_WEB_URL ?? "http://localhost:3000";
 const mcpUrl = process.env.TANDEM_MCP_URL ?? demo.mcpUrl;
 const lines = [
   `Demo reset: workspace "${demo.workspaceName}" (${demo.workspaceId})`,
-  `Dashboard: ${webUrl}/w/${demo.workspaceId}`,
+  `Dashboard: ${webUrl}/w/${demo.workspaceId}/overview`,
   `Password (all three): ${demo.password}`,
   `MCP server: ${mcpUrl} (claude.ai: add it as a custom connector and sign in)`,
   "",

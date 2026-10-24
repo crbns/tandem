@@ -70,29 +70,19 @@ export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>)
   // One timer per file: a second save within ARRIVAL_MS restarts its mark
   // instead of the first save's timer clearing it early.
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  // Arrivals noticed while the tab was hidden (the presenter is in their chat
+  // tab): marked when the tab is shown, so the 8s run while people can see it.
+  // Sonner pauses the toasts' timers while hidden for the same reason.
+  const held = useRef(new Map<string, number>());
 
-  useEffect(() => {
-    const pending = timers.current;
-    return () => {
-      pending.forEach(clearTimeout);
-      pending.clear();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (files.status !== "ready") return;
-    const before = previous.current?.workspaceId === workspaceId ? previous.current.files : null;
-    previous.current = { workspaceId, files: files.data };
-    const arrivals = detectArrivals(before, files.data);
-    if (arrivals.length === 0) return;
+  const mark = useCallback((entries: Array<[id: string, version: number]>) => {
     const at = Date.now();
     setArrived((current) => {
       const next = new Map(current);
-      for (const { file } of arrivals) next.set(file.id, { version: file.version, at });
+      for (const [id, version] of entries) next.set(id, { version, at });
       return next;
     });
-    for (const arrival of arrivals) {
-      const { id } = arrival.file;
+    for (const [id] of entries) {
       clearTimeout(timers.current.get(id));
       timers.current.set(
         id,
@@ -105,16 +95,47 @@ export function useArrivals(workspaceId: string, files: Resource<FileSummary[]>)
           });
         }, ARRIVAL_MS),
       );
+    }
+  }, []);
+
+  useEffect(() => {
+    const pending = timers.current;
+    const onVisible = () => {
+      if (document.hidden || held.current.size === 0) return;
+      const entries = [...held.current];
+      held.current.clear();
+      mark(entries);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      pending.forEach(clearTimeout);
+      pending.clear();
+    };
+  }, [mark]);
+
+  useEffect(() => {
+    if (files.status !== "ready") return;
+    const before = previous.current?.workspaceId === workspaceId ? previous.current.files : null;
+    previous.current = { workspaceId, files: files.data };
+    const arrivals = detectArrivals(before, files.data);
+    if (arrivals.length === 0) return;
+    const entries = arrivals.map((a): [string, number] => [a.file.id, a.file.version]);
+    if (document.hidden) for (const [id, version] of entries) held.current.set(id, version);
+    else mark(entries);
+    for (const arrival of arrivals) {
+      const { id } = arrival.file;
       const href = `/w/${workspaceId}/files/${id}`;
       if (openPath.current === href) continue;
       toast(arrivalMessage(arrival), {
-        id: `arrival-${id}-${arrival.file.version}`,
+        // One toast per file: a re-save updates it in place instead of stacking.
+        id: `arrival-${id}`,
         // As long as the row stays marked, so it's still up when people look.
         duration: ARRIVAL_MS,
         action: { label: "Open", onClick: () => router.push(href) },
       });
     }
-  }, [files, workspaceId, router]);
+  }, [files, workspaceId, router, mark]);
 
   return arrived;
 }

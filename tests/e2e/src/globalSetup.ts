@@ -3,7 +3,7 @@
 // packages/backend and stopped afterwards). The MCP server is part of it:
 // @convex-dev/mcp serves /mcp from the deployment's HTTP actions origin
 // (MCP_URL overrides it, e.g. for a deployed endpoint).
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync } from "node:fs";
 import { parseEnv } from "node:util";
@@ -83,7 +83,9 @@ function start(
 function stop(child: ChildProcess | undefined) {
   if (!child?.pid || child.exitCode !== null) return;
   try {
-    process.kill(-child.pid, "SIGTERM");
+    // Windows has no process groups; kill the tree with taskkill instead.
+    if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
+    else process.kill(-child.pid, "SIGTERM");
   } catch {
     // Already gone.
   }
@@ -101,7 +103,8 @@ export default async function setup(project: TestProject) {
       throw new Error(`Convex is not reachable at CONVEX_URL=${convexUrl}`);
     // The local anonymous deployment from docs/local-dev.md. It also pushes the
     // current functions before reporting ready.
-    convex = await start("convex", `${backendDir}/node_modules/.bin/convex`, ["dev"], {
+    // Through node: .bin/convex is a shell shim that spawn can't run on Windows.
+    convex = await start("convex", process.execPath, [`${backendDir}/node_modules/convex/bin/main.js`, "dev"], {
       cwd: backendDir,
       env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
       ready: /Convex functions ready/,

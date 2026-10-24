@@ -6,7 +6,7 @@
   "scripts": {
     "check-types": "tsc --noEmit",
     "test:e2e": "vitest run",
-    "test:demo": "E2E_DEMO=1 vitest run demo-seed"
+    "test:demo": "vitest run demo-seed"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",

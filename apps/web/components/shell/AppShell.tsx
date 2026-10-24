@@ -159,7 +159,8 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
         <header className="flex h-14 items-center justify-between gap-4 border-b bg-card px-4 md:px-8">
           <div className="flex min-w-0 items-center gap-2 text-sm">
             <TandemMark className="size-6 md:hidden" />
-            <Link href={filesHref} className="truncate text-muted-foreground hover:text-foreground">
+            {/* The workspace's home is its Overview, as after sign-in. */}
+            <Link href={`/w/${workspaceId}/overview`} className="truncate text-muted-foreground hover:text-foreground">
               {workspaceName}
             </Link>
             <span aria-hidden className="text-muted-foreground">

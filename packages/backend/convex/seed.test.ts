@@ -162,6 +162,11 @@ describe("seed:rebuildDemoWorkspace", () => {
     // The file and its creation event move with v1.
     expect(notes.createdAt).toBe(v1!.createdAt);
     expect(created.createdAt).toBe(v1!.createdAt);
+    // brief.md agrees with the approved context: its only open question is the
+    // seeded one, so an assistant drafting from it doesn't re-propose decisions.
+    const brief = await t.run(async (ctx) => ctx.db.get(demo.briefFileId));
+    const openQuestions = brief!.content!.split("## Open questions")[1]!.split("\n## ")[0]!;
+    expect(openQuestions.trim()).toBe(`- ${DEMO_OPEN_QUESTION}`);
     // proposal.md is created live in the demo.
     expect(files.some(([name]) => String(name).includes("proposal"))).toBe(false);
 
