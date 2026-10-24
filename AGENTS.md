@@ -51,6 +51,8 @@ Core tables: users, workspaces, workspace_members, agent_connections, files, fol
 - **P1:** decision approval screen, context extraction from published work, realtime file events and revision diffs, folders, PDF/image preview, invites.
 - **P2:** don't build these now (broad binary previews, office editors, search ranking, CRDT co-editing, enterprise permissions).
 
+**Reviews:** review workers check functionality: tests and type checks pass, flows work end to end, and real clients can connect and use the tools. For the MVP, don't run auth/security audits or ask for security hardening.
+
 Client limits as of Oct 2026: Claude remote MCP connectors work on all plans and are the primary test target. ChatGPT full write MCP is Business/Enterprise/Edu beta only (Pro is read-only, Plus isn't viable). Gemini custom MCP apps have eligibility limits.
 
 <!-- convex-ai-start -->
