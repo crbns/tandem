@@ -1,0 +1,249 @@
+import { describe, expect, it } from "vitest";
+import { ConvexError } from "convex/values";
+import type { ConvexReactClient } from "convex/react";
+import { getFunctionName, type FunctionReference, type FunctionReturnType } from "convex/server";
+import type { api } from "@repo/backend/convex/_generated/api.js";
+import type { Id } from "@repo/backend/convex/_generated/dataModel.js";
+import { createConvexApi } from "@/lib/api/convex";
+import { normalizeError } from "@/lib/api/errors";
+import { performSave } from "@/lib/editor/performSave";
+
+// Fixtures are typed from the backend's generated function types, so a backend
+// shape change fails `check-types` here instead of silently passing.
+type BackendFile = FunctionReturnType<typeof api.files.readFile>["file"];
+type BackendActor = BackendFile["updatedBy"];
+type BackendContext = NonNullable<FunctionReturnType<typeof api.workspaces.getWorkspaceContext>>;
+type BackendWorkspaces = FunctionReturnType<typeof api.workspaces.listWorkspaces>;
+type BackendVersions = FunctionReturnType<typeof api.files.getFileVersions>;
+type BackendRevision = FunctionReturnType<typeof api.files.getFileRevision>;
+
+const ALEX_ID = "users_alex" as Id<"users">;
+const ALEX: BackendActor = { type: "human", userId: ALEX_ID, label: "Alex" };
+const CLAUDE: BackendActor = {
+  type: "agent",
+  userId: ALEX_ID,
+  agentConnectionId: "agent_connections_1" as Id<"agent_connections">,
+  label: "Claude",
+  client: "claude",
+  userName: "Alex",
+};
+
+const FILE: BackendFile = {
+  id: "files_1" as Id<"files">,
+  workspaceId: "workspaces_1" as Id<"workspaces">,
+  parentId: null,
+  name: "plan.md",
+  mimeType: "text/markdown",
+  version: 3,
+  updatedAt: 1_700_000_000_000,
+  updatedBy: CLAUDE,
+};
+
+const WORKSPACES: BackendWorkspaces = [
+  { id: "workspaces_1" as Id<"workspaces">, name: "Cal Hacks", role: "owner", updatedAt: 1 },
+];
+const VERSIONS: BackendVersions = [
+  { id: "r1" as Id<"file_revisions">, version: 1, actor: ALEX, createdAt: 1 },
+];
+const REVISION: BackendRevision = {
+  id: "r1" as Id<"file_revisions">,
+  version: 1,
+  content: "a",
+  actor: ALEX,
+  createdAt: 1,
+};
+
+const entry = (text: string, updatedAt = 1_700_000_000_000): BackendContext["constraints"][number] => ({
+  text,
+  sourceFileIds: [],
+  updatedAt,
+  updatedBy: ALEX,
+});
+
+const EMPTY_CONTEXT: BackendContext = {
+  goal: null,
+  scope: null,
+  constraints: [],
+  decisions: [],
+  ownership: [],
+  openQuestions: [],
+  revision: 1,
+  updatedAt: 1_700_000_000_000,
+};
+
+/** A ConvexReactClient stand-in that answers by function name and records calls. */
+function fakeConvex(responses: Record<string, unknown>) {
+  const calls: { name: string; args: unknown }[] = [];
+  const run = async (ref: FunctionReference<"query" | "mutation">, args: unknown) => {
+    const name = getFunctionName(ref);
+    calls.push({ name, args });
+    const res = responses[name];
+    if (res instanceof Error) throw res;
+    if (res === undefined) throw new Error(`no fixture for ${name}`);
+    return res;
+  };
+  const client = { query: run, mutation: run } as unknown as ConvexReactClient;
+  return { client, calls };
+}
+
+describe("createConvexApi", () => {
+  it("calls the backend's function names with exact args and maps what comes back", async () => {
+    const { client, calls } = fakeConvex({
+      "workspaces:listWorkspaces": WORKSPACES,
+      "workspaces:createWorkspace": "workspaces_2",
+      "files:listFiles": [FILE],
+      "files:readFile": { file: FILE, content: "x" },
+      "files:createDocument": { ...FILE, id: "files_2", version: 1 },
+      "files:updateDocument": { ...FILE, version: 4 },
+      "files:getFileVersions": VERSIONS,
+      "files:getFileRevision": REVISION,
+      "workspaces:getWorkspaceContext": { ...EMPTY_CONTEXT, goal: entry("Ship it") },
+    });
+    const tandem = createConvexApi(client);
+
+    expect(await tandem.listWorkspaces()).toEqual([{ id: "workspaces_1", name: "Cal Hacks" }]);
+    expect(await tandem.createWorkspace("New")).toBe("workspaces_2");
+    expect((await tandem.listFiles("workspaces_1"))[0]?.updatedBy.agentName).toBe("Claude");
+    expect((await tandem.readFile("files_1")).content).toBe("x");
+    expect(
+      await tandem.createFile("workspaces_1", { name: "n.md", mimeType: "text/markdown", content: "" }),
+    ).toEqual({ id: "files_2", version: 1 });
+    expect(await tandem.updateFileContent("files_1", { expectedVersion: 3, content: "y" })).toEqual({ version: 4 });
+    expect((await tandem.listRevisions("files_1"))[0]?.userName).toBe("Alex");
+    expect((await tandem.getRevision("files_1", 1))?.content).toBe("a");
+    expect((await tandem.getContext("workspaces_1"))?.goal).toBe("Ship it");
+
+    // Exact args: Convex rejects unknown keys, so an extra one would fail for real.
+    expect(calls).toEqual([
+      { name: "workspaces:listWorkspaces", args: {} },
+      { name: "workspaces:createWorkspace", args: { name: "New" } },
+      { name: "files:listFiles", args: { workspaceId: "workspaces_1" } },
+      { name: "files:readFile", args: { fileId: "files_1" } },
+      {
+        name: "files:createDocument",
+        args: { workspaceId: "workspaces_1", name: "n.md", mimeType: "text/markdown", content: "" },
+      },
+      { name: "files:updateDocument", args: { fileId: "files_1", expectedVersion: 3, content: "y" } },
+      // The backend's maximum; its default of 20 would cut history short.
+      { name: "files:getFileVersions", args: { fileId: "files_1", limit: 100 } },
+      { name: "files:getFileRevision", args: { fileId: "files_1", version: 1 } },
+      { name: "workspaces:getWorkspaceContext", args: { workspaceId: "workspaces_1" } },
+    ]);
+  });
+
+  it("maps a file in full, naming both the person and the assistant on agent writes", async () => {
+    const { client } = fakeConvex({
+      "files:readFile": { file: { ...FILE, parentId: "folders_1" }, content: "x" },
+      "files:listFiles": [FILE],
+    });
+    const tandem = createConvexApi(client);
+    const summary = {
+      id: "files_1",
+      workspaceId: "workspaces_1",
+      parentId: null,
+      name: "plan.md",
+      mimeType: "text/markdown",
+      version: 3,
+      updatedAt: 1_700_000_000_000,
+      updatedBy: {
+        actorType: "agent",
+        userId: "users_alex",
+        userName: "Alex",
+        agentName: "Claude",
+        agentClient: "claude",
+      },
+    };
+    expect(await tandem.listFiles("workspaces_1")).toEqual([summary]);
+    // Any member may call updateDocument, so a readable file is editable.
+    expect(await tandem.readFile("files_1")).toEqual({
+      ...summary,
+      parentId: "folders_1",
+      content: "x",
+      permissions: { canEdit: true },
+    });
+  });
+
+  it("renders a system actor by its label, never as an agent", async () => {
+    const { client } = fakeConvex({
+      "files:readFile": { file: { ...FILE, updatedBy: { type: "system", label: "Tandem" } }, content: "x" },
+    });
+    const { updatedBy } = await createConvexApi(client).readFile("files_1");
+    expect(updatedBy).toMatchObject({ actorType: "human", userId: "", userName: "Tandem" });
+    expect(updatedBy.agentName).toBeUndefined();
+  });
+
+  it("leaves revision content to getRevision, which is null for a missing version", async () => {
+    const { client } = fakeConvex({ "files:getFileVersions": VERSIONS, "files:getFileRevision": null });
+    const tandem = createConvexApi(client);
+    expect((await tandem.listRevisions("files_1"))[0]?.content).toBeUndefined();
+    expect(await tandem.getRevision("files_1", 9)).toBeNull();
+  });
+
+  it("is null without an approved goal, and credits the approver when there is one", async () => {
+    const empty = fakeConvex({ "workspaces:getWorkspaceContext": EMPTY_CONTEXT });
+    expect(await createConvexApi(empty.client).getContext("workspaces_1")).toBeNull();
+    const none = fakeConvex({ "workspaces:getWorkspaceContext": null });
+    expect(await createConvexApi(none.client).getContext("workspaces_1")).toBeNull();
+
+    const approved = fakeConvex({
+      "workspaces:getWorkspaceContext": {
+        ...EMPTY_CONTEXT,
+        goal: entry("Ship the demo", 5),
+        constraints: [entry("No CRDT")],
+        decisions: [entry("Use Convex")],
+        revision: 4,
+      },
+    });
+    expect(await createConvexApi(approved.client).getContext("workspaces_1")).toEqual({
+      goal: "Ship the demo",
+      scope: "",
+      constraints: ["No CRDT"],
+      decisions: ["Use Convex"],
+      version: 4,
+      approvedBy: { actorType: "human", userId: "users_alex", userName: "Alex" },
+      approvedAt: 5,
+    });
+  });
+
+  it("opens the conflict screen from the backend's VERSION_CONFLICT without a reread", async () => {
+    const { client, calls } = fakeConvex({
+      "files:updateDocument": new ConvexError({
+        code: "VERSION_CONFLICT",
+        currentVersion: 4,
+        currentContent: "# theirs",
+        updatedBy: { type: "agent", userId: "users_alex", label: "Claude", client: "claude", userName: "Alex" },
+      }),
+    });
+    expect(await performSave(createConvexApi(client), "files_1", 3, "# mine")).toEqual({
+      type: "SAVE_CONFLICT",
+      theirs: {
+        version: 4,
+        content: "# theirs",
+        updatedBy: { actorType: "agent", userId: "users_alex", userName: "Alex", agentName: "Claude", agentClient: "claude" },
+      },
+    });
+    expect(calls.map((c) => c.name)).toEqual(["files:updateDocument"]);
+  });
+
+  it("rereads the file when a conflict arrives without content (binary file)", async () => {
+    const { client } = fakeConvex({
+      "files:updateDocument": new ConvexError({ code: "VERSION_CONFLICT", currentVersion: 4, currentContent: null }),
+      "files:readFile": { file: { ...FILE, version: 4 }, content: "# theirs" },
+    });
+    expect(await performSave(createConvexApi(client), "files_1", 3, "# mine")).toMatchObject({
+      type: "SAVE_CONFLICT",
+      theirs: { version: 4, content: "# theirs" },
+    });
+  });
+
+  it.each([
+    ["FORBIDDEN", "FORBIDDEN"],
+    ["FILE_NOT_FOUND", "FILE_NOT_FOUND"],
+    ["UNAUTHENTICATED", "UNAUTHENTICATED"],
+    ["INVALID_NAME", "INVALID_INPUT"],
+    ["WORKSPACE_NOT_FOUND", "FORBIDDEN"],
+    ["CONTEXT_NOT_INITIALIZED", "UNKNOWN"],
+  ])("maps the backend's ConvexError %s to %s", (backendCode, code) => {
+    expect(normalizeError(new ConvexError({ code: backendCode })).code).toBe(code);
+  });
+});
