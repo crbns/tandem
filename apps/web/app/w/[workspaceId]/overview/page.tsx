@@ -16,6 +16,7 @@ import type { AgentActivity, ContextDetails, FileSummary, FolderSummary, Workspa
 import { CustodyMark } from "@/components/common/CustodyMark";
 import { ErrorState } from "@/components/common/ErrorState";
 import { InviteDialog } from "@/components/common/InviteDialog";
+import { TeamDoingCard } from "@/components/intelligence/TeamDoingCard";
 import { ArrivalGlow } from "@/components/files/ArrivalGlow";
 import { FileIcon } from "@/components/files/FileIcon";
 import { Button } from "@/components/ui/button";
@@ -81,6 +82,8 @@ export default function OverviewPage() {
       </div>
 
       <AgentsPanel workspaceId={workspaceId} resource={agents.resource} onRetry={agents.reload} retrying={agents.refreshing} />
+
+      <TeamDoingCard workspaceId={workspaceId} />
 
       <MembersPanel resource={members.resource} onRetry={members.reload} retrying={members.refreshing} />
 
