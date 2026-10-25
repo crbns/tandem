@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AlertCircleIcon, Loader2Icon } from "lucide-react";
 import {
@@ -148,6 +149,14 @@ function SignInForm() {
             >
               {signingUp ? "Sign in" : "Create an account"}
             </button>
+          </p>
+          <p className="text-center text-sm">
+            <Link
+              href="/invite"
+              className="font-medium text-foreground underline underline-offset-4"
+            >
+              I have an invite code
+            </Link>
           </p>
           {USE_MOCKS && !signingUp && (
             <p className="text-xs text-muted-foreground">
