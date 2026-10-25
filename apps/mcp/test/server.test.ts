@@ -785,7 +785,7 @@ describe("Tandem MCP server", () => {
   });
 });
 
-describe("read-before / write-back loop", () => {
+describe("sync-and-read / save-files loop", () => {
   it("sends the loop as server instructions at initialize", async () => {
     const client = await connect("alex-token");
     expect(client.getInstructions()).toBe(MCP_INSTRUCTIONS);
@@ -800,21 +800,22 @@ describe("read-before / write-back loop", () => {
       "best effort",
       "private conversation history",
       "untrusted",
-      "even if no file changed",
-      "create or edit",
-      "that context lacks",
-      "no pending proposal covers",
+      "create_document",
       "read brief first",
-      "Record before the work",
+      "observed",
+      "don't publish or propose on your own",
+      "the user wants announced",
+      "the user directs",
+      "pending until a human approves",
       "manage_task",
-      "complete claimed tasks",
-      "Record after",
-      "Reply as usual",
-      "showing docs you write",
+      "Reply in chat",
+      "show docs you write",
       "long edit",
     ])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
+    for (const gone of ["even if no file changed", "Record before the work", "Record after"])
+      expect(MCP_INSTRUCTIONS).not.toContain(gone);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);
     await client.close();
   });
@@ -827,10 +828,7 @@ describe("read-before / write-back loop", () => {
       return result.structuredContent as Record<string, any>;
     };
 
-    // The demo workspace has an approved goal, so no context-seeding step.
-    expect((await ok("sync_workspace", {})).next_steps).toEqual(
-      syncNextSteps({ contextEmpty: false }),
-    );
+    expect((await ok("sync_workspace", {})).next_steps).toEqual(syncNextSteps());
 
     const created = await ok("create_document", { name: "loop.md", content: "v1" });
     expect(created).toMatchObject({ path: "/loop.md", version: 1 });
@@ -845,9 +843,8 @@ describe("read-before / write-back loop", () => {
     });
     const { next_steps } = JSON.parse(text(updated));
     expect(next_steps[0]).toContain("expected_version=2");
-    expect(next_steps[1]).toContain(`["${created.id}"]`);
-    expect(next_steps[2]).toContain("approved context lacks and no pending proposal");
-    expect(next_steps[2]).toContain(`source_ids ["${created.id}"]`);
+    // Saving is the whole write-back: the context manager reads the file.
+    expect(next_steps.join(" ")).not.toMatch(/publish_work|propose_context_change/);
 
     const published = await ok("publish_work", {
       kind: "deliverable",
@@ -865,39 +862,6 @@ describe("read-before / write-back loop", () => {
     expect(proposed.proposal.status).toBe("pending");
     expect(proposed.next_steps).toEqual(proposedNextSteps("pending"));
     await client.close();
-  });
-
-  it("asks to seed the context when the approved context is empty", async () => {
-    const backend = new MockBackend();
-    // Empty the seeded demo context in place; no tool clears goal or scope.
-    const { context } = (
-      backend as unknown as {
-        workspaces: Map<string, { context: StructuredContext }>;
-      }
-    ).workspaces.get("ws_demo")!;
-    Object.assign(context, {
-      goal: "",
-      scope: "",
-      constraints: [],
-      decisions: [],
-      ownership: [],
-      open_questions: [],
-    });
-    const app = createApp({
-      backend,
-      identity: new DevTokenResolver(DEV_TOKENS),
-    });
-    const client = await connect(
-      "alex-token",
-      new URL("/mcp", await listen(app)),
-    );
-    const result = await call(client, "sync_workspace", {});
-    expect(result.isError).toBeFalsy();
-    const { next_steps } = result.structuredContent as { next_steps: string[] };
-    expect(next_steps).toEqual(syncNextSteps({ contextEmpty: true }));
-    expect(next_steps[0]).toMatch(/context is empty.*no pending proposal/);
-    await client.close();
-    await stop(app);
   });
 
   it("keeps next_steps off read and error results", async () => {

@@ -1,11 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import type {
-  Actor,
-  StructuredContext,
-  TandemBackend,
-} from "./backend/types.js";
+import type { Actor, TandemBackend } from "./backend/types.js";
 import { TandemError } from "./errors.js";
 import {
   MCP_INSTRUCTIONS,
@@ -67,7 +63,7 @@ export function createMcpServer(
       title: "Sync workspace",
       description:
         "Call this before any workspace-related work, then again with since before significant decisions or writes. " +
-        "next_steps restates the loop: read the files the task touches before working, write back and publish after. " +
+        "next_steps restates the loop: read the files the task touches before working, save files after. " +
         "Get the workspace context (approved goal, scope, decisions and ownership; working constraints and open questions), " +
         "List entries retain stable IDs and resolved/superseded history: use active entries as current context. " +
         "summaries of pending proposals, changed files, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. Safe to call at the start of project work and again before a significant write. " +
@@ -105,9 +101,7 @@ export function createMcpServer(
         const result = await backend.syncWorkspace(actor, args);
         return {
           ...result,
-          next_steps: syncNextSteps({
-            contextEmpty: contextEmpty(result.context),
-          }),
+          next_steps: syncNextSteps(),
         };
       }),
   );
@@ -223,7 +217,9 @@ export function createMcpServer(
           .int()
           .min(1)
           .optional()
-          .describe("An earlier version to read (from get_file_versions). Omit for the latest."),
+          .describe(
+            "An earlier version to read (from get_file_versions). Omit for the latest.",
+          ),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -236,7 +232,7 @@ export function createMcpServer(
       title: "Get file versions",
       description:
         "List a file's revision history, newest first: version number, when it was saved, who saved it (author.actor_type is " +
-        '"human" for dashboard edits or "agent" for assistant edits), and size. Use this to answer "who changed what, and when". ' +
+        '"human" for dashboard edits, "agent" for assistant edits, or "system" for Tandem\'s own), and size. Use this to answer "who changed what, and when". ' +
         "Each version's change says how many lines it added and removed against the version before it. " +
         "Lines are counted, not ordered: 0 added and 0 removed means a rename or move, or lines that were only reordered, so read both versions before saying nothing changed. " +
         "It returns no content: read_file with version reads any listed version, so read two and compare them to say what changed.",
@@ -487,7 +483,7 @@ export function createMcpServer(
     {
       title: "Propose context change",
       description:
-        "Update project context. Goal, scope, decisions and ownership create pending proposals requiring human owner/admin approval. " +
+        "Update project context when the user directs a goal, scope, decision, constraint, ownership or open-question change (Tandem's context manager proposes what saved files show). Goal, scope, decisions and ownership create pending proposals requiring human owner/admin approval. " +
         "If you haven't called sync_workspace in this conversation, do that first. " +
         "Constraints and open_questions additions apply immediately (status applied). operation defaults to add. " +
         "Resolve an open question with operation resolve, entry_id and expected_version from sync context_version; history is retained. " +
@@ -623,7 +619,7 @@ export function createMcpServer(
       title: "Publish work",
       description:
         "Share a project deliverable or finding with the team, linked to the files it covers. " +
-        "Publish after each project request that did work, even with no file change. " +
+        "Use it only for a deliverable or finding the user wants announced: Tandem's context manager already reads saved files and activity, so routine work needs no post. " +
         "Only publish relevant project work the user has authorized sharing; never private conversation history or personal content. " +
         "Publishing does not change files or the approved context: for goal, scope, decisions or ownership use propose_context_change. " +
         "If you haven't called sync_workspace in this conversation, do that first.",
@@ -631,7 +627,7 @@ export function createMcpServer(
         kind: z
           .enum(["deliverable", "finding"])
           .describe(
-            '"deliverable" for finished work, "finding" for facts learned or progress.',
+            '"deliverable" for finished work, "finding" for facts learned.',
           ),
         title: z.string().trim().min(1).max(200).describe("Short title."),
         summary: z
@@ -667,20 +663,6 @@ export function createMcpServer(
   );
 
   return server;
-}
-
-/** No goal, scope or active entries: sync's next_steps then asks to seed it. */
-function contextEmpty(context: StructuredContext): boolean {
-  return (
-    !context.goal &&
-    !context.scope &&
-    [
-      context.constraints,
-      context.decisions,
-      context.ownership,
-      context.open_questions,
-    ].every((entries) => entries.every((e) => e.status !== "active"))
-  );
 }
 
 /** A saved file's metadata plus what to do next. */

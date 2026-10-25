@@ -18,10 +18,7 @@ describe("loop guidance parity with Convex", () => {
   it("sends the same instructions and next_steps", () => {
     const file = { id: "file_1", version: 3 };
     expect(mock.MCP_INSTRUCTIONS).toBe(convex.MCP_INSTRUCTIONS);
-    for (const contextEmpty of [true, false])
-      expect(mock.syncNextSteps({ contextEmpty })).toEqual(
-        convex.syncNextSteps({ contextEmpty }),
-      );
+    expect(mock.syncNextSteps()).toEqual(convex.syncNextSteps());
     expect(mock.savedNextSteps(file)).toEqual(convex.savedNextSteps(file));
     expect(mock.publishedNextSteps()).toEqual(convex.publishedNextSteps());
     for (const status of ["pending", "applied", "stale"])

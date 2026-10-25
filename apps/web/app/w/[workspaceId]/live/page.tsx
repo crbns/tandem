@@ -8,15 +8,28 @@ import { useAgentNetwork } from "@/lib/api/useLive";
 import { networkHeadline, propagation } from "@/lib/live";
 import { AgentNetwork } from "@/components/live/AgentNetwork";
 import { ActivityTimeline } from "@/components/live/ActivityTimeline";
+import { ActivityFeed } from "@/components/live/ActivityFeed";
 import { MockAgentControls } from "@/components/live/MockAgentControls";
 import { KIND_STYLE } from "@/components/live/kinds";
 import { ErrorState } from "@/components/common/ErrorState";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SegmentedControl } from "@/components/ui/segmented-control";
+import { ObservedContextPanel } from "@/components/intelligence/ObservedContextPanel";
+import { ContextChangeHistory } from "@/components/intelligence/ContextChangeHistory";
+import { EntryHistoryDialog } from "@/components/intelligence/EntryHistoryDialog";
+
+type ActivityView = "tool_calls" | "all";
+const ACTIVITY_VIEWS: ReadonlyArray<{ value: ActivityView; label: string }> = [
+  { value: "tool_calls", label: "Tool calls & decisions" },
+  { value: "all", label: "All activity" },
+];
 
 export default function LivePage() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { resource, retry } = useAgentNetwork(workspaceId);
   const [connectionId, setConnectionId] = useState<string | null>(null);
+  const [view, setView] = useState<ActivityView>("tool_calls");
+  const [historyEntryId, setHistoryEntryId] = useState<string | null>(null);
   const agents = resource.status === "ready" ? resource.data.agents : [];
   // A revoked assistant drops out of the network; stop filtering by it.
   const selected = agents.some((a) => a.connectionId === connectionId) ? connectionId : null;
@@ -27,8 +40,16 @@ export default function LivePage() {
         <h1 className="text-2xl font-bold leading-8 tracking-[-0.01em]">Live</h1>
         <p className="max-w-3xl text-sm text-muted-foreground">
           Each assistant works in its own app and reaches this workspace only through Tandem. This page shows each
-          tool call as Tandem records it, and which approved context each assistant has received.
+          tool call as Tandem records it, which approved context each assistant has received, and what Tandem&apos;s
+          context manager has observed the team doing.
         </p>
+      </div>
+
+      <div className="grid items-start gap-5 min-[1400px]:grid-cols-[minmax(0,1fr)_25rem]">
+        <ObservedContextPanel workspaceId={workspaceId} onOpenHistory={setHistoryEntryId} />
+        <div className="min-[1400px]:sticky min-[1400px]:top-4 min-[1400px]:flex min-[1400px]:max-h-[calc(100vh-2rem)] min-[1400px]:flex-col">
+          <ContextChangeHistory workspaceId={workspaceId} onOpenHistory={setHistoryEntryId} />
+        </div>
       </div>
 
       {/* Side by side only once the network keeps room for its ring beside the timeline. */}
@@ -59,17 +80,23 @@ export default function LivePage() {
           )}
         </section>
 
-        <div className="min-[1400px]:sticky min-[1400px]:top-4 min-[1400px]:flex min-[1400px]:max-h-[calc(100vh-2rem)] min-[1400px]:flex-col">
-          <ActivityTimeline
-            workspaceId={workspaceId}
-            agents={agents}
-            connectionId={selected}
-            onConnectionChange={setConnectionId}
-          />
+        <div className="flex flex-col gap-2 min-[1400px]:sticky min-[1400px]:top-4 min-[1400px]:max-h-[calc(100vh-2rem)]">
+          <SegmentedControl label="Activity view" value={view} options={ACTIVITY_VIEWS} onChange={setView} className="max-w-full" />
+          {view === "tool_calls" ? (
+            <ActivityTimeline
+              workspaceId={workspaceId}
+              agents={agents}
+              connectionId={selected}
+              onConnectionChange={setConnectionId}
+            />
+          ) : (
+            <ActivityFeed workspaceId={workspaceId} agents={agents} connectionId={selected} onConnectionChange={setConnectionId} />
+          )}
         </div>
       </div>
 
-      <MockAgentControls agents={agents} />
+      <MockAgentControls workspaceId={workspaceId} agents={agents} />
+      <EntryHistoryDialog workspaceId={workspaceId} entryId={historyEntryId} onClose={() => setHistoryEntryId(null)} />
     </div>
   );
 }

@@ -4,6 +4,7 @@
 // and error codes as before. Pure functions: no ctx, no database.
 import { ConvexError, type Value } from "convex/values";
 import type { Doc } from "../_generated/dataModel";
+import { briefObserved, OBSERVED_NOTE, type Observed } from "./observed";
 
 type Actor = Doc<"workspace_events">["actor"];
 
@@ -465,10 +466,14 @@ export function isoOrNull(ms: number | null): string | null {
   return ms === null ? null : iso(ms);
 }
 
+/**
+ * System actors (the context manager, the conflict check) are "system", not
+ * "human": a person never made those changes.
+ */
 export function toAttribution(a: Actor) {
   const agent = a.type === "agent";
   return {
-    actor_type: agent ? ("agent" as const) : ("human" as const),
+    actor_type: a.type === "system" ? ("system" as const) : agent ? ("agent" as const) : ("human" as const),
     user_id: a.userId ?? "",
     client: a.client ?? (a.type === "system" ? "system" : agent ? "agent" : "dashboard"),
     ...(a.agentConnectionId ? { agent_connection_id: a.agentConnectionId } : {}),
@@ -633,10 +638,54 @@ type SyncRow = {
   workTruncated: boolean;
   tasks: TaskRow[];
   tasksTruncated: boolean;
+  /** Null with since when the event page didn't change it. */
+  observed: Observed | null;
+  observedRevision: number;
   events: EventRow[];
   eventsTruncated: boolean;
   cursorSeq: number;
 };
+
+/**
+ * lib/observed.ts in the tool contract. `note` travels with every copy so an
+ * assistant never mistakes derived state for approved context.
+ */
+function toObserved(o: Observed) {
+  return {
+    note: OBSERVED_NOTE,
+    revision: o.revision,
+    updated_at: isoOrNull(o.updatedAt),
+    last_run_at: isoOrNull(o.lastRunAt),
+    entries: o.entries.map((e) => ({
+      key: e.key,
+      category: e.category,
+      title: e.title,
+      content: e.content,
+      status: e.status,
+      evidence: e.evidence,
+      confidence: e.confidence,
+      agents: e.agents,
+      updated_at: iso(e.updatedAt),
+    })),
+    truncated: o.truncated,
+  };
+}
+
+/**
+ * Brief recent_work once the context manager has run: observed carries what
+ * the work showed, so publications shrink to what identifies them (a full
+ * sync keeps the summaries).
+ */
+function toPublishedTitle(w: Parameters<typeof toPublished>[0]) {
+  return {
+    id: w.id,
+    kind: w.kind,
+    title: w.title,
+    created_by: w.createdBy.label,
+    created_at: iso(w.createdAt),
+    file_ids: w.fileIds,
+  };
+}
 
 /** Cap on each list in the sync brief. */
 export const BRIEF_LIMIT = 10;
@@ -678,7 +727,7 @@ function toResolvedConflict(c: ResolvedConflictRow) {
  * says a list was capped at BRIEF_LIMIT (the full lists are in context,
  * pending_proposals and events).
  */
-function toSyncBrief(r: SyncRow) {
+function toSyncBrief(r: SyncRow, detail: "brief" | "full") {
   const active = (entries: ContextEntry[]) => entries.filter((e) => e.status === "active");
   const decisions = active(r.context.decisions);
   const questions = active(r.context.openQuestions);
@@ -707,6 +756,14 @@ function toSyncBrief(r: SyncRow) {
       at: iso(e.createdAt),
     })),
     changed_file_count: r.changedFiles.length,
+    // Derived, not approved; capped on its own, so `truncated` below ignores
+    // it. A full sync carries it once, at top level.
+    ...(detail === "brief" && {
+      // False only with since, when the event page held no observed change:
+      // observed is then left out rather than resent.
+      observed_changed: r.observed !== null,
+      observed: r.observed ? toObserved(briefObserved(r.observed)) : undefined,
+    }),
     truncated:
       decisions.length > BRIEF_LIMIT ||
       questions.length > BRIEF_LIMIT ||
@@ -718,10 +775,11 @@ function toSyncBrief(r: SyncRow) {
 
 /**
  * `detail: "full"` keeps the whole contract with `brief` first; `"brief"`
- * drops context, proposals and events and trims files to id/name/version.
+ * drops context, proposals and events, trims files to id/name/version and,
+ * once observed exists, recent_work to titles.
  */
 export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
-  const brief = toSyncBrief(r);
+  const brief = toSyncBrief(r, detail);
   const cursor = encodeCursor(r.workspace.id, r.cursorSeq);
   if (detail === "brief")
     return {
@@ -733,8 +791,10 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
       // Preserve every tombstone even when the brief's ten-event list is capped.
       deleted_file_ids: r.events.filter((e) => e.kind === "file.deleted").map((e) => e.entityId),
       files_truncated: r.filesTruncated,
-      // Full publications: the cursor acknowledges them and no tool reads one by id.
-      recent_work: r.recentWork.map(toPublished),
+      // The cursor acknowledges these and no tool reads one by id: full
+      // publications until the context manager has run, then titles only
+      // (observed summarizes them; a full sync has the summaries).
+      recent_work: r.observedRevision > 0 ? r.recentWork.map(toPublishedTitle) : r.recentWork.map(toPublished),
       work_truncated: r.workTruncated,
       // Full tasks too: they are small and the cursor acknowledges their changes.
       tasks: r.tasks.map(toTask),
@@ -770,6 +830,10 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
     work_truncated: r.workTruncated,
     tasks: r.tasks.map(toTask),
     tasks_truncated: r.tasksTruncated,
+    // Written out rather than spread so the brief|full union keeps optional
+    // keys (fileLifecycle.test reads .events off it).
+    observed_changed: r.observed !== null,
+    observed: r.observed ? toObserved(r.observed) : undefined,
     events: r.events.map((e) => ({
       seq: e.seq,
       workspace_id: r.workspace.id,

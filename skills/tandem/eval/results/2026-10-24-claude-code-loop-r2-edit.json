@@ -1,0 +1,577 @@
+{
+  "date": "2026-10-24",
+  "stem": "2026-10-24-claude-code-loop-r2-edit",
+  "started_at": "2026-10-25T05:35:26.433Z",
+  "finished_at": "2026-10-25T05:35:38.426Z",
+  "client": "claude-code",
+  "cli_version": "2.1.310 (Claude Code)",
+  "model_requested": "sonnet",
+  "models_reported": [
+    "claude-sonnet-5-5"
+  ],
+  "settings": {
+    "env": "bare",
+    "reps": 1,
+    "max_turns": 10,
+    "timeout_sec": 240,
+    "concurrency": 2,
+    "conditions": [
+      "WITH_SKILL",
+      "NO_SKILL"
+    ],
+    "claude_flags": [
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--mcp-config",
+      "--strict-mcp-config",
+      "--setting-sources",
+      "project",
+      "--no-session-persistence",
+      "--model",
+      "sonnet",
+      "--max-turns",
+      "10",
+      "--permission-mode",
+      "dontAsk",
+      "--allowedTools",
+      "mcp__tandem__*",
+      "Skill",
+      "ToolSearch",
+      "Read",
+      "Glob",
+      "Grep",
+      "--disallowedTools",
+      "Bash",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      "Task",
+      "Agent",
+      "TaskStop",
+      "ListAgents",
+      "SendMessage",
+      "Workflow",
+      "Monitor",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "ScheduleWakeup",
+      "RemoteTrigger",
+      "PushNotification",
+      "EnterWorktree",
+      "ExitWorktree",
+      "DesignSync",
+      "ReportFindings"
+    ],
+    "server": "apps/mcp mock backend, fresh process per trial, api-key auth as user_alex",
+    "brief_seed": "brief.md saved as v2 (fixtures TANDEM_BRIEF) by user_sam before conflict trials only; other trials use the server's v1 seed",
+    "teammate_marker": "Teammate note (sam): budget approved — keep this line."
+  },
+  "prompts": [
+    {
+      "id": "p6-conflict-edit",
+      "kind": "conflict",
+      "conflict": true,
+      "text": "Tighten the intro paragraph of our project brief and save the change.",
+      "expected": "read_file, update_document hits VERSION_CONFLICT (teammate edit injected), re-read, merge keeping the teammate's line, retry once",
+      "loop": {
+        "require": [
+          "read",
+          "save"
+        ],
+        "forbid": [
+          "publish",
+          "propose"
+        ]
+      }
+    }
+  ],
+  "isolation": {
+    "clean": true,
+    "leaks": [],
+    "env": "bare",
+    "expected_mcp_servers": [
+      "tandem"
+    ],
+    "mcp_servers_seen": [
+      "tandem:connected"
+    ],
+    "builtin_tools_seen": [
+      "Glob",
+      "Grep",
+      "Read",
+      "Skill",
+      "ToolSearch"
+    ],
+    "plugins_seen": [
+      "cc-plugin-agents-md@builtin",
+      "cc-plugin-telemetry@builtin",
+      "cc-plugin-plugin-authoring@builtin"
+    ],
+    "skills_only_with_skill": [
+      "tandem"
+    ],
+    "builtin_skills_seen": [
+      "deep-research",
+      "design",
+      "design-sync",
+      "dataviz",
+      "update-config",
+      "verify",
+      "debug",
+      "code-review",
+      "simplify",
+      "batch",
+      "fewer-permission-prompts",
+      "doctor",
+      "loop",
+      "schedule",
+      "claude-api",
+      "workflow-authoring",
+      "run",
+      "run-skill-generator",
+      "plugin-authoring"
+    ],
+    "notes": [
+      "--setting-sources project and --strict-mcp-config exclude user settings, user plugins and user/claude.ai MCP servers.",
+      "The init event doesn't show memory files. That --setting-sources project also keeps out the user's ~/.claude/CLAUDE.md and auto-memory was verified manually by the Step C reviewer's probe on 2026-10-23, not by this harness.",
+      "Built-in plugins (@builtin) and built-in skills ship with the CLI and are present in both conditions.",
+      "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 is set; the CLI may still create an empty ~/.claude/projects/<tmp-slug>/memory dir, which the harness removes only if empty."
+    ]
+  },
+  "summary": {
+    "rows": [
+      {
+        "prompt_id": "p6-conflict-edit",
+        "kind": "conflict",
+        "condition": "WITH_SKILL",
+        "n": 1,
+        "skill_invoked": 1,
+        "any_tandem": 1,
+        "sync": 1,
+        "sync_ok": 1,
+        "first_is_sync": 1,
+        "write": 1,
+        "write_ok": 1,
+        "used_local_files": 0,
+        "used_distractor_mcp": 0,
+        "answered_from_stale_local": 0,
+        "answered_from_stale_distractor": 0,
+        "tool_errors": 0,
+        "errors_or_timeouts": 0,
+        "cost_usd": 0.0908124
+      },
+      {
+        "prompt_id": "p6-conflict-edit",
+        "kind": "conflict",
+        "condition": "NO_SKILL",
+        "n": 1,
+        "skill_invoked": 0,
+        "any_tandem": 1,
+        "sync": 1,
+        "sync_ok": 1,
+        "first_is_sync": 1,
+        "write": 1,
+        "write_ok": 1,
+        "used_local_files": 1,
+        "used_distractor_mcp": 0,
+        "answered_from_stale_local": 0,
+        "answered_from_stale_distractor": 0,
+        "tool_errors": 0,
+        "errors_or_timeouts": 0,
+        "cost_usd": 0.0510514
+      }
+    ],
+    "totals": [
+      {
+        "kind": "conflict",
+        "condition": "WITH_SKILL",
+        "n": 1,
+        "skill_invoked": 1,
+        "any_tandem": 1,
+        "sync": 1,
+        "sync_ok": 1,
+        "first_is_sync": 1,
+        "write": 1,
+        "write_ok": 1,
+        "used_local_files": 0,
+        "used_distractor_mcp": 0,
+        "answered_from_stale_local": 0,
+        "answered_from_stale_distractor": 0,
+        "tool_errors": 0,
+        "errors_or_timeouts": 0,
+        "cost_usd": 0.0908124
+      },
+      {
+        "kind": "conflict",
+        "condition": "NO_SKILL",
+        "n": 1,
+        "skill_invoked": 0,
+        "any_tandem": 1,
+        "sync": 1,
+        "sync_ok": 1,
+        "first_is_sync": 1,
+        "write": 1,
+        "write_ok": 1,
+        "used_local_files": 1,
+        "used_distractor_mcp": 0,
+        "answered_from_stale_local": 0,
+        "answered_from_stale_distractor": 0,
+        "tool_errors": 0,
+        "errors_or_timeouts": 0,
+        "cost_usd": 0.0510514
+      }
+    ]
+  },
+  "conflict_summary": [
+    {
+      "prompt_id": "p6-conflict-edit",
+      "condition": "WITH_SKILL",
+      "n": 1,
+      "injected": 0,
+      "no_inject": 1,
+      "conflict_hit": 0,
+      "reread_after_conflict": 0,
+      "retried": 0,
+      "looped": 0,
+      "recovered": 0,
+      "clobbered": 0,
+      "asked_user": 0,
+      "outcomes": {
+        "no_inject:never_read": 1
+      },
+      "inject_latency_ms_median": null,
+      "inject_latency_ms_max": null,
+      "cost_usd": 0.0908124
+    },
+    {
+      "prompt_id": "p6-conflict-edit",
+      "condition": "NO_SKILL",
+      "n": 1,
+      "injected": 0,
+      "no_inject": 1,
+      "conflict_hit": 0,
+      "reread_after_conflict": 0,
+      "retried": 0,
+      "looped": 0,
+      "recovered": 0,
+      "clobbered": 0,
+      "asked_user": 0,
+      "outcomes": {
+        "no_inject:never_read": 1
+      },
+      "inject_latency_ms_median": null,
+      "inject_latency_ms_max": null,
+      "cost_usd": 0.0510514
+    }
+  ],
+  "folder_summary": [],
+  "loop_summary": [
+    {
+      "prompt_id": "p6-conflict-edit",
+      "condition": "WITH_SKILL",
+      "n": 1,
+      "passed": 1,
+      "missing": {},
+      "unwanted": {},
+      "write_calls": 1,
+      "publish_calls": 0,
+      "propose_calls": 0
+    },
+    {
+      "prompt_id": "p6-conflict-edit",
+      "condition": "NO_SKILL",
+      "n": 1,
+      "passed": 1,
+      "missing": {},
+      "unwanted": {},
+      "write_calls": 1,
+      "publish_calls": 0,
+      "propose_calls": 0
+    }
+  ],
+  "trials": [
+    {
+      "prompt_id": "p6-conflict-edit",
+      "kind": "conflict",
+      "condition": "WITH_SKILL",
+      "rep": 1,
+      "model": "claude-sonnet-5-5",
+      "exit_code": 0,
+      "timed_out": false,
+      "error": null,
+      "auth_error": null,
+      "tools": [
+        "Skill:tandem",
+        "ToolSearch",
+        "mcp__tandem__sync_workspace",
+        "mcp__tandem__search_files",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document"
+      ],
+      "tandem_tools": [
+        "sync_workspace",
+        "search_files",
+        "read_file",
+        "update_document"
+      ],
+      "tandem_called": true,
+      "sync_called": true,
+      "sync_ok": true,
+      "first_tandem_is_sync": true,
+      "skill_invoked": true,
+      "write_called": true,
+      "write_ok": true,
+      "write_tools": [
+        {
+          "tool": "update_document",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "tandem_errors": [],
+      "permission_denials": [],
+      "subagent_tool_calls": 0,
+      "local_file_calls": 0,
+      "local_file_targets": [],
+      "used_local_files": false,
+      "distractor_calls": 0,
+      "distractor_tools": [],
+      "used_distractor_mcp": false,
+      "answer_has_tandem_marker": true,
+      "answer_has_stale_local_marker": false,
+      "answer_has_stale_distractor_marker": false,
+      "answered_from_stale_local": false,
+      "answered_from_stale_distractor": false,
+      "loop": {
+        "require": [
+          "read",
+          "save"
+        ],
+        "forbid": [
+          "publish",
+          "propose"
+        ],
+        "missing": [],
+        "unwanted": [],
+        "passed": true,
+        "write_calls": 1,
+        "publish_calls": 0,
+        "propose_calls": 0
+      },
+      "conflict": {
+        "outcome": "no_inject:never_read",
+        "injected": false,
+        "inject_skipped": "never_read",
+        "inject_error": null,
+        "inject_latency_ms": null,
+        "injected_before_next_call": null,
+        "read_version": null,
+        "teammate_version": null,
+        "update_calls": 1,
+        "conflict_hit": false,
+        "reread_after_conflict": false,
+        "retry_count": 0,
+        "retry_ok": false,
+        "looped": false,
+        "recovered": false,
+        "clobbered": false,
+        "asked_user": false,
+        "merge_questions": [],
+        "head_version": 3,
+        "head_updated_by": "user_alex",
+        "head_has_marker": false,
+        "head_error": null
+      },
+      "num_turns": 8,
+      "cost_usd": 0.0908124,
+      "result_text": "I tightened the intro paragraph of `/brief.md` and saved it as v3. The rest of the file is unchanged.\n\n**Before:**\n> Tandem is a shared workspace where a team keeps its canonical files and its project context in one place, and where every teammate can keep using their own AI assistant, which reads and updates those files through a remote MCP server. This brief is the starting point for anyone who is joining the project, and it should be read before any other document, because it explains what we are building, why we are building it, and what is deliberately out of scope for the version that we are going to demo at Cal Hacks 13.0.\n\n**After:**\n> Tandem is a shared workspace where a team keeps its canonical files and project context in one place, and where each teammate can use their own AI assistant to read and update those files through a remote MCP server. Read this brief before any other document: it explains what we are building, why, and what is out of scope for the Cal Hacks 13.0 demo.\n\nI read `/brief.md` at v2 and saved v3. The save is live for teammates now, and I didn't publish or propose anything.",
+      "init": {
+        "mcp_servers": [
+          "tandem:connected"
+        ],
+        "non_tandem_mcp_tools": [],
+        "builtin_tools": [
+          "Glob",
+          "Grep",
+          "Read",
+          "Skill",
+          "ToolSearch"
+        ],
+        "tandem_tool_count": 14,
+        "skills": [
+          "tandem",
+          "deep-research",
+          "design",
+          "design-sync",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "plugins": [
+          "cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring@builtin"
+        ],
+        "permission_mode": "dontAsk"
+      },
+      "duration_ms": 11429
+    },
+    {
+      "prompt_id": "p6-conflict-edit",
+      "kind": "conflict",
+      "condition": "NO_SKILL",
+      "rep": 1,
+      "model": "claude-sonnet-5-5",
+      "exit_code": 0,
+      "timed_out": false,
+      "error": null,
+      "auth_error": null,
+      "tools": [
+        "ToolSearch",
+        "Glob",
+        "mcp__tandem__sync_workspace",
+        "mcp__tandem__search_files",
+        "mcp__tandem__read_file",
+        "mcp__tandem__update_document"
+      ],
+      "tandem_tools": [
+        "sync_workspace",
+        "search_files",
+        "read_file",
+        "update_document"
+      ],
+      "tandem_called": true,
+      "sync_called": true,
+      "sync_ok": true,
+      "first_tandem_is_sync": true,
+      "skill_invoked": false,
+      "write_called": true,
+      "write_ok": true,
+      "write_tools": [
+        {
+          "tool": "update_document",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "tandem_errors": [],
+      "permission_denials": [],
+      "subagent_tool_calls": 0,
+      "local_file_calls": 1,
+      "local_file_targets": [
+        "Glob:**/*"
+      ],
+      "used_local_files": true,
+      "distractor_calls": 0,
+      "distractor_tools": [],
+      "used_distractor_mcp": false,
+      "answer_has_tandem_marker": true,
+      "answer_has_stale_local_marker": false,
+      "answer_has_stale_distractor_marker": false,
+      "answered_from_stale_local": false,
+      "answered_from_stale_distractor": false,
+      "loop": {
+        "require": [
+          "read",
+          "save"
+        ],
+        "forbid": [
+          "publish",
+          "propose"
+        ],
+        "missing": [],
+        "unwanted": [],
+        "passed": true,
+        "write_calls": 1,
+        "publish_calls": 0,
+        "propose_calls": 0
+      },
+      "conflict": {
+        "outcome": "no_inject:never_read",
+        "injected": false,
+        "inject_skipped": "never_read",
+        "inject_error": null,
+        "inject_latency_ms": null,
+        "injected_before_next_call": null,
+        "read_version": null,
+        "teammate_version": null,
+        "update_calls": 1,
+        "conflict_hit": false,
+        "reread_after_conflict": false,
+        "retry_count": 0,
+        "retry_ok": false,
+        "looped": false,
+        "recovered": false,
+        "clobbered": false,
+        "asked_user": false,
+        "merge_questions": [],
+        "head_version": 3,
+        "head_updated_by": "user_alex",
+        "head_has_marker": false,
+        "head_error": null
+      },
+      "num_turns": 7,
+      "cost_usd": 0.0510514,
+      "result_text": "I tightened the intro paragraph of `/brief.md` and saved it as version 3. The rest of the brief is unchanged.\n\n**New intro:**\n\n> Tandem is a shared workspace where a team keeps its canonical files and project context in one place, and where each teammate can use their own AI assistant to read and update those files through a remote MCP server. Read this brief before any other document: it explains what we are building, why, and what is out of scope for the Cal Hacks 13.0 demo.\n\n**What I changed:**\n- I cut filler such as \"its project context\", \"keep using\", \"the version that we are going to demo\", and the repeated \"because it explains\".\n- I split the long second sentence into a short instruction plus a short list of what the brief covers.\n- I kept the meaning the same.\n\nI read `/brief.md` at version 2 and saved version 3.",
+      "init": {
+        "mcp_servers": [
+          "tandem:connected"
+        ],
+        "non_tandem_mcp_tools": [],
+        "builtin_tools": [
+          "Glob",
+          "Grep",
+          "Read",
+          "Skill",
+          "ToolSearch"
+        ],
+        "tandem_tool_count": 14,
+        "skills": [
+          "deep-research",
+          "design",
+          "design-sync",
+          "dataviz",
+          "update-config",
+          "verify",
+          "debug",
+          "code-review",
+          "simplify",
+          "batch",
+          "fewer-permission-prompts",
+          "doctor",
+          "loop",
+          "schedule",
+          "claude-api",
+          "workflow-authoring",
+          "run",
+          "run-skill-generator",
+          "plugin-authoring"
+        ],
+        "plugins": [
+          "cc-plugin-agents-md@builtin",
+          "cc-plugin-telemetry@builtin",
+          "cc-plugin-plugin-authoring@builtin"
+        ],
+        "permission_mode": "dontAsk"
+      },
+      "duration_ms": 9451
+    }
+  ]
+}

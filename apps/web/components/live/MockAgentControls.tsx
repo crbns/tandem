@@ -15,7 +15,7 @@ const CALLS: ReadonlyArray<{ call: SimulatedCall; label: string }> = [
 ];
 
 /** Mock mode only: make a connected assistant call a tool, to see the page react. */
-export function MockAgentControls({ agents }: { agents: NetworkAgent[] }) {
+export function MockAgentControls({ workspaceId, agents }: { workspaceId: string; agents: NetworkAgent[] }) {
   const mock = useMockControls();
   const [picked, setPicked] = useState<string | null>(null);
   if (!mock || agents.length === 0) return null;
@@ -53,6 +53,21 @@ export function MockAgentControls({ agents }: { agents: NetworkAgent[] }) {
           {label}
         </Button>
       ))}
+      <span className="ml-2">or</span>
+      <Button
+        variant="outline"
+        size="sm"
+        className="border-dashed text-xs"
+        onClick={() => {
+          try {
+            mock.__simulateIntelActivity(workspaceId);
+          } catch (err) {
+            toast.error(ERROR_COPY[normalizeError(err).code].title);
+          }
+        }}
+      >
+        Simulated Claude Code event
+      </Button>
     </div>
   );
 }

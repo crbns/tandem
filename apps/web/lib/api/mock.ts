@@ -3,6 +3,7 @@ import { normalizeError, TandemApiError } from "./errors";
 import { clientName } from "../actors";
 import { generateInviteCode, normalizeInviteCode } from "../inviteCode";
 import { BINARY_MIME_TYPES, MAX_UPLOAD_BYTES } from "@repo/backend/convex/lib/binaries.js";
+import { createMockIntelligence, type MockIntelligence } from "./mockIntelligence";
 
 const MOCK_MCP_URL = "https://mock-deployment.convex.site/mcp";
 import type { TandemApi } from "./tandemApi";
@@ -45,6 +46,8 @@ export interface MockTandemApi extends TandemApi {
   __simulatePublishedWork(workspaceId: string, work: Omit<PublishedWork, "id" | "workspaceId" | "createdAt">): void;
   /** Dev-only: pretend a connected assistant made one MCP call (Live page controls). */
   __simulateAgentCall(connectionId: string, call: SimulatedCall): void;
+  /** Dev-only: a simulated Claude Code event and a context-manager pass over it. */
+  __simulateIntelActivity: MockIntelligence["__simulateIntelActivity"];
 }
 
 export type SimulatedCall = "sync" | "read" | "write" | "stale_write";
@@ -685,7 +688,23 @@ export function createMockApi({
     updatedBy: { ...s.updatedBy },
   });
 
+  const intelligence = createMockIntelligence({
+    workspaceId: MOCK_WORKSPACE_ID,
+    delay,
+    requireMember,
+    requireAdmin,
+    currentActor: () => {
+      const actor = getActor();
+      const label = actor.userName ?? "A teammate";
+      return { type: "human", label, client: null, userName: label };
+    },
+    proposalStatus: (id) => proposals.find((p) => p.id === id)?.status ?? null,
+    watchLive,
+    pingLive,
+  });
+
   return {
+    ...intelligence,
     async listWorkspaces() {
       await delay();
       memberNames.set(signedInUser(), getActor().userName ?? "Workspace member");

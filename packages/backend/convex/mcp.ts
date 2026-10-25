@@ -38,6 +38,7 @@ import {
   toToolError,
   type ErrorHint,
 } from "./lib/mcpContract";
+import { CONFLICT_CODES } from "./lib/agent";
 import { MCP_PATH, MCP_SCOPES, mcpConsentUrl } from "./lib/mcpConfig";
 import {
   MCP_INSTRUCTIONS,
@@ -46,6 +47,7 @@ import {
   savedNextSteps,
   syncNextSteps,
 } from "./lib/mcpLoop";
+import { redactPayload } from "./lib/redact";
 
 const tool = createTool<string>();
 
@@ -129,16 +131,22 @@ async function run(
   ctx: ToolCtx,
   principal: McpUser<string>,
   toolName: string,
+  args: object,
   fn: () => Promise<object>,
   hint: ErrorHint = {},
 ) {
+  const startedAt = Date.now();
   try {
     const result = await fn();
+    await logCall(ctx, principal, toolName, args, startedAt, hint, { result });
     return callToolResult({
       content: [{ type: "text", text: JSON.stringify(result) }],
       structuredContent: result as Record<string, unknown>,
     });
   } catch (raw) {
+    // Every failure past the credential check goes to activity_events too.
+    if (!(raw instanceof ConvexError && isUnauthenticated(raw)))
+      await logCall(ctx, principal, toolName, args, startedAt, hint, { error: raw });
     // A failed tool mutation rolls back its own presence touch and activity
     // row, so record both separately, never fatally: for errors Convex raised
     // past the credential check, and for the handler's own ToolErrors (bad
@@ -175,6 +183,113 @@ async function run(
       structuredContent: { error: { ...details, code, message } },
     });
   }
+}
+
+/**
+ * Records the call in activity_events (docs/context-intelligence.md): redacted
+ * arguments, a digest of the result and the outcome. Telemetry is best
+ * effort: it never throws and never changes what the caller gets back.
+ */
+async function logCall(
+  ctx: ToolCtx,
+  principal: McpUser<string>,
+  toolName: string,
+  args: object,
+  startedAt: number,
+  hint: ErrorHint,
+  done: { result: object } | { error: unknown },
+) {
+  try {
+    let outcome: "ok" | "conflict" | "error" = "ok";
+    let errorCode: string | undefined;
+    if ("error" in done) {
+      const err = done.error;
+      errorCode = err instanceof ConvexError || err instanceof ToolError ? activityErrorCode(err) : "ERROR";
+      outcome = CONFLICT_CODES.has(errorCode) ? "conflict" : "error";
+    }
+    const digest = "result" in done ? digestResult(done.result) : undefined;
+    const resources = callResources(toolName, digest, hint);
+    await ctx.runMutation(internal.activityLog.ingestMcpCall, {
+      principal: p(principal),
+      tool: toolName,
+      args: redactPayload(args),
+      result: redactPayload(digest),
+      outcome,
+      errorCode,
+      durationMs: Date.now() - startedAt,
+      correlationId: crypto.randomUUID(),
+      ...(resources.length ? { resources } : {}),
+    });
+  } catch (err) {
+    console.warn("activity log failed", err instanceof Error ? err.message : err);
+  }
+}
+
+// Result keys that hold bodies or prose, never ids or counts.
+const DIGEST_DROP = new Set(["content", "next_steps", "summary", "description", "text", "instructions"]);
+const DIGEST_STRING_MAX = 200;
+
+function digestValue(value: unknown, nested: boolean): unknown {
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return value.length <= DIGEST_STRING_MAX ? value : undefined;
+  if (Array.isArray(value)) return { count: value.length };
+  if (typeof value === "object" && !nested) {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (DIGEST_DROP.has(key)) continue;
+      const kept = digestValue(item, true);
+      if (kept !== undefined) out[key] = kept;
+    }
+    return out;
+  }
+  return undefined;
+}
+
+/**
+ * The shape of a tool result without its substance: top-level scalars (ids,
+ * names, versions, statuses), the scalars of each nested object, and arrays
+ * as counts. Document content and long text are dropped.
+ */
+function digestResult(result: object): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(result)) {
+    if (DIGEST_DROP.has(key)) continue;
+    const kept = digestValue(value, false);
+    if (kept !== undefined) out[key] = kept;
+  }
+  return out;
+}
+
+type CallResource = { type: "file" | "folder" | "proposal" | "task" | "published_work"; id: string; label?: string };
+
+// Where each tool's result names what it acted on: [type, key or top level].
+const RESULT_RESOURCES: Record<string, [CallResource["type"], string | null]> = {
+  create_document: ["file", null],
+  update_document: ["file", null],
+  move_file: ["file", null],
+  read_file: ["file", "file"],
+  get_file_versions: ["file", "file"],
+  create_folder: ["folder", "folder"],
+  move_folder: ["folder", null],
+  propose_context_change: ["proposal", "proposal"],
+  manage_task: ["task", "task"],
+  publish_work: ["published_work", "published"],
+};
+
+/** What the call acted on: from the result digest, else the failed call's hint. */
+function callResources(toolName: string, digest: Record<string, unknown> | undefined, hint: ErrorHint): CallResource[] {
+  const where = RESULT_RESOURCES[toolName];
+  if (digest && where) {
+    const [type, key] = where;
+    const row = key === null ? digest : digest[key];
+    if (row && typeof row === "object") {
+      const { id, path, name, title, field } = row as Record<string, unknown>;
+      const label = [path, title, name, field].find((value) => typeof value === "string");
+      if (typeof id === "string") return [{ type, id, ...(typeof label === "string" ? { label } : {}) }];
+    }
+  }
+  const failed = activityResource(toolName, hint).resource;
+  return failed ? [failed] : [];
 }
 
 /** A ConvexError's or ToolError's code for the activity feed; anything else is "ERROR". */
@@ -237,8 +352,8 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "For project state (goal, decisions, blockers, changes) call sync_workspace.",
       annotations: readOnly,
       scope: READ,
-      handler: (ctx, _args, user) =>
-        run(ctx, user, "get_workspace_info", async () => {
+      handler: (ctx, args, user) =>
+        run(ctx, user, "get_workspace_info", args, async () => {
           const r = await ctx.runMutation(internal.mcpTools.getWorkspaceInfo, { principal: p(user) });
           return {
             user: { id: r.userId },
@@ -266,16 +381,20 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       title: "Sync workspace",
       description:
         "Call this before any workspace-related work, then again with since before significant decisions or writes. " +
-        "next_steps restates the loop: read the files the task touches before working, write back and publish after. " +
+        "next_steps restates the loop: read the files the task touches before working, save files after. " +
         "Read brief first: goal, scope, active_decisions, blockers (active open_questions, pending_approvals, conflicts), recent_changes (newest first) and changed_file_count; " +
         `each list holds at most ${BRIEF_LIMIT} and truncated says one was capped. ` +
-        'detail: "full" (default) or "brief" (only brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/path/version, deleted_file_ids, full recent_work and tasks;' +
-        "no context, pending_proposals or events). Use brief to orient; before decisions or writes that may depend on constraints or ownership, use full, and read_file before editing. " +
+        'detail: "full" (default) or "brief" (only brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/path/version, deleted_file_ids, recent_work and tasks; ' +
+        "no context, pending_proposals or events; once observed.revision > 0, brief recent_work is titles only: id, kind, title, created_by, created_at, file_ids). Use brief to orient; before decisions or writes that may depend on constraints or ownership, use full, and read_file before editing. " +
         "The full result also has approved authoritative context (goal, scope, decisions, ownership), working constraints and open questions with retained resolved/superseded history, " +
         "clearly labeled pending proposals (proposed text, supersedes target and conflict; not yet in effect), changed files, tasks, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. " +
         "Only context and brief.active_decisions are in effect. blockers.conflicts lists pending proposals held because they conflict with approved context or another proposal: they are NOT in effect until a person resolves them, so keep following the approved value. " +
+        "observed (top level in full, up to 30 entries; brief.observed in brief, up to 10 with content clipped; open blockers and active work first, document digests last) is the context manager's compacted summary of teammates' assistant activity and workspace documents: " +
+        "read it instead of skimming recent_work and events. Entries have key, category, title, content, status, evidence (requested < claimed < observed < verified < human_confirmed), confidence, agents (labels) and updated_at. " +
+        "It is NOT approved context: treat claimed as unconfirmed and never present claimed work as done. " +
+        "observed_changed is false only with since when this event page held no context.observed or context.corrected event; observed is then omitted (keep what you read). " +
         "resolved_conflicts (both details; the newest 5 in a snapshot, those resolved in this event page with since) says how a person settled each conflict: outcome, note, and which entries are in_effect now. " +
-        "Read recent_work before starting; a snapshot contains the newest 20 publications. With since, it contains the newest 20 publications within this event page; later work arrives when you continue syncing. work_truncated means older matching work within that page (or snapshot) was omitted. " +
+        "A snapshot's recent_work contains the newest 20 publications. With since, it contains the newest 20 publications within this event page; later work arrives when you continue syncing. work_truncated means older matching work within that page (or snapshot) was omitted. " +
         "Without since you get a snapshot: the full context, all files (up to 50), active tasks (open and in_progress, up to 50; tasks_truncated if more) and the latest events. " +
         "folders lists the workspace's folders with their paths (up to 200; folders_truncated if there are more), and every file has a path. " +
         "With since, tasks holds every task changed in this event page, including ones just completed (status done). " +
@@ -296,7 +415,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "sync_workspace", async () => {
+        run(ctx, user, "sync_workspace", args, async () => {
           const since = args.since === undefined ? undefined : parseCursor(args.since);
           const r = await ctx.runMutation(internal.mcpTools.syncWorkspace, {
             principal: p(user),
@@ -305,10 +424,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
             cursorWorkspaceId: since?.workspaceId,
             detail: args.detail ?? "full",
           });
-          const c = r.context;
-          const contextEmpty = !c.goal?.text && !c.scope?.text &&
-            [c.constraints, c.decisions, c.ownership, c.openQuestions].every((entries) => entries.every((e) => e.status !== "active"));
-          return { ...toSyncResult(r, args.detail), next_steps: syncNextSteps({ contextEmpty }) };
+          return { ...toSyncResult(r, args.detail), next_steps: syncNextSteps() };
         }, { workspaceId: args.workspace_id }),
     }),
 
@@ -338,7 +454,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "list_files", async () => {
+        run(ctx, user, "list_files", args, async () => {
           oneOf(args.folder_id, args.path, ["folder_id", "path"], false);
           const r = await ctx.runMutation(internal.mcpTools.listFiles, {
             principal: p(user),
@@ -372,7 +488,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "search_files", async () => {
+        run(ctx, user, "search_files", args, async () => {
           const rows = await ctx.runMutation(internal.mcpTools.searchFiles, {
             principal: p(user),
             workspaceId: args.workspace_id,
@@ -398,7 +514,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "read_file", async () => {
+        run(ctx, user, "read_file", args, async () => {
           oneOf(args.file_id, args.path, ["file_id", "path"], true);
           const { file, content, version } = await ctx.runMutation(internal.mcpTools.readFile, {
             principal: p(user),
@@ -421,7 +537,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       title: "Get file versions",
       description:
         "List a file's revision history, newest first: version number, when it was saved, who saved it (author.actor_type is " +
-        '"human" for dashboard edits or "agent" for assistant edits), and size. Use this to answer "who changed what, and when". ' +
+        '"human" for dashboard edits, "agent" for assistant edits, or "system" for Tandem\'s own), and size. Use this to answer "who changed what, and when". ' +
         "Each version's change says how many lines it added and removed against the version before it (null for binary uploads). " +
         "Lines are counted, not ordered: 0 added and 0 removed means a rename or move, or lines that were only reordered, so read both versions before saying nothing changed. " +
         "It returns no content: read_file with version reads any listed version, so read two and compare them to say what changed. limit: 1–100, default 20.",
@@ -429,7 +545,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "get_file_versions", async () => {
+        run(ctx, user, "get_file_versions", args, async () => {
           const r = await ctx.runMutation(internal.mcpTools.getFileVersions, {
             principal: p(user),
             fileId: id(args.file_id, "file_id"),
@@ -474,7 +590,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(false),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "create_document", async () => {
+        run(ctx, user, "create_document", args, async () => {
           oneOf(args.parent_id, args.folder_path, ["parent_id", "folder_path"], false);
           const file = await ctx.runMutation(internal.mcpTools.createDocument, {
             principal: p(user),
@@ -503,7 +619,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "update_document", async () => {
+        run(ctx, user, "update_document", args, async () => {
           if (!Number.isInteger(args.expected_version) || args.expected_version < 1)
             throw invalidInput("expected_version must be a positive integer.", { field: "expected_version" });
           const file = await ctx.runMutation(internal.mcpTools.updateDocument, {
@@ -530,7 +646,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "create_folder", async () => {
+        run(ctx, user, "create_folder", args, async () => {
           const r = await ctx.runMutation(internal.mcpTools.createFolder, {
             principal: p(user),
             workspaceId: args.workspace_id,
@@ -560,7 +676,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "move_file", async () => {
+        run(ctx, user, "move_file", args, async () => {
           oneOf(args.to_folder_id, args.to_folder_path, ["to_folder_id", "to_folder_path"], true, ' ("/" for the workspace root)');
           const file = await ctx.runMutation(internal.mcpTools.moveFile, {
             principal: p(user),
@@ -599,7 +715,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "move_folder", async () => {
+        run(ctx, user, "move_folder", args, async () => {
           oneOf(args.to_folder_id, args.to_folder_path, ["to_folder_id", "to_folder_path"], true, ' ("/" for the workspace root)');
           const folder = await ctx.runMutation(internal.mcpTools.moveFolder, {
             principal: p(user),
@@ -620,7 +736,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
     propose_context_change: tool({
       title: "Propose context change",
       description:
-        "Update project context; use this to record decisions. Re-sync with since first so you propose against current context. " +
+        "Update project context when the user directs a goal, scope, decision, constraint, ownership or open-question change (Tandem's context manager proposes what saved files show). Re-sync with since first so you propose against current context. " +
         "If you haven't called sync_workspace in this conversation, do that first. " +
         "In a manual workspace (the default; see context_approval in get_workspace_info) every change, " +
         "including constraints, open_questions and resolve/remove, creates a pending proposal requiring human owner/admin approval. " +
@@ -654,7 +770,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(false),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "propose_context_change", async () => {
+        run(ctx, user, "propose_context_change", args, async () => {
           const operation = args.operation ?? "add";
           if (operation !== "add" && (!args.entry_id || !Number.isSafeInteger(args.expected_version) || args.expected_version! < 0))
             throw invalidInput("entry_id and expected_version are required for resolve/remove.");
@@ -723,7 +839,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "get_approvals", async () => {
+        run(ctx, user, "get_approvals", args, async () => {
           const status = args.status ?? "pending";
           const rows = await ctx.runMutation(internal.mcpTools.getApprovals, {
             principal: p(user),
@@ -770,7 +886,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       // requires write scope for every other operation.
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "manage_task", async () => {
+        run(ctx, user, "manage_task", args, async () => {
           const { operation } = args;
           const description = (value: string | undefined) => {
             if (value !== undefined && value.trim().length > 4000)
@@ -824,11 +940,10 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       title: "Publish work",
       description:
         'Share a project deliverable or finding with the team, linked to the files it covers. kind: "deliverable" for finished work, ' +
-        '"finding" for facts learned or progress. title: 1–200 characters; summary: what the team should know, 1–4000 characters; ' +
+        '"finding" for facts learned. title: 1–200 characters; summary: what the team should know, 1–4000 characters; ' +
         "file_ids: up to 20 files in this workspace. " +
-        "Publish after each project request that did work, even with no file change (analysis, plans, reviews and decisions discussed as findings; files produced as deliverables), " +
-        "so teammates' assistants see them on their next sync. " +
-        "Raise team-blocking questions with propose_context_change field open_questions instead; those appear in the sync brief's blockers. " +
+        "Use it only for a deliverable or finding the user wants announced: Tandem's context manager already reads saved files and activity, so routine work needs no post. " +
+        "A team-blocking question the user raises goes to propose_context_change field open_questions instead; those appear in the sync brief's blockers. " +
         "Only publish relevant project work the user has authorized sharing; never private conversation history or personal content. " +
         "Publishing does not change files or the approved context: for goal, scope, decisions or ownership use propose_context_change. " +
         "If you haven't called sync_workspace in this conversation, do that first.",
@@ -842,7 +957,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(false),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "publish_work", async () => {
+        run(ctx, user, "publish_work", args, async () => {
           const work = await ctx.runMutation(internal.mcpTools.publishWork, {
             principal: p(user),
             workspaceId: args.workspace_id,

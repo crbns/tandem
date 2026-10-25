@@ -1,8 +1,10 @@
 import { httpRouter } from "convex/server";
 import { ConvexError } from "convex/values";
 import { httpAction, env } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { components, internal } from "./_generated/api";
 import { auth } from "./auth";
+import { normalizeHookEvent, type HookEvent } from "./lib/activityLog";
+import { sha256Hex } from "./lib/mcpConfig";
 import { mcp } from "./mcp";
 
 const http = httpRouter();
@@ -95,6 +97,65 @@ http.route({
         { status, headers },
       );
     }
+  }),
+});
+
+const HOOK_BODY_MAX = 64 * 1024;
+const HOOK_BATCH_MAX = 25;
+
+function json(status: number, body: object) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+/**
+ * Claude Code hook events (docs/context-intelligence.md), authenticated with
+ * the connection's own MCP API key. The key alone decides the connection and
+ * so the workspace; nothing in the body can. One event, or `{ events: [...] }`
+ * (at most 25) for batching and replay, stored in one mutation.
+ */
+http.route({
+  path: "/activity/claude-code",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("Authorization") ?? "");
+    if (!bearer) return json(401, { error: "UNAUTHENTICATED" });
+    const info = await ctx.runQuery(components.mcp.tokens.verify, {
+      hash: await sha256Hex(bearer[1]!),
+      now: Date.now(),
+    });
+    if (!info) return json(401, { error: "UNAUTHENTICATED" });
+    if (!info.scopes.includes("tandem:write")) return json(403, { error: "FORBIDDEN", scope: "tandem:write" });
+    if (Number(request.headers.get("Content-Length") ?? 0) > HOOK_BODY_MAX)
+      return json(413, { error: "PAYLOAD_TOO_LARGE" });
+    const text = await request.text();
+    if (text.length > HOOK_BODY_MAX) return json(413, { error: "PAYLOAD_TOO_LARGE" });
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return json(400, { error: "INVALID_INPUT", message: "Body must be JSON." });
+    }
+    const batch =
+      body !== null && typeof body === "object" && "events" in body ? (body as { events: unknown }).events : undefined;
+    if (batch !== undefined && (!Array.isArray(batch) || batch.length < 1 || batch.length > HOOK_BATCH_MAX))
+      return json(400, { error: "INVALID_INPUT", message: `events must be an array of 1–${HOOK_BATCH_MAX} events.` });
+    const events: HookEvent[] = [];
+    for (const raw of batch ?? [body]) {
+      const normalized = normalizeHookEvent(raw);
+      if ("error" in normalized) return json(400, { error: "INVALID_INPUT", message: normalized.error });
+      events.push(normalized.event);
+    }
+    const results = await ctx.runMutation(internal.activityLog.ingestHookEvent, {
+      connectionId: info.userId,
+      events,
+    });
+    if (!results) return json(403, { error: "FORBIDDEN" });
+    return batch === undefined
+      ? json(202, { ok: true, ...results[0] })
+      : json(202, { ok: true, results });
   }),
 });
 

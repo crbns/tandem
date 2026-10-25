@@ -461,3 +461,181 @@ export interface Subscriber<T> {
   onData: (data: T) => void;
   onError: (error: TandemApiError) => void;
 }
+
+// Context intelligence (docs/context-intelligence.md): the raw activity log,
+// the observed (derived, never approved) context state and its history.
+
+/** Where an activity event came from. "simulator" is development replay and always labeled as simulated. */
+export type ActivitySource = "mcp" | "claude_code" | "workspace" | "simulator";
+
+/** Who did something, as the backend recorded it. Labels are display text. */
+export interface IntelActor {
+  type: ActorType | "system";
+  label: string;
+  client: string | null;
+  userName: string | null;
+}
+
+export interface ActivityEvent {
+  id: string;
+  source: ActivitySource;
+  /** Namespaced: "mcp.tool_call", "claude_code.prompt", "file.updated", ... */
+  type: string;
+  tool: string | null;
+  outcome: ActivityOutcome;
+  errorCode: string | null;
+  /** Short, generated, workspace-derived text: render, never execute. */
+  summary: string;
+  actor: IntelActor;
+  agentConnectionId: string | null;
+  resources: Array<{ type: string; id: string; label: string | null }>;
+  sessionId: string | null;
+  correlationId: string | null;
+  significant: boolean;
+  /** pending: waiting for the context manager; processed: it looked; skipped: never will. */
+  intelStatus: "pending" | "processed" | "skipped";
+  intelRunId: string | null;
+  /** Redacted, size-capped JSON from the backend; untrusted. */
+  payload: string | null;
+  occurredAt: number;
+  createdAt: number;
+}
+
+export interface ActivityEventPage {
+  /** Newest first. */
+  items: ActivityEvent[];
+  nextBefore: string | null;
+}
+
+export interface ActivityEventQuery {
+  before?: string;
+  /** At most 100; the backend defaults to 50. */
+  limit?: number;
+  sources?: ActivitySource[];
+  connectionId?: string;
+}
+
+export type ObservedCategory =
+  | "goal"
+  | "objective"
+  | "decision"
+  | "task"
+  | "progress"
+  | "blocker"
+  | "knowledge"
+  | "agent_summary"
+  | "coordination";
+export type ObservedStatus = "active" | "completed" | "resolved" | "superseded" | "retracted";
+/** Weakest first. "claimed" is an assistant's word only; "verified" needs a passing check. */
+export type EvidenceLevel = "requested" | "claimed" | "observed" | "verified" | "human_confirmed";
+
+export interface ObservedEntry {
+  id: string;
+  key: string;
+  category: ObservedCategory;
+  title: string;
+  content: string;
+  status: ObservedStatus;
+  evidence: EvidenceLevel;
+  /** 0..1, the context manager's own estimate. */
+  confidence: number;
+  /** Coordination entries: a possible overlap, or an actual conflict. */
+  severity: "potential" | "actual" | null;
+  supersededBy: string | null;
+  /** Pass back as expectedRevision when correcting. */
+  revision: number;
+  evidenceEventIds: string[];
+  agents: Array<{ connectionId: string; label: string; client: string }>;
+  files: Array<{ id: string; name: string; deleted: boolean }>;
+  /** A goal or decision finding raised for human approval. */
+  proposal: { id: string; status: ProposalStatus } | null;
+  model: string | null;
+  createdBy: IntelActor;
+  updatedBy: IntelActor;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface IntelRunSummary {
+  status: "running" | "succeeded" | "failed" | "skipped";
+  method: "llm" | "heuristic";
+  model: string | null;
+  summary: string | null;
+  error: string | null;
+  finishedAt: number | null;
+}
+
+export interface ObservedContext {
+  /** Derived-context revision; bumps on every applied change. */
+  revision: number;
+  lastRunAt: number | null;
+  status: "idle" | "scheduled" | "running";
+  consecutiveFailures: number;
+  nextRetryAt: number | null;
+  /** Pending significant events; 101 means "more than 100". */
+  pendingEvents: number;
+  lastRun: IntelRunSummary | null;
+  /** Newest first, at most 100. */
+  entries: ObservedEntry[];
+}
+
+export type ContextChangeKind = "created" | "updated" | "status_changed" | "superseded" | "reopened" | "corrected";
+
+export interface ContextChange {
+  id: string;
+  entryId: string;
+  key: string;
+  category: ObservedCategory;
+  revision: number;
+  change: ContextChangeKind;
+  title: string;
+  content: string;
+  status: ObservedStatus;
+  evidence: EvidenceLevel;
+  confidence: number;
+  /** The context manager's rationale, or a person's note. */
+  reason: string;
+  evidenceCount: number;
+  actor: IntelActor;
+  run: { id: string; status: IntelRun["status"]; method: IntelRun["method"]; model: string | null } | null;
+  /** Who the newest evidence came from. */
+  evidenceSource: { label: string; source: ActivitySource } | null;
+  createdAt: number;
+}
+
+export interface IntelRun {
+  id: string;
+  status: "running" | "succeeded" | "failed" | "skipped";
+  method: "llm" | "heuristic";
+  model: string | null;
+  summary: string | null;
+  error: string | null;
+  eventCount: number;
+  proposals: number;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+export interface ContextChanges {
+  /** Newest first, at most 50. */
+  changes: ContextChange[];
+  /** Newest first, at most 20. */
+  runs: IntelRun[];
+}
+
+export interface EntryHistory {
+  entry: ObservedEntry;
+  /** Newest first. */
+  revisions: ContextChange[];
+  /** The activity events cited as evidence, newest first. */
+  evidence: ActivityEvent[];
+}
+
+export interface EntryCorrection {
+  expectedRevision: number;
+  title?: string;
+  content?: string;
+  /** Setting a status confirms the entry (evidence becomes human_confirmed). */
+  status?: ObservedStatus;
+  note: string;
+}

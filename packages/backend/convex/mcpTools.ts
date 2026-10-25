@@ -64,6 +64,7 @@ import {
   type FolderIndex,
 } from "./lib/fs";
 import { matchesQuery, queryTerms } from "./lib/names";
+import { observedValidator } from "./lib/observed";
 import {
   actorValidator,
   conflictValidator,
@@ -819,6 +820,10 @@ export const syncWorkspace = internalMutation({
     workTruncated: v.boolean(),
     tasks: v.array(taskValidator),
     tasksTruncated: v.boolean(),
+    /** lib/observed.ts: derived, not approved, context; null with since when this page didn't change it. */
+    observed: v.union(observedValidator, v.null()),
+    /** context_intel_state.entriesRevision, also when observed is null. */
+    observedRevision: v.number(),
     events: v.array(eventValidator),
     eventsTruncated: v.boolean(),
     headSeq: v.number(),

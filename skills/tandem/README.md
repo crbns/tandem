@@ -12,16 +12,27 @@ You need two pieces in each client:
 2. **This skill**, which tells the assistant when and how to use them.
 
 **The loop.** Once Tandem is used in a chat, the skill and the server both tell
-the assistant to run the same loop on every later project request: sync, read
-the relevant files, do the work, write back (`update_document` /
-`create_document`), log the request with `publish_work` (even when no file
-changed), propose context changes (seeding an empty context from the files it
-reads or saves, otherwise anything a saved file shows that the context lacks,
-skipping what is already pending), and report.
+the assistant to run the same loop on every later project request: sync (brief
+first, reading `observed`), read the relevant files, do the work, save its
+documents (`update_document` / `create_document`), and reply. That's one write
+per task. The assistant calls `publish_work` only for a deliverable the user
+wants announced, and `propose_context_change` only for a goal, scope,
+decision, constraint, ownership or open-question change the user directs.
 The server sends the loop as MCP `instructions` at initialize and restates it
 as `next_steps` on `sync_workspace`, save, publish, and propose results, so it
 reaches assistants without the skill too. `TESTING.md` → "Continuous loop"
-measures it.
+measures it, and the eval's loop grader (below) checks the write calls.
+
+**Observed activity.** Tandem also records assistants' MCP calls and, with the
+optional Claude Code hooks (`docs/claude-code-hooks.md`), their Claude Code
+activity. Its context manager reads every saved document and that activity,
+records findings, tasks, progress and blockers, and proposes goal and decision
+changes for a human to approve. The compacted result is the `observed` section
+of `sync_workspace`: up to 10 entries in a brief, 30 in a full sync, resent
+with `since` only when it changed. It's labeled with evidence and never
+treated as approved context. Assistants read it instead of skimming recent
+work and events, so they don't write progress updates, findings or
+file-derived proposals by hand.
 
 > **Limits.** A skill only nudges the model. Whether it activates, and whether
 > the assistant calls `sync_workspace`/`list_files`, is probabilistic. A skill
@@ -256,7 +267,23 @@ runs) cost $1.88. The committed results were run as:
 node skills/tandem/eval/run.mjs --model sonnet --reps 2      # 2026-10-23-claude-code (before p6 existed)
 node skills/tandem/eval/run.mjs --env realistic --reps 3 --max-turns 8 --timeout 240 --concurrency 3 --tag realistic
 node skills/tandem/eval/run.mjs --prompts p6-conflict-edit --reps 3 --max-turns 8 --timeout 240 --concurrency 1 --tag conflict-bare
+node skills/tandem/eval/run.mjs --reps 1 --prompts p1-launch-brief,p2-goal-owners,p3-status-update,p4-cut-mobile,p5-tighten-intro,p7-create-document --concurrency 3 --max-turns 10 --timeout 240 --tag loop-r2
+node skills/tandem/eval/run.mjs --reps 1 --prompts p6-conflict-edit --concurrency 2 --max-turns 10 --timeout 240 --tag loop-r2-edit
 ```
+
+The `loop-r2` runs check the save-files loop. Every graded trial made at most
+one write: a save, or the proposal p4 asked for. No trial called
+`publish_work`, and none proposed unprompted. `loop-r2` graded p5 against an
+older spec that required a save. The bare fixture has no spec to edit, so
+both conditions correctly asked which file to edit instead of saving. p5 now
+requires only sync and read.
+
+Prompts with a `loop` spec also get a loop grader. It passes when every
+step the spec requires happened successfully (`sync`, `read`, `save`) and
+no unwanted write was attempted (`publish: false`, `propose: false`). For an
+ordinary edit or draft request, the spec expects sync + read + save and no
+`publish_work` or `propose_context_change`. Only a prompt where the user
+directs a context change (p4) expects a proposal.
 
 Summary counts are trials, not individual calls. `sync` and `write` measure
 attempts; `sync_ok` and `write_ok` require at least one matching non-error tool
