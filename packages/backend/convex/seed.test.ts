@@ -229,10 +229,11 @@ describe("seed:rebuildDemoWorkspace", () => {
       mimeType: "text/markdown",
       content: "draft",
     });
-    await t.run((ctx) => {
+    await t.run(async (ctx) => {
       const actor = { type: "system" as const, label: "test" };
-      return ctx.db.insert("tasks", {
-        workspaceId: first.workspaceId,
+      const workspaceId = first.workspaceId;
+      await ctx.db.insert("tasks", {
+        workspaceId,
         title: "Leftover",
         description: "",
         status: "open",
@@ -243,7 +244,57 @@ describe("seed:rebuildDemoWorkspace", () => {
         createdAt: 0,
         updatedAt: 0,
       });
+      // Context intelligence rows (Blake's save above also logged an activity event).
+      const runId = await ctx.db.insert("context_intel_runs", {
+        workspaceId,
+        status: "succeeded",
+        method: "heuristic",
+        eventIds: [],
+        attempt: 1,
+        created: 1,
+        updated: 0,
+        proposals: 0,
+        startedAt: 0,
+      });
+      const entry = {
+        workspaceId,
+        key: "task:leftover",
+        category: "task" as const,
+        title: "Leftover",
+        content: "",
+        status: "active" as const,
+        evidence: "observed" as const,
+        confidence: 0.5,
+        evidenceEventIds: [],
+      };
+      const entryId = await ctx.db.insert("context_entries", {
+        ...entry,
+        agentConnectionIds: [],
+        fileIds: [],
+        createdBy: actor,
+        updatedBy: actor,
+        revision: 1,
+        createdAt: 0,
+        updatedAt: 0,
+      });
+      await ctx.db.insert("context_entry_revisions", {
+        ...entry,
+        entryId,
+        revision: 1,
+        change: "created",
+        reason: "test",
+        runId,
+        actor,
+        createdAt: 0,
+      });
     });
+
+    const intelRows = await t.run(async (ctx) => ({
+      events: (await ctx.db.query("activity_events").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", first.workspaceId)).collect()).length,
+      state: await ctx.db.query("context_intel_state").withIndex("by_workspace", (q) => q.eq("workspaceId", first.workspaceId)).unique(),
+    }));
+    expect(intelRows.events).toBeGreaterThan(0);
+    expect(intelRows.state).not.toBeNull();
 
     const second = await rebuild();
     expect(second.workspaceId).not.toBe(first.workspaceId);
@@ -266,6 +317,11 @@ describe("seed:rebuildDemoWorkspace", () => {
       ...(await ctx.db.query("agent_connections").withIndex("by_workspace_and_user", (q) => q.eq("workspaceId", old)).collect()),
       ...(await ctx.db.query("workspace_events").withIndex("by_workspace_and_seq", (q) => q.eq("workspaceId", old)).collect()),
       ...(await ctx.db.query("tasks").withIndex("by_workspace_and_updated_at", (q) => q.eq("workspaceId", old)).collect()),
+      ...(await ctx.db.query("activity_events").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", old)).collect()),
+      ...(await ctx.db.query("context_entries").withIndex("by_workspace_and_key", (q) => q.eq("workspaceId", old)).collect()),
+      ...(await ctx.db.query("context_entry_revisions").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", old)).collect()),
+      ...(await ctx.db.query("context_intel_runs").withIndex("by_workspace_and_started_at", (q) => q.eq("workspaceId", old)).collect()),
+      ...(await ctx.db.query("context_intel_state").withIndex("by_workspace", (q) => q.eq("workspaceId", old)).collect()),
       ...(await ctx.db.query("outbox_events").withIndex("by_status_and_created", (q) => q.eq("status", "pending")).collect())
         .filter((row) => row.workspaceId === old),
     ]);

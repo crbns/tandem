@@ -165,8 +165,11 @@ export const hookEventValidator = v.object({
   toolName: v.optional(v.string()),
   toolUseId: v.optional(v.string()),
   occurredAt: v.optional(v.number()),
+  // The working directory's last segment only, never a full path.
+  cwdName: v.optional(v.string()),
   filePaths: v.array(v.string()),
   command: v.optional(v.string()),
+  success: v.optional(v.boolean()),
   exitCode: v.optional(v.number()),
   output: v.optional(v.string()),
   error: v.optional(v.string()),
@@ -215,9 +218,13 @@ function timestamp(value: unknown): number | undefined {
 }
 
 /**
- * Narrows one hook body (Claude Code's hook JSON plus Tandem's own fields:
- * event_id, timestamp, capture_prompts, simulated) to a HookEvent, or an
- * error message for a 400. Workspace or identity fields in the body are
+ * Narrows one hook body to a HookEvent, or an
+ * error message for a 400. Accepts the hook script's flattened fields
+ * (event_id, occurred_at, cwd_name, file_paths, command, success, exit_code,
+ * output_tail, error, prompt, prompt_captured, simulated) as well as Claude
+ * Code's raw hook JSON (tool_input, tool_response, timestamp). Prompt text is
+ * kept only with an explicit opt-in: prompt_captured (or the capture_prompts /
+ * prompt_capture aliases) set to true. Workspace or identity fields in the body are
  * ignored: those come only from the verified key. Secrets are redacted here,
  * before anything crosses into a mutation.
  */
@@ -229,27 +236,35 @@ export function normalizeHookEvent(raw: unknown): { event: HookEvent } | { error
   if (typeof hook !== "string" || !(HOOK_NAMES as readonly string[]).includes(hook))
     return { error: `hook_event_name must be one of ${HOOK_NAMES.join(", ")}.` };
   const name = hook as HookName;
-  const promptCaptured = body.capture_prompts === true || body.prompt_capture === true;
+  const promptCaptured =
+    body.prompt_captured === true || body.capture_prompts === true || body.prompt_capture === true;
   const input = record(body.tool_input);
   const response = body.tool_response;
   const responseFields = record(response);
   const toolName = str(body.tool_name, 64);
-  const filePaths = [input.file_path, input.notebook_path, input.path]
+  const filePaths = [
+    ...(Array.isArray(body.file_paths) ? body.file_paths.slice(0, 10) : []),
+    input.file_path,
+    input.notebook_path,
+    input.path,
+  ]
     .map((p) => str(p, 300))
-    .filter((p): p is string => p !== undefined)
+    .filter((p, i, all): p is string => p !== undefined && all.indexOf(p) === i)
     .slice(0, 10);
-  const rawCommand = toolName === "Bash" ? str(input.command, 10_000) : undefined;
+  const rawCommand = str(body.command, 10_000) ?? (toolName === "Bash" ? str(input.command, 10_000) : undefined);
   const command = rawCommand === undefined ? undefined : redactText(rawCommand, COMMAND_MAX);
   const exit = responseFields.exit_code ?? responseFields.exitCode ?? body.exit_code;
   const exitCode = typeof exit === "number" && Number.isInteger(exit) ? exit : undefined;
   let output: string | undefined;
   if (rawCommand !== undefined && VERIFY_COMMAND.test(rawCommand)) {
     const text =
-      typeof response === "string"
-        ? response
-        : [responseFields.stdout, responseFields.stderr]
-            .filter((part): part is string => typeof part === "string" && part.length > 0)
-            .join("\n");
+      typeof body.output_tail === "string"
+        ? body.output_tail
+        : typeof response === "string"
+          ? response
+          : [responseFields.stdout, responseFields.stderr]
+              .filter((part): part is string => typeof part === "string" && part.length > 0)
+              .join("\n");
     if (text) output = redactTail(text, OUTPUT_MAX);
   }
   const error = typeof body.error === "string" && body.error ? redactText(body.error, OUTPUT_MAX) : undefined;
@@ -265,9 +280,11 @@ export function normalizeHookEvent(raw: unknown): { event: HookEvent } | { error
       sessionSource: name === "SessionStart" ? str(body.source, 32) : undefined,
       toolName,
       toolUseId: str(body.tool_use_id, 128),
-      occurredAt: timestamp(body.timestamp),
+      occurredAt: timestamp(body.occurred_at ?? body.timestamp),
+      cwdName: typeof body.cwd_name === "string" ? str(basename(body.cwd_name), 100) : undefined,
       filePaths,
       command,
+      success: typeof body.success === "boolean" ? body.success : undefined,
       exitCode,
       output,
       error,
@@ -294,7 +311,7 @@ export function classifyHookEvent(event: HookEvent): boolean {
     case "PostToolUse": {
       const tool = event.toolName ?? "";
       if (TANDEM_MCP_TOOL.test(tool)) return false;
-      if (EDIT_TOOLS.has(tool)) return true;
+      if (EDIT_TOOLS.has(tool) || event.success === false) return true;
       if (tool === "Bash")
         return (event.exitCode ?? 0) !== 0 || (event.command !== undefined && MEANINGFUL_COMMAND.test(event.command));
       return false;
@@ -316,7 +333,7 @@ export function describeHookEvent(event: HookEvent): {
 } {
   const tool = event.toolName;
   const target = event.command ?? (event.filePaths[0] ? basename(event.filePaths[0]) : undefined);
-  const failed = event.hook === "PostToolUseFailure" || (event.exitCode ?? 0) !== 0;
+  const failed = event.hook === "PostToolUseFailure" || event.success === false || (event.exitCode ?? 0) !== 0;
   let summary: string;
   switch (event.hook) {
     case "SessionStart":
@@ -347,6 +364,7 @@ export function describeHookEvent(event: HookEvent): {
   if (event.hook === "UserPromptSubmit") payload.prompt_captured = event.prompt !== undefined;
   if (event.prompt !== undefined) payload.prompt = event.prompt;
   if (event.sessionSource !== undefined) payload.session_source = event.sessionSource;
+  if (event.cwdName !== undefined) payload.cwd_name = event.cwdName;
   if (event.simulated) payload.simulated = true;
   const dedupeKey = event.eventId
     ? `cc:${event.eventId}`

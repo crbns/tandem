@@ -412,6 +412,71 @@ describe("Claude Code hook endpoint", () => {
     expect((await intelState(t, workspaceId))?.status).toBe("scheduled");
   });
 
+  it("accepts the hook script's flattened fields, with prompt_captured as the opt-in", async () => {
+    const { t, sam, workspaceId } = await setup();
+    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
+    const occurredAt = Date.now() - 5000;
+    const common = { session_id: "w3", cwd_name: "/Users/sam/code/tandem", occurred_at: occurredAt };
+    const res = await postHook(t, apiKey, {
+      events: [
+        {
+          ...common,
+          event_id: "w3-1",
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_use_id: "tu-1",
+          command: `pnpm test --token ${SECRET_KEY}`,
+          success: false,
+          exit_code: 1,
+          output_tail: "FAIL src/auth.test.ts\nTests 1 failed",
+          file_paths: [],
+        },
+        {
+          ...common,
+          event_id: "w3-2",
+          hook_event_name: "PostToolUse",
+          tool_name: "MultiEdit",
+          tool_use_id: "tu-2",
+          file_paths: ["/repo/src/auth.ts", "/repo/src/auth.ts", "/repo/src/jwt.ts"],
+          success: true,
+        },
+        {
+          ...common,
+          event_id: "w3-3",
+          hook_event_name: "PostToolUseFailure",
+          tool_name: "Write",
+          tool_use_id: "tu-3",
+          file_paths: ["/repo/README.md"],
+          error: "Permission denied",
+        },
+        { ...common, event_id: "w3-4", hook_event_name: "UserPromptSubmit", prompt: "Add JWT refresh", prompt_captured: true },
+        { ...common, event_id: "w3-5", hook_event_name: "UserPromptSubmit", prompt: "not opted in", prompt_captured: false },
+        { ...common, event_id: "w3-6", hook_event_name: "SubagentStop", simulated: true },
+      ],
+    });
+    expect(res.status).toBe(202);
+    const rows = (await events(t, workspaceId)).filter((r) => r.sessionId === "w3");
+    expect(rows.map((r) => [r.dedupeKey, r.type, r.outcome, r.significant, r.source])).toEqual([
+      ["cc:w3-1", "claude_code.tool_use", "error", true, "claude_code"],
+      ["cc:w3-2", "claude_code.tool_use", "ok", true, "claude_code"],
+      ["cc:w3-3", "claude_code.tool_failure", "error", true, "claude_code"],
+      ["cc:w3-4", "claude_code.prompt", "ok", true, "claude_code"],
+      ["cc:w3-5", "claude_code.prompt", "ok", false, "claude_code"],
+      ["cc:w3-6", "claude_code.stop", "ok", true, "simulator"],
+    ]);
+    expect(rows.every((r) => r.occurredAt === occurredAt)).toBe(true);
+    const bash = payloadOf(rows[0]!);
+    expect(bash).toMatchObject({ tool: "Bash", exit_code: 1, success: false, cwd_name: "tandem" });
+    expect(bash.command).toContain("pnpm test");
+    expect(bash.output_tail).toContain("Tests 1 failed");
+    expect(rows[0]!.payload).not.toContain("mcp_sk_");
+    expect(rows[0]!.payload).not.toContain("/Users/sam");
+    expect(payloadOf(rows[1]!).file_paths).toEqual(["/repo/src/auth.ts", "/repo/src/jwt.ts"]);
+    expect(payloadOf(rows[2]!)).toMatchObject({ file_paths: ["/repo/README.md"], error: "Permission denied", success: false });
+    expect(payloadOf(rows[3]!)).toMatchObject({ prompt: "Add JWT refresh", prompt_captured: true });
+    expect(payloadOf(rows[4]!)).toEqual({ hook: "UserPromptSubmit", prompt_captured: false, cwd_name: "tandem" });
+  });
+
   it("dedupes on event_id, clamps future timestamps and labels simulated events", async () => {
     const { t, sam, workspaceId } = await setup();
     const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
