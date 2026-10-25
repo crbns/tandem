@@ -32,6 +32,7 @@ import type * as lib_mcpConfig from "../lib/mcpConfig.js";
 import type * as lib_mcpContract from "../lib/mcpContract.js";
 import type * as lib_mcpLoop from "../lib/mcpLoop.js";
 import type * as lib_names from "../lib/names.js";
+import type * as lib_observed from "../lib/observed.js";
 import type * as lib_ops from "../lib/ops.js";
 import type * as lib_redact from "../lib/redact.js";
 import type * as lib_validators from "../lib/validators.js";
@@ -73,6 +74,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mcpContract": typeof lib_mcpContract;
   "lib/mcpLoop": typeof lib_mcpLoop;
   "lib/names": typeof lib_names;
+  "lib/observed": typeof lib_observed;
   "lib/ops": typeof lib_ops;
   "lib/redact": typeof lib_redact;
   "lib/validators": typeof lib_validators;

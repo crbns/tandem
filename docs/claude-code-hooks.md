@@ -18,7 +18,7 @@ Files: `integrations/claude-code/`
 | `tandem-activity-hook.mjs` | The hook. Node ≥ 18, no dependencies. Reads the hook JSON on stdin, POSTs a redacted summary, prints nothing, always exits 0. |
 | `settings.example.json` | The Claude Code `hooks` (and `env`) config to paste. |
 | `replay.mjs`, `demo-events.jsonl` | Development-only simulator (see [Replay](#replay-simulated-development-only)). |
-| `tandem-activity-hook.test.mjs` | `node --test integrations/claude-code/*.test.mjs` |
+| `tandem-activity-hook.test.mjs` | `pnpm --filter @repo/claude-code-hooks test` (also part of `pnpm test`), or `node --test integrations/claude-code/*.test.mjs` |
 
 ## Setup
 
