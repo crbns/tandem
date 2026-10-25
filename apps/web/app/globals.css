@@ -40,6 +40,7 @@
   --color-warn-rule: var(--warn-rule);
   --color-diff-left: var(--diff-left);
   --color-diff-right: var(--diff-right);
+  --color-read: var(--read);
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
@@ -81,6 +82,8 @@
   /* Diff bands: ochre for lines only on the left, slate for lines only on the right. */
   --diff-left: #f5ecd6;
   --diff-right: #dfe7ec;
+  /* Live page: a read travels in a lighter slate than a sync. */
+  --read: #7f939e;
 }
 
 /* The one authored moment: a selected file's custody record slides in. */
@@ -120,6 +123,90 @@
   animation: arrival 8s ease-out forwards;
   @media (prefers-reduced-motion: reduce) {
     animation: arrival-hold 8s step-end forwards;
+  }
+}
+
+/* Live page. Only arrivals move: a pulse travels the edge between Tandem and
+   an assistant in the direction the call went (pathLength 100, so the dash
+   offsets are percentages of the edge), and the receiving node takes a ring.
+   A conflict flashes its edge and nudges the card. Reduced motion keeps the
+   colour, drops the travel and the nudge. */
+@keyframes live-travel {
+  from {
+    stroke-dashoffset: 18;
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  to {
+    stroke-dashoffset: -100;
+    opacity: 0;
+  }
+}
+@keyframes live-edge-flash {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  15%,
+  45% {
+    opacity: 1;
+  }
+  30% {
+    opacity: 0.35;
+  }
+}
+@keyframes live-ring {
+  from {
+    box-shadow: 0 0 0 0 var(--flash);
+    opacity: 1;
+  }
+  to {
+    box-shadow: 0 0 0 10px var(--flash);
+    opacity: 0;
+  }
+}
+@keyframes live-ring-still {
+  from,
+  60% {
+    box-shadow: 0 0 0 2px var(--flash);
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes live-nudge {
+  20%,
+  60% {
+    transform: translateX(-3px);
+  }
+  40%,
+  80% {
+    transform: translateX(3px);
+  }
+}
+@utility animate-live-travel {
+  animation: live-travel 950ms cubic-bezier(0.65, 0, 0.35, 1) forwards;
+  @media (prefers-reduced-motion: reduce) {
+    animation: live-edge-flash 1200ms ease forwards;
+    stroke-dasharray: none;
+  }
+}
+@utility animate-live-edge-flash {
+  animation: live-edge-flash 1100ms ease-out forwards;
+}
+@utility animate-live-ring {
+  animation: live-ring 700ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+  @media (prefers-reduced-motion: reduce) {
+    animation: live-ring-still 1400ms ease forwards;
+  }
+}
+@utility animate-live-nudge {
+  animation: live-nudge 320ms ease-in-out;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
   }
 }
 

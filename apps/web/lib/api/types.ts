@@ -2,6 +2,8 @@
 // Convex `Doc<>` types yet, so they live here. Swap for the backend's types once
 // `convex/_generated` exists; components only import from this file.
 
+import type { TandemApiError } from "./errors";
+
 export type ActorType = "human" | "agent";
 
 /**
@@ -364,4 +366,97 @@ export interface ContextProposalInput extends Omit<ContextChangeInput, "proposed
   entryId?: string;
   supersedes?: string;
   expectedVersion?: number;
+}
+
+/**
+ * What one MCP call (or, for the human kinds, one workspace event) was. Agent
+ * kinds come from `agent_activity`; "resolved" is a successful write after the
+ * same assistant's conflict on that resource; "approve", "reject", "context"
+ * and "human_edit" are people's workspace events.
+ */
+export type ActivityKind =
+  | "sync"
+  | "read"
+  | "write"
+  | "propose"
+  | "publish"
+  | "task"
+  | "conflict"
+  | "error"
+  | "resolved"
+  | "approve"
+  | "reject"
+  | "context"
+  | "human_edit";
+export type ActivityOutcome = "ok" | "conflict" | "error";
+
+/**
+ * One unrevoked assistant connection on the Live page. Times are when Tandem
+ * last heard from it, never whether it's running.
+ */
+export interface NetworkAgent {
+  connectionId: string;
+  label: string;
+  client: string;
+  /** OAuth only: the name the client gave itself. Unverified. */
+  oauthClientName: string | null;
+  lastMcpActionAt: number | null;
+  lastSyncAt: number | null;
+  /** The approved-context version its last sync_workspace returned; null if it never synced. */
+  syncedContextRevision: number | null;
+  /** That version arrived only as a brief sync: no constraints or ownership. */
+  syncedContextBrief: boolean;
+  contextVersionsBehind: number | null;
+  lastTool: string | null;
+  lastKind: ActivityKind | null;
+  lastOutcome: ActivityOutcome | null;
+}
+
+export interface AgentNetwork {
+  /** The approved-context version; 0 when nothing has been approved. */
+  contextRevision: number;
+  contextUpdatedAt: number | null;
+  /** Most recent action first, at most 50. */
+  agents: NetworkAgent[];
+}
+
+export interface TimelineItem {
+  /** "a:<agent_activity id>" or "w:<workspace_events id>". */
+  id: string;
+  source: "agent" | "workspace";
+  createdAt: number;
+  kind: ActivityKind;
+  tool: string | null;
+  outcome: ActivityOutcome;
+  errorCode: string | null;
+  /** Short and content-free, but still workspace-derived text: render, never execute. */
+  summary: string;
+  actor: { type: ActorType | "system"; label: string; client: string | null; agentConnectionId: string | null };
+  resource: { type: string; id: string; label: string | null } | null;
+  contextRevision: number | null;
+  previousSyncedContextRevision: number | null;
+  /** The conflict item this write resolved. */
+  resolvesId: string | null;
+}
+
+export interface TimelinePage {
+  /** Newest first. */
+  items: TimelineItem[];
+  /** Pass as `before` for the next older page (opaque); null when there's none. */
+  nextBefore: string | null;
+}
+
+export interface TimelineQuery {
+  /** A previous page's nextBefore, exclusive. */
+  before?: string;
+  /** At most 100; the backend defaults to 50. */
+  limit?: number;
+  connectionId?: string;
+  kinds?: ActivityKind[];
+}
+
+/** A reactive query's listener. `onData` runs again whenever the result changes. */
+export interface Subscriber<T> {
+  onData: (data: T) => void;
+  onError: (error: TandemApiError) => void;
 }

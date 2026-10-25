@@ -77,6 +77,30 @@ const contextValue = v.object({
   ownerArea: v.optional(v.string()),
 });
 
+const activityKind = v.union(
+  v.literal("sync"),
+  v.literal("read"),
+  v.literal("write"),
+  v.literal("propose"),
+  v.literal("publish"),
+  v.literal("task"),
+  v.literal("conflict"),
+  v.literal("error"),
+);
+
+const activityResource = v.object({
+  type: v.union(
+    v.literal("file"),
+    v.literal("folder"),
+    v.literal("proposal"),
+    v.literal("task"),
+    v.literal("published_work"),
+    v.literal("context"),
+  ),
+  id: v.string(),
+  label: v.optional(v.string()),
+});
+
 export default defineSchema({
   ...authTables,
   users: defineTable({
@@ -161,6 +185,12 @@ export default defineSchema({
     updatedAt: v.optional(v.number()),
     lastMcpActionAt: v.optional(v.number()),
     lastSyncAt: v.optional(v.number()),
+    // structured_context.revision handed out by this connection's last
+    // successful sync_workspace.
+    syncedContextRevision: v.optional(v.number()),
+    // True when that version only arrived as a brief sync (goal, scope,
+    // recent decisions and blockers; no constraints or ownership).
+    syncedContextBrief: v.optional(v.boolean()),
   })
     .index("by_workspace_and_user", ["workspaceId", "userId"])
     // Live (unrevoked) connections have no revokedAt, so they sort first.
@@ -401,6 +431,32 @@ export default defineSchema({
       "entityType",
       "entityId",
     ]),
+
+  // One row per MCP tool call, for the dashboard's Live view (activity.ts).
+  // Separate from workspace_events on purpose: reads, syncs and failed calls
+  // must never reach agents' sync feeds or the outbox. Pruned after 14 days.
+  agent_activity: defineTable({
+    workspaceId: v.id("workspaces"),
+    agentConnectionId: v.id("agent_connections"),
+    actor,
+    tool: v.string(),
+    kind: activityKind,
+    outcome: v.union(v.literal("ok"), v.literal("conflict"), v.literal("error")),
+    // ConvexError code only, never a raw message.
+    errorCode: v.optional(v.string()),
+    // Short and generated: never file content, prompt text or rationale.
+    summary: v.string(),
+    resource: v.optional(activityResource),
+    contextRevision: v.number(),
+    // sync_workspace only: the connection's syncedContextRevision before it.
+    previousSyncedContextRevision: v.optional(v.number()),
+    // A successful write that follows this connection's own conflict on the
+    // same resource (lib/agent.ts recordActivity).
+    resolvesActivityId: v.optional(v.id("agent_activity")),
+    createdAt: v.number(),
+  })
+    .index("by_workspace_and_created", ["workspaceId", "createdAt"])
+    .index("by_connection_and_created", ["agentConnectionId", "createdAt"]),
 
   outbox_events: defineTable({
     workspaceId: v.id("workspaces"),

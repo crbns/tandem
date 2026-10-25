@@ -8,6 +8,11 @@ import type { Doc, Id } from "@repo/backend/convex/_generated/dataModel.js";
 import { normalizeError, TandemApiError } from "./errors";
 import type { TandemApi } from "./tandemApi";
 import type {
+  ActivityKind,
+  AgentNetwork,
+  Subscriber,
+  TimelinePage,
+  TimelineQuery,
   ContextDetails,
   ContextEntry,
   Actor,
@@ -184,9 +189,95 @@ export async function call<T>(
   }
 }
 
+type BackendNetwork = FunctionReturnType<typeof api.activity.getAgentNetwork>;
+type BackendTimeline = FunctionReturnType<typeof api.activity.listTimeline>;
+
+export function toAgentNetwork(network: BackendNetwork): AgentNetwork {
+  return {
+    contextRevision: network.contextRevision,
+    contextUpdatedAt: network.contextUpdatedAt,
+    agents: network.agents.map((agent) => ({
+      connectionId: agent.connectionId,
+      label: agent.label,
+      client: agent.client,
+      oauthClientName: agent.oauthClientName,
+      lastMcpActionAt: agent.lastMcpActionAt,
+      lastSyncAt: agent.lastSyncAt,
+      syncedContextRevision: agent.syncedContextRevision,
+      syncedContextBrief: agent.syncedContextBrief,
+      contextVersionsBehind: agent.contextVersionsBehind,
+      lastTool: agent.lastTool,
+      lastKind: agent.lastKind as ActivityKind | null,
+      lastOutcome: agent.lastOutcome as AgentNetwork["agents"][number]["lastOutcome"],
+    })),
+  };
+}
+
+export function toTimelinePage(page: BackendTimeline): TimelinePage {
+  return {
+    nextBefore: page.nextBefore,
+    items: page.items.map((item) => ({
+      id: item.id,
+      source: item.source,
+      createdAt: item.createdAt,
+      kind: item.kind as ActivityKind,
+      tool: item.tool,
+      outcome: item.outcome,
+      errorCode: item.errorCode,
+      summary: item.summary,
+      actor: {
+        type: item.actor.type,
+        label: item.actor.label,
+        client: item.actor.client,
+        agentConnectionId: item.actor.agentConnectionId,
+      },
+      resource: item.resource && { type: item.resource.type, id: item.resource.id, label: item.resource.label },
+      contextRevision: item.contextRevision,
+      previousSyncedContextRevision: item.previousSyncedContextRevision,
+      resolvesId: item.resolvesId,
+    })),
+  };
+}
+
+function timelineArgs(workspaceId: string, query: TimelineQuery) {
+  return {
+    workspaceId: workspaceId as Id<"workspaces">,
+    ...(query.before !== undefined ? { before: query.before } : {}),
+    ...(query.limit !== undefined ? { limit: query.limit } : {}),
+    ...(query.connectionId ? { connectionId: query.connectionId as Id<"agent_connections"> } : {}),
+    ...(query.kinds?.length ? { kinds: query.kinds } : {}),
+  };
+}
+
+/**
+ * Feeds a Convex watch into a subscriber: the cached result straight away (a
+ * query another component already watches won't update again until it
+ * changes), then every update. Errors arrive through `onError`.
+ */
+function forward<R, T>(
+  watch: { localQueryResult(): R | undefined; onUpdate(callback: () => void): () => void },
+  map: (result: R) => T,
+  subscriber: Subscriber<T>,
+): () => void {
+  const emit = () => {
+    let result: R | undefined;
+    try {
+      result = watch.localQueryResult();
+    } catch (err) {
+      subscriber.onError(normalizeError(err));
+      return;
+    }
+    if (result !== undefined) subscriber.onData(map(result));
+  };
+  const unsubscribe = watch.onUpdate(emit);
+  emit();
+  return unsubscribe;
+}
+
 /**
  * One-shot query/mutation calls, plus one reactive subscription
- * (`watchWorkspace`) that only signals "something changed, refetch".
+ * (`watchWorkspace`) that only signals "something changed, refetch", and the
+ * Live page's reactive subscriptions, which carry their data.
  */
 export function createConvexApi(convex: ConvexReactClient, getToken: () => string | null | undefined = () => null): TandemApi {
   return {
@@ -572,5 +663,15 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         newest = head;
       });
     },
+    watchAgentNetwork: (workspaceId, subscriber) =>
+      forward(
+        convex.watchQuery(api.activity.getAgentNetwork, { workspaceId: workspaceId as Id<"workspaces"> }),
+        toAgentNetwork,
+        subscriber,
+      ),
+    watchTimeline: (workspaceId, query, subscriber) =>
+      forward(convex.watchQuery(api.activity.listTimeline, timelineArgs(workspaceId, query)), toTimelinePage, subscriber),
+    listTimeline: (workspaceId, query) =>
+      call(async () => toTimelinePage(await convex.query(api.activity.listTimeline, timelineArgs(workspaceId, query)))),
   };
 }

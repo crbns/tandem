@@ -27,6 +27,10 @@ import type {
   InviteRole,
   WorkspaceInvite,
   UploadTarget,
+  AgentNetwork,
+  Subscriber,
+  TimelinePage,
+  TimelineQuery,
 } from "./types";
 
 /**
@@ -143,4 +147,14 @@ export interface TandemApi {
    * Returns an unsubscribe function.
    */
   watchWorkspace(workspaceId: string, onChange: () => void): () => void;
+  /**
+   * Live page: every unrevoked assistant, the approved-context version and how
+   * far behind each one is. Reactive: `onData` runs on every change (including
+   * read-only MCP calls). Returns an unsubscribe function.
+   */
+  watchAgentNetwork(workspaceId: string, subscriber: Subscriber<AgentNetwork>): () => void;
+  /** The newest page of assistant activity and people's decisions, reactively. */
+  watchTimeline(workspaceId: string, query: TimelineQuery, subscriber: Subscriber<TimelinePage>): () => void;
+  /** One older page (`query.before` set), fetched once. */
+  listTimeline(workspaceId: string, query: TimelineQuery): Promise<TimelinePage>;
 }

@@ -114,12 +114,147 @@ export function resolveAgentWorkspace(
 export async function touchConnection(
   ctx: MutationCtx,
   session: AgentSession,
-  options: { sync?: boolean } = {},
+  options: { sync?: boolean; syncedContextRevision?: number; syncedContextBrief?: boolean } = {},
 ): Promise<void> {
   const now = Date.now();
   await ctx.db.patch(session.connection._id, {
     lastMcpActionAt: now,
     ...(options.sync ? { lastSyncAt: now } : {}),
+    ...(options.syncedContextRevision !== undefined
+      ? { syncedContextRevision: options.syncedContextRevision }
+      : {}),
+    ...(options.syncedContextBrief !== undefined
+      ? { syncedContextBrief: options.syncedContextBrief }
+      : {}),
+  });
+}
+
+export type ActivityKind = Doc<"agent_activity">["kind"];
+export type ActivityResource = NonNullable<Doc<"agent_activity">["resource"]>;
+
+// A successful write links back to this connection's own conflict on the
+// same resource when it comes within this window.
+const RESOLVE_WINDOW_MS = 30 * 60 * 1000;
+const RESOLVE_SCAN = 20;
+// An identical read repeated within this window adds no row: presence still
+// moves, but a chatty assistant re-listing or re-reading doesn't grow the log.
+const READ_REPEAT_MS = 60 * 1000;
+const LABEL_MAX = 80;
+
+/** Codes that mean "someone else got there first" rather than a failure. */
+export const CONFLICT_CODES = new Set(["VERSION_CONFLICT", "TASK_ALREADY_CLAIMED"]);
+
+export function activityLabel(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length > LABEL_MAX ? `${trimmed.slice(0, LABEL_MAX - 1)}…` : trimmed;
+}
+
+/** The approved-context version right now (0 before any context exists). */
+export async function currentContextRevision(
+  ctx: ReadCtx,
+  workspaceId: Id<"workspaces">,
+): Promise<number> {
+  const context = await ctx.db
+    .query("structured_context")
+    .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
+    .unique();
+  return context?.revision ?? 0;
+}
+
+/**
+ * Appends one agent_activity row for an MCP call. Successful calls record it
+ * in their own tool mutation; failed ones from mcpTools.touchConnection after
+ * the rollback. `summary` must be generated text: never file content, prompt
+ * text or a rationale. Never written to workspace_events.
+ */
+export async function recordActivity(
+  ctx: MutationCtx,
+  session: AgentSession,
+  entry: {
+    tool: string;
+    kind: ActivityKind;
+    outcome?: Doc<"agent_activity">["outcome"];
+    errorCode?: string;
+    summary: string;
+    resource?: ActivityResource;
+    contextRevision?: number;
+    previousSyncedContextRevision?: number;
+  },
+): Promise<Id<"agent_activity">> {
+  const now = Date.now();
+  const outcome = entry.outcome ?? "ok";
+  if (outcome === "ok" && entry.kind === "read") {
+    const latest = await ctx.db
+      .query("agent_activity")
+      .withIndex("by_connection_and_created", (q) =>
+        q.eq("agentConnectionId", session.connection._id).gte("createdAt", now - READ_REPEAT_MS),
+      )
+      .order("desc")
+      .first();
+    if (
+      latest?.kind === "read" &&
+      latest.outcome === "ok" &&
+      latest.tool === entry.tool &&
+      latest.summary === entry.summary &&
+      latest.resource?.id === entry.resource?.id
+    )
+      return latest._id;
+  }
+  let resolvesActivityId: Id<"agent_activity"> | undefined;
+  if (
+    outcome === "ok" &&
+    (entry.kind === "write" || entry.kind === "task") &&
+    entry.resource
+  ) {
+    // The newest earlier attempt on this resource decides: a conflict that no
+    // write has followed yet is unresolved. Reads in between don't count.
+    const recent = await ctx.db
+      .query("agent_activity")
+      .withIndex("by_connection_and_created", (q) =>
+        q
+          .eq("agentConnectionId", session.connection._id)
+          .gte("createdAt", now - RESOLVE_WINDOW_MS),
+      )
+      .order("desc")
+      .take(RESOLVE_SCAN);
+    for (const row of recent) {
+      if (row.resource?.type !== entry.resource.type || row.resource.id !== entry.resource.id)
+        continue;
+      if (row.kind === "read" || row.kind === "error") continue;
+      // Only a stale write the agent then fixed counts; TASK_ALREADY_CLAIMED
+      // means someone else won, not that this write resolved it.
+      if (row.outcome === "conflict" && row.errorCode === "VERSION_CONFLICT")
+        resolvesActivityId = row._id;
+      break;
+    }
+  }
+  return await ctx.db.insert("agent_activity", {
+    workspaceId: session.workspaceId,
+    agentConnectionId: session.connection._id,
+    actor: session.actor,
+    tool: entry.tool,
+    kind: entry.kind,
+    outcome,
+    ...(entry.errorCode !== undefined ? { errorCode: entry.errorCode } : {}),
+    summary: entry.summary,
+    ...(entry.resource
+      ? {
+          resource: {
+            ...entry.resource,
+            ...(entry.resource.label !== undefined
+              ? { label: activityLabel(entry.resource.label) }
+              : {}),
+          },
+        }
+      : {}),
+    contextRevision:
+      entry.contextRevision ??
+      (await currentContextRevision(ctx, session.workspaceId)),
+    ...(entry.previousSyncedContextRevision !== undefined
+      ? { previousSyncedContextRevision: entry.previousSyncedContextRevision }
+      : {}),
+    ...(resolvesActivityId ? { resolvesActivityId } : {}),
+    createdAt: now,
   });
 }
 

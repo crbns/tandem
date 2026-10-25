@@ -16,10 +16,11 @@ import {
   type McpUser,
   type ToolCtx,
 } from "@convex-dev/mcp";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Value } from "convex/values";
 import { components, internal } from "./_generated/api";
 import {
   BRIEF_LIMIT,
+  codeOf,
   ToolError,
   conflictNextSteps,
   invalidInput,
@@ -127,6 +128,7 @@ function ids(values: string[] | undefined, field: string): string[] {
 async function run(
   ctx: ToolCtx,
   principal: McpUser<string>,
+  toolName: string,
   fn: () => Promise<object>,
   hint: ErrorHint = {},
 ) {
@@ -137,12 +139,19 @@ async function run(
       structuredContent: result as Record<string, unknown>,
     });
   } catch (raw) {
-    // A failed tool mutation rolls back its own presence touch, so record
-    // "last MCP action" separately: only for errors Convex raised past the
-    // credential check, and never fatal.
-    if (raw instanceof ConvexError && !isUnauthenticated(raw)) {
+    // A failed tool mutation rolls back its own presence touch and activity
+    // row, so record both separately, never fatally: for errors Convex raised
+    // past the credential check, and for the handler's own ToolErrors (bad
+    // arguments, or a text file with no content), which come after the
+    // component already verified the credential.
+    if ((raw instanceof ConvexError && !isUnauthenticated(raw)) || raw instanceof ToolError) {
       try {
-        await ctx.runMutation(internal.mcpTools.touchConnection, { principal });
+        await ctx.runMutation(internal.mcpTools.touchConnection, {
+          principal,
+          tool: toolName,
+          errorCode: activityErrorCode(raw),
+          ...activityResource(toolName, hint),
+        });
       } catch {
         // Presence is best effort; the caller gets the original error.
       }
@@ -166,6 +175,25 @@ async function run(
       structuredContent: { error: { ...details, code, message } },
     });
   }
+}
+
+/** A ConvexError's or ToolError's code for the activity feed; anything else is "ERROR". */
+function activityErrorCode(err: ConvexError<Value> | ToolError): string {
+  const code = err instanceof ToolError ? err.code : codeOf(err);
+  return code && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : "ERROR";
+}
+
+/** What a failed call acted on, from its error hint (ids are unverified). */
+function activityResource(
+  toolName: string,
+  hint: ErrorHint,
+): { resource?: { type: "file" | "folder" | "task"; id: string } } {
+  const id = (value: string) => value.slice(0, 64);
+  if (hint.fileId) return { resource: { type: "file", id: id(hint.fileId) } };
+  if (hint.taskId) return { resource: { type: "task", id: id(hint.taskId) } };
+  if (hint.folderId && (toolName === "move_folder" || toolName === "list_files"))
+    return { resource: { type: "folder", id: id(hint.folderId) } };
+  return {};
 }
 
 /** Only the internal fields the tools pass on; never spread tool args. */
@@ -210,7 +238,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, _args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "get_workspace_info", async () => {
           const r = await ctx.runMutation(internal.mcpTools.getWorkspaceInfo, { principal: p(user) });
           return {
             user: { id: r.userId },
@@ -268,13 +296,14 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "sync_workspace", async () => {
           const since = args.since === undefined ? undefined : parseCursor(args.since);
           const r = await ctx.runMutation(internal.mcpTools.syncWorkspace, {
             principal: p(user),
             workspaceId: args.workspace_id,
             sinceSeq: since?.seq,
             cursorWorkspaceId: since?.workspaceId,
+            detail: args.detail ?? "full",
           });
           const c = r.context;
           const contextEmpty = !c.goal?.text && !c.scope?.text &&
@@ -309,7 +338,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "list_files", async () => {
           oneOf(args.folder_id, args.path, ["folder_id", "path"], false);
           const r = await ctx.runMutation(internal.mcpTools.listFiles, {
             principal: p(user),
@@ -343,7 +372,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "search_files", async () => {
           const rows = await ctx.runMutation(internal.mcpTools.searchFiles, {
             principal: p(user),
             workspaceId: args.workspace_id,
@@ -369,7 +398,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "read_file", async () => {
           oneOf(args.file_id, args.path, ["file_id", "path"], true);
           const { file, content, version } = await ctx.runMutation(internal.mcpTools.readFile, {
             principal: p(user),
@@ -400,7 +429,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "get_file_versions", async () => {
           const r = await ctx.runMutation(internal.mcpTools.getFileVersions, {
             principal: p(user),
             fileId: id(args.file_id, "file_id"),
@@ -445,7 +474,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(false),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "create_document", async () => {
           oneOf(args.parent_id, args.folder_path, ["parent_id", "folder_path"], false);
           const file = await ctx.runMutation(internal.mcpTools.createDocument, {
             principal: p(user),
@@ -474,7 +503,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "update_document", async () => {
           if (!Number.isInteger(args.expected_version) || args.expected_version < 1)
             throw invalidInput("expected_version must be a positive integer.", { field: "expected_version" });
           const file = await ctx.runMutation(internal.mcpTools.updateDocument, {
@@ -501,7 +530,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "create_folder", async () => {
           const r = await ctx.runMutation(internal.mcpTools.createFolder, {
             principal: p(user),
             workspaceId: args.workspace_id,
@@ -531,7 +560,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "move_file", async () => {
           oneOf(args.to_folder_id, args.to_folder_path, ["to_folder_id", "to_folder_path"], true, ' ("/" for the workspace root)');
           const file = await ctx.runMutation(internal.mcpTools.moveFile, {
             principal: p(user),
@@ -570,7 +599,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "move_folder", async () => {
           oneOf(args.to_folder_id, args.to_folder_path, ["to_folder_id", "to_folder_path"], true, ' ("/" for the workspace root)');
           const folder = await ctx.runMutation(internal.mcpTools.moveFolder, {
             principal: p(user),
@@ -625,7 +654,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(false),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "propose_context_change", async () => {
           const operation = args.operation ?? "add";
           if (operation !== "add" && (!args.entry_id || !Number.isSafeInteger(args.expected_version) || args.expected_version! < 0))
             throw invalidInput("entry_id and expected_version are required for resolve/remove.");
@@ -694,7 +723,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "get_approvals", async () => {
           const status = args.status ?? "pending";
           const rows = await ctx.runMutation(internal.mcpTools.getApprovals, {
             principal: p(user),
@@ -741,7 +770,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       // requires write scope for every other operation.
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "manage_task", async () => {
           const { operation } = args;
           const description = (value: string | undefined) => {
             if (value !== undefined && value.trim().length > 4000)
@@ -813,7 +842,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(false),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, async () => {
+        run(ctx, user, "publish_work", async () => {
           const work = await ctx.runMutation(internal.mcpTools.publishWork, {
             principal: p(user),
             workspaceId: args.workspace_id,

@@ -1,11 +1,19 @@
 import { MAX_NAME_LENGTH, nameKey, storedName } from "@repo/backend/convex/lib/names.ts";
-import { TandemApiError } from "./errors";
+import { normalizeError, TandemApiError } from "./errors";
+import { clientName } from "../actors";
 import { BINARY_MIME_TYPES, MAX_UPLOAD_BYTES } from "@repo/backend/convex/lib/binaries.js";
 
 const MOCK_MCP_URL = "https://mock-deployment.convex.site/mcp";
 import type { TandemApi } from "./tandemApi";
 import {
   AGENT_CLIENTS,
+  type ActivityKind,
+  type AgentNetwork,
+  type NetworkAgent,
+  type Subscriber,
+  type TimelineItem,
+  type TimelinePage,
+  type TimelineQuery,
   type ContextChangeInput,
   type ContextDetails,
   type ContextEntry,
@@ -34,7 +42,14 @@ export interface MockTandemApi extends TandemApi {
   /** Dev-only: pretend an assistant saved a new version through MCP. */
   __simulateExternalEdit(fileId: string, content: string, actor: Actor): void;
   __simulatePublishedWork(workspaceId: string, work: Omit<PublishedWork, "id" | "workspaceId" | "createdAt">): void;
+  /** Dev-only: pretend a connected assistant made one MCP call (Live page controls). */
+  __simulateAgentCall(connectionId: string, call: SimulatedCall): void;
 }
+
+export type SimulatedCall = "sync" | "read" | "write" | "stale_write";
+
+/** A successful write within this long after the same assistant's conflict on that resource resolves it. */
+const RESOLVE_WINDOW_MS = 30 * 60_000;
 
 interface MockOptions {
   /** Inclusive [min, max] artificial latency per call. */
@@ -330,7 +345,7 @@ export function createMockApi({
   const proposals: StoredProposal[] = seedProposals(Date.now(), context, details.get(MOCK_WORKSPACE_ID)!);
   // Unset means "manual", like the backend's default.
   const contextApprovals = new Map<string, ContextApproval>();
-  type StoredConnection = AgentConnection & { workspaceId: string };
+  type StoredConnection = AgentConnection & { workspaceId: string; syncedContextRevision?: number };
   const connections: StoredConnection[] = [
     {
       id: "conn_alex_claude",
@@ -344,13 +359,19 @@ export function createMockApi({
       createdAt: Date.now() - 26 * 60 * MINUTE,
       lastMcpActionAt: Date.now() - 3 * MINUTE,
       lastSyncAt: Date.now() - 12 * MINUTE,
+      syncedContextRevision: context.version,
     },
   ];
   const decidedRequests = new Set<string>();
   const watchers = new Map<string, Set<() => void>>();
   // Async like a backend push, so a watcher never runs inside the write itself.
-  const notify = (workspaceId: string) =>
+  // Live page subscriptions also see read-only calls, which record no workspace event.
+  const liveWatchers = new Map<string, Set<() => void>>();
+  const pingLive = (workspaceId: string) => liveWatchers.get(workspaceId)?.forEach((listener) => queueMicrotask(listener));
+  const notify = (workspaceId: string) => {
     watchers.get(workspaceId)?.forEach((listener) => queueMicrotask(listener));
+    pingLive(workspaceId);
+  };
   const cloneProposal = ({ baseValue: _baseValue, ownerUserId: _ownerUserId, ownerArea: _ownerArea, entryId: _entryId, hasConflict: _hasConflict, ...p }: StoredProposal): ContextProposal => ({
     ...p,
     sourceFileIds: [...p.sourceFileIds],
@@ -390,6 +411,131 @@ export function createMockApi({
     return items.length > 0 ? { status: "conflict", method: "structural", checkedAt: Date.now(), items } : null;
   };
   const cloneConnection = ({ workspaceId: _workspaceId, ...c }: StoredConnection): AgentConnection => ({ ...c });
+
+  // The Live page's agent_activity and people's workspace events, newest last.
+  type StoredActivity = TimelineItem & { workspaceId: string };
+  const activity: StoredActivity[] = [];
+  const connectionActor = (c: StoredConnection): TimelineItem["actor"] => ({
+    type: "agent",
+    label: c.displayName ?? `${c.userName ?? "Someone"}'s ${clientName(c.client)} assistant`,
+    client: c.client,
+    agentConnectionId: c.id,
+  });
+  /** The unrevoked connection an agent actor writes through, matched on person and client. */
+  const connectionFor = (workspaceId: string, actor: Actor) =>
+    connections.find((c) => c.workspaceId === workspaceId && c.revokedAt === undefined && c.userId === actor.userId && c.client === actor.agentClient);
+  const contextVersion = (workspaceId: string) => details.get(workspaceId)?.version ?? 0;
+  type ActivityInput = Pick<TimelineItem, "kind" | "summary"> & Partial<Omit<TimelineItem, "id" | "source" | "actor">>;
+  const recordAgent = (c: StoredConnection, input: ActivityInput & { tool: string }) => {
+    const now = input.createdAt ?? Date.now();
+    let { kind, resolvesId = null } = input;
+    if (kind === "write" && input.resource) {
+      // The connection's own unresolved conflict on this resource, if recent.
+      const conflict = [...activity].reverse().find((a) =>
+        a.actor.agentConnectionId === c.id && a.kind === "conflict" && a.resource?.id === input.resource!.id &&
+        now - a.createdAt <= RESOLVE_WINDOW_MS && !activity.some((b) => b.resolvesId === a.id));
+      if (conflict) {
+        kind = "resolved";
+        resolvesId = conflict.id;
+      }
+    }
+    activity.push({
+      outcome: "ok", errorCode: null, resource: null, previousSyncedContextRevision: null,
+      ...input, kind, resolvesId, createdAt: now,
+      id: `a:${nextId++}`, source: "agent", workspaceId: c.workspaceId, actor: connectionActor(c),
+      contextRevision: input.contextRevision ?? contextVersion(c.workspaceId),
+    });
+    if (input.createdAt === undefined) c.lastMcpActionAt = now;
+    pingLive(c.workspaceId);
+  };
+  const recordHuman = (workspaceId: string, actor: Actor, input: ActivityInput) => {
+    activity.push({
+      outcome: "ok", errorCode: null, resource: null, previousSyncedContextRevision: null, resolvesId: null, tool: null,
+      createdAt: Date.now(), ...input,
+      id: `w:${nextId++}`, source: "workspace", workspaceId,
+      actor: { type: actor.actorType, label: actor.userName ?? "A teammate", client: null, agentConnectionId: null },
+      contextRevision: input.contextRevision ?? contextVersion(workspaceId),
+    });
+  };
+  const fileResource = (f: StoredFile) => ({ type: "file", id: f.summary.id, label: f.summary.name });
+  /** A save by anyone: people's become workspace events, an assistant's its connection's activity. */
+  const recordSave = (f: StoredFile, actor: Actor, verb: "created" | "saved") => {
+    const { workspaceId, name, version } = f.summary;
+    const summary = verb === "created" ? `Created ${name}` : `Saved ${name} v${version}`;
+    if (actor.actorType === "human") {
+      recordHuman(workspaceId, actor, { kind: "human_edit", summary, resource: fileResource(f) });
+      return;
+    }
+    const c = connectionFor(workspaceId, actor);
+    if (c) recordAgent(c, { kind: "write", tool: verb === "created" ? "create_document" : "update_document", summary, resource: fileResource(f) });
+  };
+
+  const agentNetwork = (workspaceId: string): AgentNetwork => {
+    const contextRevision = contextVersion(workspaceId);
+    const agents = connections
+      .filter((c) => c.workspaceId === workspaceId && c.revokedAt === undefined)
+      .sort((a, b) => (b.lastMcpActionAt ?? -Infinity) - (a.lastMcpActionAt ?? -Infinity) || b.createdAt - a.createdAt)
+      .slice(0, 50)
+      .map((c): NetworkAgent => {
+        const last = [...activity].reverse().find((a) => a.actor.agentConnectionId === c.id);
+        return {
+          connectionId: c.id,
+          label: connectionActor(c).label,
+          client: c.client,
+          oauthClientName: c.oauthClientName ?? null,
+          lastMcpActionAt: c.lastMcpActionAt ?? null,
+          lastSyncAt: c.lastSyncAt ?? null,
+          syncedContextRevision: c.syncedContextRevision ?? null,
+          // Mock syncs are always full.
+          syncedContextBrief: false,
+          contextVersionsBehind: c.syncedContextRevision === undefined ? null : contextRevision - c.syncedContextRevision,
+          lastTool: last?.tool ?? null,
+          lastKind: last?.kind ?? null,
+          lastOutcome: last?.outcome ?? null,
+        };
+      });
+    const ctx = details.get(workspaceId);
+    return { contextRevision, contextUpdatedAt: contexts.get(workspaceId)?.approvedAt ?? ctx?.goal?.updatedAt ?? null, agents };
+  };
+  const timeline = (workspaceId: string, { before: cursor, limit = 50, connectionId, kinds }: TimelineQuery): TimelinePage => {
+    const size = Math.min(Math.max(1, Math.floor(limit)), 100);
+    // The mock's cursor is just createdAt; the backend's is opaque.
+    const before = cursor === undefined ? undefined : Number(cursor);
+    // Newest first; same-millisecond calls keep the order they happened in.
+    const matching = [...activity]
+      .reverse()
+      .filter((a) => a.workspaceId === workspaceId && (before === undefined || a.createdAt < before) &&
+        (!connectionId || a.actor.agentConnectionId === connectionId) && (!kinds?.length || kinds.includes(a.kind)))
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const items = matching.slice(0, size).map(({ workspaceId: _workspaceId, ...item }) => structuredClone(item));
+    return { items, nextBefore: matching.length > size ? String(items[items.length - 1]!.createdAt) : null };
+  };
+  /** A reactive mock query: computed after the latency, again on every Live ping. */
+  const watchLive = <T,>(workspaceId: string, compute: () => T, subscriber: Subscriber<T>) => {
+    let active = true;
+    const run = () => {
+      void delay().then(() => {
+        if (!active) return;
+        let data: T;
+        try {
+          requireMember(workspaceId);
+          data = compute();
+        } catch (err) {
+          subscriber.onError(normalizeError(err));
+          return;
+        }
+        subscriber.onData(data);
+      });
+    };
+    const listeners = liveWatchers.get(workspaceId) ?? new Set();
+    liveWatchers.set(workspaceId, listeners);
+    listeners.add(run);
+    run();
+    return () => {
+      active = false;
+      listeners.delete(run);
+    };
+  };
 
   const delay = () => {
     const [min, max] = latencyMs;
@@ -492,8 +638,45 @@ export function createMockApi({
     };
     file.revisions.push({ ...actor, version, createdAt: now, ...(content === null ? {} : { content }) });
     notify(file.summary.workspaceId);
+    recordSave(file, actor, "saved");
     return version;
   };
+
+  // The Live history the seed implies: the assistants' saves and proposals, the
+  // seeded connection's last sync, people's saves and decisions.
+  {
+    const seeded: Array<{ at: number; record: () => void }> = [];
+    for (const f of files.values()) {
+      f.revisions.forEach((r, i) => {
+        const actor: Actor = { actorType: r.actorType, userId: r.userId, userName: r.userName, agentClient: r.agentClient, agentName: r.agentName };
+        const summary = i === 0 ? `Created ${f.summary.name}` : `Saved ${f.summary.name} v${r.version}`;
+        const resource = fileResource(f);
+        seeded.push({
+          at: r.createdAt,
+          record: () => {
+            const c = actor.actorType === "agent" ? connectionFor(f.summary.workspaceId, actor) : undefined;
+            if (c) recordAgent(c, { kind: "write", tool: i === 0 ? "create_document" : "update_document", summary, resource, createdAt: r.createdAt });
+            else if (actor.actorType === "human") recordHuman(f.summary.workspaceId, actor, { kind: "human_edit", summary, resource, createdAt: r.createdAt });
+          },
+        });
+      });
+    }
+    for (const p of proposals) {
+      const c = p.createdBy.actorType === "agent" ? connectionFor(p.workspaceId, p.createdBy) : undefined;
+      const resource = { type: "proposal", id: p.id, label: null };
+      if (c) seeded.push({ at: p.createdAt, record: () => recordAgent(c, { kind: "propose", tool: "propose_context_change", summary: `Proposed a ${p.field.replace("_", " ")} change`, resource, createdAt: p.createdAt }) });
+      if (p.decidedBy && p.decidedAt !== null && (p.status === "approved" || p.status === "rejected")) {
+        const decidedAt = p.decidedAt;
+        seeded.push({ at: decidedAt, record: () => recordHuman(p.workspaceId, p.decidedBy!, { kind: p.status === "approved" ? "approve" : "reject", summary: `${p.status === "approved" ? "Approved" : "Rejected"} a ${p.field.replace("_", " ")} proposal`, resource, createdAt: decidedAt }) });
+      }
+    }
+    for (const c of connections) {
+      const at = c.lastSyncAt;
+      if (at !== undefined)
+        seeded.push({ at, record: () => recordAgent(c, { kind: "sync", tool: "sync_workspace", summary: `Received context v${c.syncedContextRevision ?? 0}`, resource: { type: "context", id: c.workspaceId, label: null }, createdAt: at }) });
+    }
+    seeded.sort((a, b) => a.at - b.at).forEach((entry) => entry.record());
+  }
 
   // Copies so callers can't mutate the store (revisions are immutable).
   const cloneSummary = (s: FileSummary): FileSummary => ({
@@ -605,6 +788,7 @@ export function createMockApi({
         },
       });
       notify(workspaceId);
+      recordSave(files.get(id)!, actor, "created");
       return { id, version: 1 };
     },
 
@@ -872,6 +1056,10 @@ export function createMockApi({
       validateChange(workspaceId, input, existing?.sourceFileIds);
       applyChange(workspaceId, input, getActor(), index);
       notify(workspaceId);
+      recordHuman(workspaceId, getActor(), {
+        kind: "context", summary: `Edited the ${input.field.replace("_", " ")} in project context`,
+        resource: { type: "context", id: workspaceId, label: null },
+      });
       return { version: ctx.version };
     },
 
@@ -1060,6 +1248,11 @@ export function createMockApi({
         other.revision++;
       }
       notify(workspaceId);
+      recordHuman(workspaceId, actor, {
+        kind: decision === "approved" ? "approve" : "reject",
+        summary: `${decision === "approved" ? "Approved" : "Rejected"} a ${proposal.field.replace("_", " ")} proposal`,
+        resource: { type: "proposal", id: proposal.id, label: null },
+      });
     },
 
     async recheckConflict({ id, workspaceId }) {
@@ -1199,6 +1392,53 @@ export function createMockApi({
       watchers.set(workspaceId, listeners);
       listeners.add(onChange);
       return () => listeners.delete(onChange);
+    },
+
+    watchAgentNetwork(workspaceId, subscriber) {
+      return watchLive(workspaceId, () => agentNetwork(workspaceId), subscriber);
+    },
+
+    watchTimeline(workspaceId, query, subscriber) {
+      return watchLive(workspaceId, () => timeline(workspaceId, query), subscriber);
+    },
+
+    async listTimeline(workspaceId, query) {
+      await delay();
+      requireMember(workspaceId);
+      return timeline(workspaceId, query);
+    },
+
+    __simulateAgentCall(connectionId, call) {
+      const c = connections.find((conn) => conn.id === connectionId && conn.revokedAt === undefined);
+      if (!c) throw new TandemApiError("FORBIDDEN");
+      const { workspaceId } = c;
+      if (call === "sync") {
+        const previous = c.syncedContextRevision ?? null;
+        c.syncedContextRevision = contextVersion(workspaceId);
+        c.lastSyncAt = Date.now();
+        recordAgent(c, {
+          kind: "sync", tool: "sync_workspace", summary: `Received context v${c.syncedContextRevision}`,
+          previousSyncedContextRevision: previous, resource: { type: "context", id: workspaceId, label: null },
+        });
+        return;
+      }
+      const file = [...files.values()]
+        .filter((f) => f.deletedAt === undefined && f.summary.workspaceId === workspaceId && f.content !== null)
+        .sort((a, b) => b.summary.updatedAt - a.summary.updatedAt)[0];
+      if (!file) throw new TandemApiError("FILE_NOT_FOUND");
+      const { name, version } = file.summary;
+      if (call === "read") {
+        recordAgent(c, { kind: "read", tool: "read_file", summary: `Read ${name} v${version}`, resource: fileResource(file) });
+      } else if (call === "stale_write") {
+        // The file stays as it was: a stale write commits nothing.
+        recordAgent(c, {
+          kind: "conflict", tool: "update_document", outcome: "conflict", errorCode: "VERSION_CONFLICT",
+          summary: `Tried to save ${name} from v${Math.max(1, version - 1)}; it's at v${version}`, resource: fileResource(file),
+        });
+      } else {
+        const actor: Actor = { actorType: "agent", userId: c.userId, userName: c.userName, agentClient: c.client, agentName: clientName(c.client) };
+        commit(file, `${file.content ?? ""}\n> ${connectionActor(c).label} updated this file through MCP (simulated).\n`, actor);
+      }
     },
 
     __simulatePublishedWork(workspaceId, work) {
