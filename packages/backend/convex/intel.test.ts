@@ -1257,6 +1257,46 @@ describe("context manager: promoting findings to proposals", () => {
     const pending = await pendingProposals(s);
     expect(pending.filter((p) => p.field === "decision")).toHaveLength(0);
     expect(pending.filter((p) => p.field === "goal")).toHaveLength(1);
+    expect((await s.entry("decision:postgres"))!.proposalSkipped).toBe("DUPLICATE");
+  });
+
+  it("an unrelated decision or a reversal isn't mistaken for an approved one", async () => {
+    const s = await setup();
+    const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    await s.alex.mutation(api.context.updateContextField, {
+      workspaceId: s.workspaceId, field: "decision", proposedValue: "We will use Stripe for payments", sourceFileIds: [], expectedVersion: before.revision,
+    });
+    await observedEntry(s, "decision:vercel", "decision", "We will use Vercel for hosting");
+    await observedEntry(s, "decision:no-stripe", "decision", "We will not use Stripe for payments");
+    stubModel(noActivity);
+    await s.process();
+    const decisions = (await pendingProposals(s)).filter((p) => p.field === "decision").map((p) => p.proposedValue);
+    expect(decisions).toEqual(expect.arrayContaining(["We will use Vercel for hosting", "We will not use Stripe for payments"]));
+  });
+
+  it("promotes a goal a person confirmed on the dashboard", async () => {
+    const s = await setup();
+    await observedEntry(s, "goal:confirmed", "goal", "Ship the demo by Sunday", {
+      evidence: "human_confirmed", confidence: 1, updatedBy: s.human,
+    });
+    stubModel(noActivity);
+    await s.process();
+    expect((await pendingProposals(s)).map((p) => [p.field, p.proposedValue])).toEqual([["goal", "Ship the demo by Sunday"]]);
+  });
+
+  it("after a person rejects the context manager's goal, waits a day before raising another", async () => {
+    const s = await setup();
+    await observedEntry(s, "goal:a", "goal", "Ship the demo by Sunday");
+    stubModel(noActivity);
+    await s.process();
+    const [goal] = await pendingProposals(s);
+    await s.t.run((ctx) => ctx.db.patch(goal!._id, { status: "rejected", decidedAt: Date.now(), decidedBy: s.human }));
+    await observedEntry(s, "goal:b", "goal", "Win the Convex track");
+    await s.process();
+    expect((await pendingProposals(s)).filter((p) => p.field === "goal")).toHaveLength(0);
+    vi.setSystemTime(Date.now() + 25 * 60 * 60 * 1000);
+    await s.process();
+    expect((await pendingProposals(s)).map((p) => p.proposedValue)).toEqual(["Win the Convex track"]);
   });
 });
 

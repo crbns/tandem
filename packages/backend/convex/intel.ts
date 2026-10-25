@@ -745,6 +745,7 @@ async function raiseProposals(
 }
 
 const PROMOTE_PER_RUN = 3;
+const GOAL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const PROMOTE_SCAN = 20;
 // Content that narrates the observation rather than stating the finding.
 const NARRATION = /^(observed|requested|claimed|document|the document|open question)\b|\b(said|says|reported|claims?)\b/i;
@@ -775,7 +776,13 @@ async function promoteFindings(
     ...(approved?.decisions ?? []).filter((d) => !d.status || d.status === "active").map((d) => d.text),
     ...pending.filter((p) => p.field === "decision" && !p.operation).map((p) => p.proposedValue),
   ];
-  let goalTaken = Boolean(stored?.goal?.text) || pending.some((p) => p.field === "goal");
+  // A person rejecting the context manager's goal shouldn't just bring the
+  // next goal entry up on the following run: wait a day before another.
+  const since = Date.now() - GOAL_COOLDOWN_MS;
+  const rejectedGoal = (await listProposals(ctx, workspaceId, "rejected", 20)).some(
+    (p) => p.field === "goal" && p.createdBy.type === "system" && (p.decidedAt ?? 0) >= since,
+  );
+  let goalTaken = Boolean(stored?.goal?.text) || pending.some((p) => p.field === "goal") || rejectedGoal;
   let raised = 0;
   for (const category of ["goal", "decision"] as const) {
     const rows = await ctx.db
@@ -789,12 +796,18 @@ async function promoteFindings(
       if (raised >= budget) return raised;
       if (
         e.proposalId !== undefined || e.proposalSkipped !== undefined || e.status !== "active" ||
-        e.confidence < MIN_PROPOSAL_CONFIDENCE || e.updatedBy.type === "human"
+        e.confidence < MIN_PROPOSAL_CONFIDENCE
       )
         continue;
+      // A person's confirmation or correction (updatedBy human) is the
+      // strongest reason to propose it, so those are promoted too.
       const text = !NARRATION.test(e.content) && e.content.length <= 500 ? e.content : e.title;
-      if (category === "goal" ? goalTaken : decisions.some((d) => normalize(d) === normalize(text) || similar(d, text)))
+      if (category === "goal" && goalTaken) continue;
+      if (category === "decision" && decisions.some((d) => normalize(d) === normalize(text) || similar(d, text))) {
+        // Already approved or pending: mark it so it isn't re-checked every run.
+        await ctx.db.patch(e._id, { proposalSkipped: "DUPLICATE" });
         continue;
+      }
       const count = await raiseProposals(ctx, workspaceId, [{
         field: category,
         text,
@@ -1334,17 +1347,42 @@ async function analyzeDocument(doc: DocumentInput, batch: Batch): Promise<Analys
   }
 }
 
-const words = (text: string) =>
-  new Set(normalize(text).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3));
+// Filler that would make unrelated statements look alike ("We will use
+// Stripe for payments" vs "We will use Vercel for hosting").
+const FILLER = new Set([
+  "the", "and", "for", "with", "use", "uses", "using", "will", "shall", "should", "must", "our",
+  "we", "all", "any", "from", "into", "this", "that", "these", "those", "are", "was", "were",
+  "has", "have", "via", "per", "its", "their", "them", "they", "then", "than", "also", "only",
+  "team", "project", "app", "data",
+]);
+// A reversal ("don't use X", "drop X", "X instead of Y") is a change to
+// propose, never a duplicate of X.
+const NEGATION = /\b(not|no|never|don'?t|doesn'?t|won'?t|drop|stop|remove|replace|instead|without|ruled out)\b/i;
 
-/** Most of the shorter text's words appear in the longer one. */
-function similar(a: string, b: string): boolean {
+const words = (text: string) =>
+  new Set(
+    normalize(text)
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w.length >= 3 && !FILLER.has(w)),
+  );
+
+/**
+ * Says the same thing, and neither negates what the other states. "strict"
+ * (deciding a finding is already approved or pending) needs most content
+ * words of both to coincide; "restates" (an entry's title and content
+ * against the proposal text it came with, which adds words) only needs most
+ * of the shorter's in the longer.
+ */
+function similar(a: string, b: string, mode: "strict" | "restates" = "strict"): boolean {
+  if (NEGATION.test(a) !== NEGATION.test(b)) return false;
   const [x, y] = [words(a), words(b)];
   const [small, large] = x.size <= y.size ? [x, y] : [y, x];
   if (small.size === 0) return false;
   let shared = 0;
   for (const w of small) if (large.has(w)) shared++;
-  return shared / small.size >= 0.6;
+  return mode === "restates"
+    ? shared / small.size >= 0.6
+    : shared / small.size >= 0.75 && shared / large.size >= 0.5;
 }
 
 /**
@@ -1404,7 +1442,7 @@ async function analyze(batch: Batch): Promise<Analysis> {
     const proposed =
       added && (e.category === "decision" || e.category === "goal") &&
       !proposals.some((p) => p.key === e.key) &&
-      proposals.some((p) => p.field === e.category && similar(p.text, `${e.title} ${e.content}`));
+      proposals.some((p) => p.field === e.category && similar(p.text, `${e.title} ${e.content}`, "restates"));
     if (aboutDigested || proposed) {
       entries.delete(e.key);
       dropped.push(`${e.key}: ${aboutDigested ? "the document's digest covers it" : "covered by its proposal"}`);
