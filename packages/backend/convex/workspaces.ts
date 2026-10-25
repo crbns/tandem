@@ -288,7 +288,8 @@ export const getWorkspaceInfo = query({
         const user = await ctx.db.get(member.userId);
         return {
           userId: member.userId,
-          name: user?.name ?? null,
+          // Email tells nameless members apart; null only when both are missing.
+          name: user?.name ?? user?.email ?? null,
           role: member.role,
           joinedAt: member.joinedAt,
         };
