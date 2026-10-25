@@ -808,8 +808,8 @@ describe("sync-and-read / save-files loop", () => {
       "the user directs",
       "pending until a human approves",
       "manage_task",
-      "Reply as usual",
-      "showing docs you write",
+      "Reply in chat",
+      "show docs you write",
       "long edit",
     ])
       expect(MCP_INSTRUCTIONS).toContain(term);

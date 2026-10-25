@@ -3161,7 +3161,7 @@ describe("sync brief and server instructions", () => {
       "read brief first", "observed", "instead of skimming", "manage_task", "pending until a human approves",
       "don't publish or propose on your own", "the user wants announced", "the user directs",
       // Documents go to the chat as well as to Tandem.
-      "Reply as usual", "showing docs you write", "long edit"])
+      "Reply in chat", "show docs you write", "long edit"])
       expect(MCP_INSTRUCTIONS).toContain(term);
     for (const gone of ["even if no file changed", "Record before the work", "Record after", "create or edit"])
       expect(MCP_INSTRUCTIONS).not.toContain(gone);
