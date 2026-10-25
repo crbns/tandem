@@ -23,7 +23,7 @@ import {
   toResolvedConflict,
 } from "./conflicts";
 import { nameKey } from "./names";
-import { loadObservedContext } from "./observed";
+import { loadObservedContext, loadObservedRevision, OBSERVED_EVENT_KINDS } from "./observed";
 
 export { toFileMetadata };
 
@@ -1104,8 +1104,8 @@ export function toEvent(event: Doc<"workspace_events">) {
 /**
  * Snapshot (sinceSeq undefined): latest SYNC_LIMIT events, newest files and
  * active tasks. Incremental: events with seq > sinceSeq, oldest first, and the
- * files and tasks they touched. A sinceSeq past the newest event is
- * INVALID_CURSOR.
+ * files and tasks they touched, and observed only if the page changed it. A
+ * sinceSeq past the newest event is INVALID_CURSOR.
  */
 export async function syncCore(
   ctx: ReadCtx,
@@ -1280,9 +1280,14 @@ export async function syncCore(
     workTruncated: work.length > SYNC_WORK_LIMIT,
     tasks: await Promise.all(tasks.map((task) => toTask(ctx, task))),
     tasksTruncated,
-    // Always the current derived state, in snapshots and with since: it is
-    // small and bounded, and its revision tells the assistant whether it moved.
-    observed: await loadObservedContext(ctx, workspaceId, { brief: false }),
+    // The current derived state in every snapshot. With since, only when this
+    // event page changed it (OBSERVED_EVENT_KINDS); otherwise null, so a
+    // re-sync doesn't resend what the assistant already read.
+    observed:
+      sinceSeq === undefined || events.some((e) => OBSERVED_EVENT_KINDS.has(e.kind))
+        ? await loadObservedContext(ctx, workspaceId)
+        : null,
+    observedRevision: await loadObservedRevision(ctx, workspaceId),
     events: events.map(toEvent),
     eventsTruncated,
     headSeq,

@@ -27,6 +27,12 @@
 // where the new document landed, "read" checks the seeded file was read (by
 // path or id) and its marker phrase is in the answer.
 //
+// Prompts with "loop" get a loop grader: every step in loop.require (sync,
+// read, save, propose, ...) needs a successful call, and no step in
+// loop.forbid may be attempted. An ordinary edit or draft requires sync + save
+// and forbids publish_work and propose_context_change: Tandem's context
+// manager records the work from the saved files.
+//
 // On SIGINT/SIGTERM (or any exit) the harness kills the live MCP servers and
 // claude processes (each runs in its own process group) and removes in-flight
 // temp dirs.
@@ -84,6 +90,14 @@ const WRITE_TOOLS = new Set([
   "publish_work",
   "propose_context_change",
 ]);
+// Loop grader steps: the Tandem tools that count for each.
+const LOOP_STEPS = {
+  sync: ["sync_workspace"],
+  read: ["read_file", "search_files"],
+  save: ["create_document", "update_document"],
+  publish: ["publish_work"],
+  propose: ["propose_context_change"],
+};
 const CONDITIONS = ["WITH_SKILL", "NO_SKILL"];
 // Built-ins from the CLI's init tool list that the eval never needs. Names
 // that don't exist in a given CLI version are ignored by --disallowedTools.
@@ -304,6 +318,7 @@ async function main() {
   const summary = summarize(trials, prompts, conditions);
   const conflictSummary = summarizeConflict(trials, prompts, conditions);
   const folderSummary = summarizeFolders(trials, prompts, conditions);
+  const loopSummary = summarizeLoop(trials, prompts, conditions);
   const isolation = summarizeIsolation(trials);
   const results = redactSecrets(
     {
@@ -362,6 +377,7 @@ async function main() {
       summary,
       conflict_summary: conflictSummary,
       folder_summary: folderSummary,
+      loop_summary: loopSummary,
       trials,
     },
     [opts.mcp_key, opts.mcp_teammate_key],
@@ -378,6 +394,7 @@ async function main() {
     console.log("\n" + renderConflictTable(conflictSummary, trials));
   if (folderSummary.length)
     console.log("\n" + renderFolderTable(folderSummary));
+  if (loopSummary.length) console.log("\n" + renderLoopTable(loopSummary));
 }
 
 async function runTrial({ prompt, condition, rep }, slot) {
@@ -722,6 +739,7 @@ export function analyze(
     answer_has_stale_distractor_marker: staleDistractor,
     answered_from_stale_local: staleLocal && !tandemMarker,
     answered_from_stale_distractor: staleDistractor && !tandemMarker,
+    ...(prompt.loop && { loop: analyzeLoop(tandemCalls, prompt.loop) }),
     ...(prompt.folders && {
       folders: analyzeFolders(
         tandemCalls,
@@ -760,6 +778,29 @@ export function analyze(
           permission_mode: init.permissionMode,
         }
       : null,
+  };
+}
+
+// Grades the loop: `missing` lists required steps with no successful call,
+// `unwanted` forbidden steps that were attempted (even if they failed).
+export function analyzeLoop(calls, spec) {
+  const require = spec.require ?? [];
+  const forbid = spec.forbid ?? [];
+  for (const step of [...require, ...forbid])
+    if (!LOOP_STEPS[step]) throw new Error(`Unknown loop step ${step}`);
+  const tool = (c) => c.name.slice("mcp__tandem__".length);
+  const of = (step) => calls.filter((c) => LOOP_STEPS[step].includes(tool(c)));
+  const missing = require.filter((step) => !of(step).some((c) => c.ok));
+  const unwanted = forbid.filter((step) => of(step).length > 0);
+  return {
+    require,
+    forbid,
+    missing,
+    unwanted,
+    passed: missing.length === 0 && unwanted.length === 0,
+    write_calls: calls.filter((c) => WRITE_TOOLS.has(tool(c))).length,
+    publish_calls: of("publish").length,
+    propose_calls: of("propose").length,
   };
 }
 
@@ -1129,6 +1170,38 @@ function summarizeFolders(trials, prompts, conditions) {
   return rows;
 }
 
+export function summarizeLoop(trials, prompts, conditions) {
+  const rows = [];
+  for (const p of prompts.filter((x) => x.loop)) {
+    for (const c of conditions) {
+      const ts = trials.filter(
+        (t) => t.prompt_id === p.id && t.condition === c && t.loop,
+      );
+      if (!ts.length) continue;
+      const tally = (key) =>
+        Object.fromEntries(
+          [...new Set(ts.flatMap((t) => t.loop[key]))].map((step) => [
+            step,
+            ts.filter((t) => t.loop[key].includes(step)).length,
+          ]),
+        );
+      const sum = (key) => ts.reduce((a, t) => a + t.loop[key], 0);
+      rows.push({
+        prompt_id: p.id,
+        condition: c,
+        n: ts.length,
+        passed: ts.filter((t) => t.loop.passed).length,
+        missing: tally("missing"),
+        unwanted: tally("unwanted"),
+        write_calls: sum("write_calls"),
+        publish_calls: sum("publish_calls"),
+        propose_calls: sum("propose_calls"),
+      });
+    }
+  }
+  return rows;
+}
+
 function summarizeIsolation(trials) {
   const userSkills = new Set(listDir(join(homedir(), ".claude/skills")));
   const leaks = [];
@@ -1423,6 +1496,40 @@ ${detail}
 `;
 }
 
+export function renderLoopTable(rows) {
+  const steps = (o) =>
+    Object.entries(o)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(", ") || "-";
+  return (
+    "| Prompt | Condition | n | Passed | Missing required | Unwanted writes | Write calls | publish_work | propose_context_change |\n|---|---|---|---|---|---|---|---|---|\n" +
+    rows
+      .map(
+        (r) =>
+          `| \`${r.prompt_id}\` | ${r.condition} | ${r.n} | ${r.passed}/${r.n} | ${steps(r.missing)} | ${steps(r.unwanted)} | ${r.write_calls} | ${r.publish_calls} | ${r.propose_calls} |`,
+      )
+      .join("\n") +
+    "\n"
+  );
+}
+
+function renderLoopSection(r) {
+  if (!r.loop_summary?.length) return "";
+  const specs = r.prompts
+    .filter((p) => p.loop)
+    .map(
+      (p) =>
+        `\`${p.id}\` requires ${p.loop.require.join(" + ") || "nothing"}, forbids ${p.loop.forbid.join(", ") || "nothing"}`,
+    )
+    .join("; ");
+  return `## Loop
+
+Prompts with \`loop\`. A trial passes when every required step had a successful call (sync: \`sync_workspace\`; read: \`read_file\`/\`search_files\`; save: \`create_document\`/\`update_document\`; propose: \`propose_context_change\`) and no forbidden step was attempted. Missing and unwanted columns count trials per step; call columns sum calls. Specs: ${specs}.
+
+${renderLoopTable(r.loop_summary)}
+`;
+}
+
 function renderMarkdown(r) {
   const trialRows = r.trials
     .map((t) => {
@@ -1482,7 +1589,7 @@ ${envLine}
 Counts are k/n trials. Sync/write attempted count trials with matching tool calls; Sync/write OK require at least one matching non-error tool result. Write tools are create_document, update_document, create_folder, move_file, move_folder, publish_work, propose_context_change. First Tandem call = sync measures attempted order. Tool errors counts trials with at least one Tandem tool error, even if the final answer succeeds. Errors/timeouts includes tool errors, CLI failures (including nonzero exit or a missing final result), and timeouts; these trials still count in n. Tool calls made inside subagents are excluded. Columns shown as n/a were not recorded by that run.${staleNote}
 
 ${renderSummaryTable(r.summary, r.settings.env, r.trials)}
-${renderConflictSection(r)}${renderFolderSection(r)}## Isolation
+${renderConflictSection(r)}${renderFolderSection(r)}${renderLoopSection(r)}## Isolation
 
 - Clean: **${iso.clean ? "yes" : "NO"}**${iso.leaks.length ? `\n- Leaks:\n${iso.leaks.map((l) => `  - ${l}`).join("\n")}` : ""}
 - Expected MCP servers (${iso.env} env): ${iso.expected_mcp_servers.map((s) => `\`${s}\``).join(", ")}
