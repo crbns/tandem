@@ -796,6 +796,34 @@ export const applyResult = internalMutation({
 
     const proposals = await raiseProposals(ctx, workspaceId, args.proposals, dropped);
 
+    // A deleted document's digest leaves observed context with it; nothing
+    // else would ever retract it (only a digest call writes doc keys).
+    for (const id of args.eventIds) {
+      const event = await ctx.db.get(id);
+      const fileId = event?.type === "file.deleted" ? event.resources.find((r) => r.type === "file")?.id : undefined;
+      const digest = fileId ? await getEntry(ctx, workspaceId, docKey(fileId)) : null;
+      if (!event || !digest || digest.status === "retracted") continue;
+      const outcome = await applyEntry(ctx, workspaceId, {
+        op: "retract",
+        key: digest.key,
+        category: digest.category,
+        title: digest.title,
+        content: digest.content,
+        status: "retracted",
+        evidence: digest.evidence,
+        confidence: digest.confidence,
+        evidenceEventIds: [event._id, ...digest.evidenceEventIds].slice(0, MAX_EVIDENCE_IDS),
+        agentConnectionIds: digest.agentConnectionIds,
+        fileIds: digest.fileIds,
+        ...(digest.severity !== undefined ? { severity: digest.severity } : {}),
+        // Marks it as the digest it is, so a person-written document's
+        // digest isn't mistaken for a person's own entry and kept.
+        ...(digest.sourceHash !== undefined ? { sourceHash: digest.sourceHash } : {}),
+        reason: "The document was deleted.",
+      }, meta);
+      if (outcome === "updated") updated++;
+    }
+
     for (const id of args.eventIds) {
       const event = await ctx.db.get(id);
       // Only still-pending ones: a duplicate run never re-claims processed events.
@@ -1192,16 +1220,29 @@ async function analyzeActivity(batch: Batch): Promise<Analysis | null> {
   return { result: validateIntelOutput(withDeterministic(reply.raw, scoped), scoped), ...usageOf(reply) };
 }
 
-/** One document's digest call (or the deterministic digest without a model). */
+/**
+ * One document's digest call (or the deterministic digest without a model).
+ * A failure that would repeat on every retry (a refusal, unparseable or
+ * truncated output for this text) falls back to the deterministic digest, so
+ * one document can't hold every later batch; transient failures still fail
+ * the run and retry.
+ */
 async function analyzeDocument(doc: DocumentInput, batch: Batch): Promise<Analysis> {
   if (batch.method === "heuristic") return { result: heuristicDigest(doc) };
-  const reply = await callModel(batch.model, {
-    system: DIGEST_SYSTEM_PROMPT,
-    schema: DIGEST_RESPONSE_SCHEMA,
-    content: digestMessage(doc, batch),
-    timeoutMs: DIGEST_TIMEOUT_MS,
-  });
-  return { result: validateDigest(reply.raw, doc, batch), ...usageOf(reply) };
+  try {
+    const reply = await callModel(batch.model, {
+      system: DIGEST_SYSTEM_PROMPT,
+      schema: DIGEST_RESPONSE_SCHEMA,
+      content: digestMessage(doc, batch),
+      timeoutMs: DIGEST_TIMEOUT_MS,
+    });
+    return { result: validateDigest(reply.raw, doc, batch), ...usageOf(reply) };
+  } catch (err) {
+    const why = knownError(err);
+    if (why !== "model refused" && why !== "unparseable response" && why !== TRUNCATED) throw err;
+    const fallback = heuristicDigest(doc);
+    return { result: { ...fallback, dropped: [`${doc.name}: ${why}; kept a plain summary`] } };
+  }
 }
 
 const words = (text: string) =>
@@ -1231,6 +1272,7 @@ async function analyze(batch: Batch): Promise<Analysis> {
   ]);
   const parts = [activity, ...digests].filter((p): p is Analysis => p !== null);
   const entries = new Map<string, IntelResult["entries"][number]>();
+  const fromActivity = new Map<string, boolean>();
   const proposals: IntelResult["proposals"] = [];
   const dropped: string[] = [];
   const seen = new Set<string>();
@@ -1240,6 +1282,7 @@ async function analyze(batch: Batch): Promise<Analysis> {
     for (const e of result.entries) {
       if (entries.has(e.key)) dropped.push(`${e.key}: from two calls; the later one wins`);
       entries.set(e.key, e);
+      fromActivity.set(e.key, result === activity?.result);
     }
     for (const p of result.proposals) {
       const id = `${p.field}:${normalize(p.text)}`;
@@ -1261,13 +1304,16 @@ async function analyze(batch: Batch): Promise<Analysis> {
   // a document's digest is its knowledge record (the activity call only saw a
   // preview), and a proposal's companion entry is its decision/goal record.
   const digested = new Set(batch.documents.map((d) => d.fileId as string));
-  const activityKeys = new Set(activity?.result.entries.map((e) => e.key) ?? []);
+  // Only new records are dropped: a change to an existing entry (say, a
+  // supersede of the decision a document just replaced) always applies.
+  const existing = new Set(batch.entries.map((e) => e.key));
   for (const e of [...entries.values()]) {
+    const added = e.op === "upsert" && !existing.has(e.key);
     const aboutDigested =
-      activityKeys.has(e.key) && e.category === "knowledge" &&
+      added && fromActivity.get(e.key) === true && e.category === "knowledge" &&
       e.fileIds.length > 0 && e.fileIds.every((id) => digested.has(id));
     const proposed =
-      (e.category === "decision" || e.category === "goal") &&
+      added && (e.category === "decision" || e.category === "goal") &&
       !proposals.some((p) => p.key === e.key) &&
       proposals.some((p) => p.field === e.category && similar(p.text, `${e.title} ${e.content}`));
     if (aboutDigested || proposed) {

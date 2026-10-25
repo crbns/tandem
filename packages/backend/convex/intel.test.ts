@@ -23,7 +23,7 @@ import {
   type CompactSection,
   type IntelBatch,
 } from "./lib/intel";
-import { requestIntelRun } from "./lib/intelQueue";
+import { INTEL_ACTOR, requestIntelRun } from "./lib/intelQueue";
 import schema from "./schema";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -807,6 +807,87 @@ describe("context manager: documents", () => {
     expect((await s.runs()).at(-1)).toMatchObject({ proposals: 1 });
   });
 
+  it("retracts a deleted document's digest", async () => {
+    const s = await setup();
+    const fileId = await addDoc(s, "old-plan.md", "# Old plan\nWe use MongoDB.\n");
+    await saved(s, fileId);
+    stubModel(noActivity);
+    await s.process();
+    expect(await s.entry(docKey(fileId))).toMatchObject({ status: "active" });
+    await s.t.run((ctx) => ctx.db.patch(fileId, { deletedAt: Date.now() }));
+    await saved(s, fileId, "file.deleted");
+    await s.process();
+    expect(await s.entry(docKey(fileId))).toMatchObject({ status: "retracted" });
+  });
+
+  it("keeps a digest finding that reuses a key the activity call also wrote", async () => {
+    const s = await setup();
+    const fileId = await addDoc(s, "tokens.md", "# Tokens\nAccess tokens live 15 minutes.\n");
+    await saved(s, fileId);
+    const finding = (content: string) => (data: any) => ({
+      summary: "",
+      entries: [entryJson({
+        key: "knowledge:token-lifetime", category: "knowledge", title: "Token lifetime", content,
+        evidence_event_ids: data.event_ids ?? [data.events.at(-1).id], file_ids: [fileId],
+      })],
+      proposals: [],
+    });
+    stubModel(finding("From the activity."), undefined, {
+      digest: (data) => ({ ...finding("Access tokens live 15 minutes.")(data), digest: "Tokens: 15 minutes." }),
+    });
+    await s.process();
+    expect(await s.entry("knowledge:token-lifetime")).toMatchObject({ content: "Access tokens live 15 minutes." });
+  });
+
+  it("applies a supersede of an existing decision even when a proposal restates its replacement", async () => {
+    const s = await setup();
+    const fileId = await addDoc(s, "sessions.md", "# Sessions\nUse Redis sessions instead of JWT session tokens.\n");
+    await s.t.run((ctx) =>
+      ctx.db.insert("context_entries", {
+        workspaceId: s.workspaceId, key: "decision:session-tokens", category: "decision",
+        title: "JWT session tokens", content: "Sessions use JWT session tokens.", status: "active",
+        evidence: "observed", confidence: 0.8, evidenceEventIds: [], agentConnectionIds: [], fileIds: [],
+        createdBy: INTEL_ACTOR, updatedBy: INTEL_ACTOR, revision: 1, createdAt: Date.now(), updatedAt: Date.now(),
+      }),
+    );
+    await saved(s, fileId);
+    stubModel(
+      (data) => ({
+        summary: "",
+        entries: [entryJson({
+          op: "supersede", key: "decision:session-tokens", category: "decision", title: "JWT session tokens",
+          content: "Replaced by Redis sessions.", status: "superseded", superseded_by: "decision:redis-sessions",
+          evidence_event_ids: [data.events.at(-1).id],
+        })],
+        proposals: [],
+      }),
+      undefined,
+      {
+        digest: (data) => ({
+          digest: "Sessions: Redis instead of JWT.",
+          entries: [],
+          proposals: [{ field: "decision", text: "Use Redis sessions instead of JWT session tokens.", rationale: "sessions.md", confidence: 0.8, evidence_event_ids: data.event_ids, supersedes: "" }],
+        }),
+      },
+    );
+    await s.process();
+    expect(await s.entry("decision:session-tokens")).toMatchObject({ status: "superseded" });
+  });
+
+  it("a document the model refuses gets a plain digest instead of blocking later batches", async () => {
+    const s = await setup();
+    const bad = await addDoc(s, "bad.md", "# Bad\nSomething the model refuses.\n");
+    const e1 = await saved(s, bad);
+    stubModel(noActivity, undefined, {
+      digest: () =>
+        new Response(JSON.stringify({ content: [], stop_reason: "refusal" }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+    await s.process();
+    expect((await s.runs()).at(-1)).toMatchObject({ status: "succeeded" });
+    expect(await s.event(e1)).toMatchObject({ intelStatus: "processed" });
+    expect(await s.entry(docKey(bad))).toMatchObject({ status: "active" });
+  });
+
   it("8 documents saved in one batch: 8 digest calls, 8 knowledge:doc entries, none left out", async () => {
     const s = await setup();
     const ids: Id<"files">[] = [];
@@ -1229,12 +1310,12 @@ describe("lib/intel", () => {
         { key: "task:c", title: "CD", content: "cd", status: "completed", evidence: "verified", confidence: 0.9, evidence_event_ids: ["ev-task:c"], replaces: ["task:d", "task:a"] },
       ],
     }, section, true);
-    const ab = result.entries.find((e) => e.key === "task:a" && e.op === "upsert");
-    expect(ab).toMatchObject({ status: "active", evidence: "observed", evidenceEventIds: ["ev-task:a", "ev-task:b"] });
+    // Mixing completed and active work would demote task:a: the merge is refused.
+    expect(result.entries.find((e) => e.key === "task:a" && e.op === "upsert")).toBeUndefined();
+    expect(result.dropped.some((d) => d.includes("different statuses"))).toBe(true);
     // Cites a verified entry's event, and every folded entry is completed+verified.
     expect(result.entries.find((e) => e.key === "task:c" && e.op === "upsert")).toMatchObject({ status: "completed", evidence: "verified" });
-    // task:a was already folded into the first item.
-    expect(result.entries.filter((e) => e.op === "supersede").map((e) => [e.key, e.supersededBy])).toEqual([["task:b", "task:a"], ["task:d", "task:c"]]);
+    expect(result.entries.filter((e) => e.op === "supersede").map((e) => [e.key, e.supersededBy])).toEqual([["task:d", "task:c"], ["task:a", "task:c"]]);
   });
 
   it("bounds the data payload, and long documents keep their head and tail", () => {

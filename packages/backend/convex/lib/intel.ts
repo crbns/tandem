@@ -1115,6 +1115,12 @@ export function validateCompaction(
       dropped.push(`${label}: no title or content`);
       continue;
     }
+    // Merging finished with unfinished work would demote the finished part
+    // (a completed, verified task folded into active/claimed).
+    if (new Set(folded.map((e) => e.status)).size > 1) {
+      dropped.push(`${label}: folds entries with different statuses`);
+      continue;
+    }
     const confidence = clamp01(item.confidence);
     if (confidence < MIN_CONFIDENCE) {
       dropped.push(`${key}: confidence ${confidence.toFixed(2)} below ${MIN_CONFIDENCE}`);

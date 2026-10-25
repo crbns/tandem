@@ -135,7 +135,10 @@ quality depended entirely on assistants remembering to write it.
    decisions, tasks and blockers the document states. A finding that cites no
    event is backed by the document's own events. Calls run 4 at a time; any
    failure fails the run, so no event is processed without its document
-   being read. The activity call never sees document text.
+   being read, except that a reply that would fail the same way on every
+   retry (refusal, unparseable, truncated) falls back to a plain summary of
+   that document. Deleting a document retracts its digest. The activity call
+   never sees document text.
 4. The activity call gets the events (untrusted data inside `<data>`) and must return JSON:
    `{ summary, entries: [{ op: "upsert"|"supersede"|"complete"|"reopen"|"resolve"|"retract", key, category, title, content, status, evidence, confidence, evidence_event_ids, agent_connection_ids, file_ids, superseded_by?, severity? }], proposals: [{ field: "goal"|"decision", text, rationale, evidence_event_ids, supersedes? }] }`.
 5. Validation is deterministic: unknown ops/categories dropped, ids must be
@@ -152,8 +155,9 @@ quality depended entirely on assistants remembering to write it.
    (stale ⇒ retry the batch once against fresh state), writes revisions,
    marks the batch processed, bumps `entriesRevision`, records a
    `context.observed` workspace event, and raises goal/decision findings via
-   `proposeContextChangeCore` with `INTEL_ACTOR` (≤ 4 per run, at most one
-   superseding an approved decision, each tracked
+   `proposeContextChangeCore` with `INTEL_ACTOR` (≤ 4 per run from the
+   activity and digest calls, plus at most one compaction supersede; at most
+   one superseding an approved decision; each tracked
    by a companion `goal:`/`decision:` entry carrying `proposalId`; dedupe and
    `ALREADY_IN_CONTEXT` are swallowed). Those proposals go through the
    existing structural + semantic conflict detection and stay pending for a
