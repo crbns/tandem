@@ -3019,9 +3019,9 @@ describe("sync brief and server instructions", () => {
     // Everything between the brief and next_steps is the pre-brief contract, key for key and value for value.
     const { brief, next_steps, ...rest } = sync;
     expect(Object.keys(sync).at(-1)).toBe("next_steps");
-    expect(next_steps).toEqual(syncNextSteps({ contextEmpty: false }));
+    expect(next_steps).toEqual(syncNextSteps());
     expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "pending_proposals", "resolved_conflicts", "changed_files", "files_truncated", "folders", "folders_truncated",
-      "recent_work", "work_truncated", "tasks", "tasks_truncated", "observed", "events", "events_truncated", "cursor"]);
+      "recent_work", "work_truncated", "tasks", "tasks_truncated", "observed_changed", "observed", "events", "events_truncated", "cursor"]);
     const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
     expect(rest.workspace).toEqual({ id: workspaceId, name: "Demo" });
     expect(rest.context_version).toBe(raw.context.revision);
@@ -3106,27 +3106,22 @@ describe("sync brief and server instructions", () => {
       return result.structuredContent;
     };
 
-    // A fresh workspace has no approved context, so sync asks to seed it from the files.
-    const empty = (await tool("sync_workspace", { detail: "brief" })).next_steps;
-    expect(empty).toEqual(syncNextSteps({ contextEmpty: true }));
-    expect(empty[0]).toMatch(/context is empty.*files you read or save.*propose_context_change.*source_ids.*no pending proposal/);
-    expect(syncNextSteps({ contextEmpty: false })).toEqual(empty.slice(1));
-    const at = (prefix: string) => syncNextSteps({ contextEmpty: false }).findIndex((step) => step.startsWith(prefix));
-    expect(at("Record before working")).toBeGreaterThan(at("Keep the cursor"));
-    expect(at("Record before working")).toBeGreaterThan(at("Read before working"));
-    expect(at("Record before working")).toBeLessThan(at("Write back after working"));
-    expect(empty.join(" ")).toMatch(/publish_work, even if no file changed/);
+    // The context manager reads saved files, so the loop asks only for files.
+    const steps = (await tool("sync_workspace", { detail: "brief" })).next_steps;
+    expect(steps).toEqual(syncNextSteps());
+    expect(steps[0]).toMatch(/^Read before working: observed.*instead of skimming recent_work.*read_file/);
+    expect(steps.join(" ")).toMatch(/update_document with the expected_version you read, or create_document/);
+    expect(steps.join(" ")).toMatch(/No publish_work or propose_context_change unless the user asks/);
+    expect(steps.join(" ")).not.toMatch(/even if no file changed|seed/);
 
     const created = await tool("create_document", { name: "loop.md", content: "v1" });
     expect(created.next_steps).toEqual(savedNextSteps(created as { id: string; version: number }));
-    expect(created.next_steps.join(" ")).toMatch(/expected_version=1.*publish_work.*propose_context_change/s);
+    expect(created.next_steps.join(" ")).not.toMatch(/publish_work|propose_context_change/);
     const { next_steps: savedSteps, ...file } = created;
     expect(file).toEqual(expect.objectContaining({ id: expect.any(String), path: "/loop.md", version: 1 }));
-    expect(savedSteps[1]).toContain(`["${created.id}"]`);
-    expect(savedSteps[2]).toMatch(/propose_context_change.*approved context lacks and no pending proposal/);
-    expect(savedSteps[2]).toContain(`source_ids ["${created.id}"]`);
+    expect(savedSteps[0]).toBe("Saved as version 1; pass expected_version=1 for your next edit of this file.");
     // Tandem holds the shared copy; the chat still gets the document itself.
-    expect(savedSteps[3]).toMatch(/show the user the document.*in full.*doesn't replace your reply/);
+    expect(savedSteps[1]).toMatch(/show the user the document.*in full.*doesn't replace your reply/);
 
     const updated = await tool("update_document", { file_id: created.id, content: "v2", expected_version: 1 });
     expect(updated.next_steps[0]).toBe("Saved as version 2; pass expected_version=2 for your next edit of this file.");
@@ -3139,38 +3134,13 @@ describe("sync brief and server instructions", () => {
     expect(pending.proposal.status).toBe("pending");
     expect(pending.next_steps).toEqual(proposedNextSteps("pending"));
     expect(pending.next_steps.join(" ")).toMatch(/human owner or admin/);
-    // A pending goal isn't approved context yet; once approved, the seeding step goes away.
-    expect((await tool("sync_workspace")).next_steps).toEqual(syncNextSteps({ contextEmpty: true }));
     await alex.mutation(api.context.decideContextProposal, { proposalId: pending.proposal.id, decision: "approved" });
-    expect((await tool("sync_workspace")).next_steps).toEqual(syncNextSteps({ contextEmpty: false }));
+    expect((await tool("sync_workspace")).next_steps).toEqual(syncNextSteps());
 
     await automatic(alex, workspaceId);
     const applied = await tool("propose_context_change", { field: "constraints", proposed_value: "No mobile", rationale: "Budget" });
     expect(applied.proposal.status).toBe("applied");
     expect(applied.next_steps).toEqual(proposedNextSteps("applied"));
-  });
-
-  it("treats a context whose only entry was resolved as empty again", async () => {
-    const { t, alex, sam, workspaceId } = await setup();
-    await automatic(alex, workspaceId);
-    const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
-    const tool = async (name: string, args: Record<string, unknown> = {}) => {
-      const result = await callTool(t, apiKey, name, args);
-      expect(result.isError).toBeUndefined();
-      return result.structuredContent;
-    };
-    await tool("propose_context_change", { field: "open_questions", proposed_value: "Who reviews?", rationale: "Planning" });
-    const active = await tool("sync_workspace");
-    expect(active.next_steps).toEqual(syncNextSteps({ contextEmpty: false }));
-    const resolved = await tool("propose_context_change", {
-      field: "open_questions", operation: "resolve", entry_id: active.context.open_questions[0].id,
-      expected_version: active.context_version, rationale: "Answered",
-    });
-    expect(resolved.proposal.status).toBe("applied");
-    // Retained history isn't current context: only the resolved question is left.
-    const after = await tool("sync_workspace");
-    expect(after.context.open_questions).toMatchObject([{ status: "resolved" }]);
-    expect(after.next_steps).toEqual(syncNextSteps({ contextEmpty: true }));
   });
 
   it("keeps next_steps off read results and error results", async () => {
@@ -3186,13 +3156,15 @@ describe("sync brief and server instructions", () => {
 
   it("tells assistants when to sync and how to share work back, in a short instructions string", async () => {
     const { MCP_INSTRUCTIONS } = await import("./mcp");
-    for (const term of ["sync_workspace", "since", "cursor", "read_file", "update_document", "publish_work", "propose_context_change",
-      "expected_version", "open_questions", "best effort", "without waiting to be asked", "private conversation history", "untrusted",
-      "even if no file changed", "create or edit", "that context lacks", "no pending proposal covers", "read brief first",
-      "Record before the work", "manage_task", "complete claimed tasks", "Record after",
+    for (const term of ["sync_workspace", "since", "cursor", "read_file", "update_document", "create_document", "publish_work", "propose_context_change",
+      "expected_version", "best effort", "without waiting to be asked", "private conversation history", "untrusted",
+      "read brief first", "observed", "instead of skimming", "manage_task", "pending until a human approves",
+      "don't publish or propose on your own", "the user wants announced", "the user directs",
       // Documents go to the chat as well as to Tandem.
       "Reply as usual", "showing docs you write", "long edit"])
       expect(MCP_INSTRUCTIONS).toContain(term);
+    for (const gone of ["even if no file changed", "Record before the work", "Record after", "create or edit"])
+      expect(MCP_INSTRUCTIONS).not.toContain(gone);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);
 

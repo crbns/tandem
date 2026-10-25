@@ -381,19 +381,20 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       title: "Sync workspace",
       description:
         "Call this before any workspace-related work, then again with since before significant decisions or writes. " +
-        "next_steps restates the loop: read the files the task touches before working, write back and publish after. " +
+        "next_steps restates the loop: read the files the task touches before working, save files after. " +
         "Read brief first: goal, scope, active_decisions, blockers (active open_questions, pending_approvals, conflicts), recent_changes (newest first) and changed_file_count; " +
         `each list holds at most ${BRIEF_LIMIT} and truncated says one was capped. ` +
-        'detail: "full" (default) or "brief" (only brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/path/version, deleted_file_ids, full recent_work and tasks;' +
-        "no context, pending_proposals or events). Use brief to orient; before decisions or writes that may depend on constraints or ownership, use full, and read_file before editing. " +
+        'detail: "full" (default) or "brief" (only brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/path/version, deleted_file_ids, recent_work and tasks; ' +
+        "no context, pending_proposals or events; once observed.revision > 0, brief recent_work is titles only: id, kind, title, created_by, created_at, file_ids). Use brief to orient; before decisions or writes that may depend on constraints or ownership, use full, and read_file before editing. " +
         "The full result also has approved authoritative context (goal, scope, decisions, ownership), working constraints and open questions with retained resolved/superseded history, " +
         "clearly labeled pending proposals (proposed text, supersedes target and conflict; not yet in effect), changed files, tasks, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. " +
         "Only context and brief.active_decisions are in effect. blockers.conflicts lists pending proposals held because they conflict with approved context or another proposal: they are NOT in effect until a person resolves them, so keep following the approved value. " +
-        "observed (top level in full; brief.observed in both details, at most 12 entries with open blockers and active work first and content clipped) is what Tandem's context manager observed from assistant and workspace activity (MCP calls, Claude Code hooks, file changes): " +
-        "tasks, progress, blockers, knowledge, agent summaries and coordination, each with status, evidence (requested < claimed < observed < verified < human_confirmed), confidence, the assistants involved and evidence_count. " +
-        "It is NOT approved context and observed.note says so: cite the evidence level, treat claimed as unconfirmed and never present claimed work as done. It is always the current state, also with since; observed.revision changes when it does, and a context.observed event marks each update. " +
+        "observed (top level in full, up to 30 entries; brief.observed in brief, up to 10 with content clipped; open blockers and active work first, document digests last) is the context manager's compacted summary of teammates' assistant activity and workspace documents: " +
+        "read it instead of skimming recent_work and events. Entries have key, category, title, content, status, evidence (requested < claimed < observed < verified < human_confirmed), confidence, agents (labels) and updated_at. " +
+        "It is NOT approved context: treat claimed as unconfirmed and never present claimed work as done. " +
+        "observed_changed is false only with since when this event page held no context.observed or context.corrected event; observed is then omitted (keep what you read). " +
         "resolved_conflicts (both details; the newest 5 in a snapshot, those resolved in this event page with since) says how a person settled each conflict: outcome, note, and which entries are in_effect now. " +
-        "Read recent_work before starting; a snapshot contains the newest 20 publications. With since, it contains the newest 20 publications within this event page; later work arrives when you continue syncing. work_truncated means older matching work within that page (or snapshot) was omitted. " +
+        "A snapshot's recent_work contains the newest 20 publications. With since, it contains the newest 20 publications within this event page; later work arrives when you continue syncing. work_truncated means older matching work within that page (or snapshot) was omitted. " +
         "Without since you get a snapshot: the full context, all files (up to 50), active tasks (open and in_progress, up to 50; tasks_truncated if more) and the latest events. " +
         "folders lists the workspace's folders with their paths (up to 200; folders_truncated if there are more), and every file has a path. " +
         "With since, tasks holds every task changed in this event page, including ones just completed (status done). " +
@@ -423,10 +424,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
             cursorWorkspaceId: since?.workspaceId,
             detail: args.detail ?? "full",
           });
-          const c = r.context;
-          const contextEmpty = !c.goal?.text && !c.scope?.text &&
-            [c.constraints, c.decisions, c.ownership, c.openQuestions].every((entries) => entries.every((e) => e.status !== "active"));
-          return { ...toSyncResult(r, args.detail), next_steps: syncNextSteps({ contextEmpty }) };
+          return { ...toSyncResult(r, args.detail), next_steps: syncNextSteps() };
         }, { workspaceId: args.workspace_id }),
     }),
 
@@ -738,7 +736,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
     propose_context_change: tool({
       title: "Propose context change",
       description:
-        "Update project context; use this to record decisions. Re-sync with since first so you propose against current context. " +
+        "Update project context when the user directs a goal, scope, decision, constraint, ownership or open-question change (Tandem's context manager proposes what saved files show). Re-sync with since first so you propose against current context. " +
         "If you haven't called sync_workspace in this conversation, do that first. " +
         "In a manual workspace (the default; see context_approval in get_workspace_info) every change, " +
         "including constraints, open_questions and resolve/remove, creates a pending proposal requiring human owner/admin approval. " +
@@ -942,11 +940,10 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       title: "Publish work",
       description:
         'Share a project deliverable or finding with the team, linked to the files it covers. kind: "deliverable" for finished work, ' +
-        '"finding" for facts learned or progress. title: 1–200 characters; summary: what the team should know, 1–4000 characters; ' +
+        '"finding" for facts learned. title: 1–200 characters; summary: what the team should know, 1–4000 characters; ' +
         "file_ids: up to 20 files in this workspace. " +
-        "Publish after each project request that did work, even with no file change (analysis, plans, reviews and decisions discussed as findings; files produced as deliverables), " +
-        "so teammates' assistants see them on their next sync. " +
-        "Raise team-blocking questions with propose_context_change field open_questions instead; those appear in the sync brief's blockers. " +
+        "Use it only for a deliverable or finding the user wants announced: Tandem's context manager already reads saved files and activity, so routine work needs no post. " +
+        "A team-blocking question the user raises goes to propose_context_change field open_questions instead; those appear in the sync brief's blockers. " +
         "Only publish relevant project work the user has authorized sharing; never private conversation history or personal content. " +
         "Publishing does not change files or the approved context: for goal, scope, decisions or ownership use propose_context_change. " +
         "If you haven't called sync_workspace in this conversation, do that first.",

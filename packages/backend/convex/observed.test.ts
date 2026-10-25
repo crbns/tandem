@@ -14,9 +14,9 @@ import { CONFLICT_ACTOR } from "./lib/conflicts";
 import {
   OBSERVED_BRIEF_CONTENT,
   OBSERVED_BRIEF_LIMIT,
+  OBSERVED_CONTENT,
   OBSERVED_LIMIT,
   OBSERVED_NOTE,
-  OBSERVED_SUPERSEDED_LIMIT,
 } from "./lib/observed";
 import schema from "./schema";
 
@@ -166,14 +166,17 @@ describe("sync_workspace observed", () => {
       entries: [],
       truncated: false,
     });
-    expect(full.brief.observed).toEqual(full.observed);
+    expect(full.observed_changed).toBe(true);
+    // A full sync carries observed once, at top level.
+    expect(full.brief).not.toHaveProperty("observed");
     const brief = await callTool(t, samAgent.apiKey, "sync_workspace", { detail: "brief" });
     expect(brief.brief.observed.revision).toBe(0);
+    expect(brief.brief.observed_changed).toBe(true);
     // Brief keeps observed inside brief only.
     expect(brief).not.toHaveProperty("observed");
   });
 
-  it("includes entries with evidence, agents and revision in snapshot and since-mode syncs", async () => {
+  it("includes entries with evidence, agent labels and revision in snapshots, and with since only when the page changed them", async () => {
     const { t, workspaceId, samAgent } = await setup();
     const doc = await callTool(t, samAgent.apiKey, "create_document", { name: "auth.md", content: "# Auth" });
     const first = await callTool(t, samAgent.apiKey, "sync_workspace");
@@ -201,31 +204,31 @@ describe("sync_workspace observed", () => {
     expect(full.observed.last_run_at).toBe(new Date(lastRunAt).toISOString());
     // The newest row is the retracted one: it moves updated_at but never appears.
     expect(full.observed.updated_at).toBe(new Date(lastRunAt - 5).toISOString());
-    expect(full.observed.entries.map((e: { key: string }) => e.key)).toEqual(["task:jwt-auth", "task:old"]);
-    expect(full.observed.entries[0]).toEqual({
-      key: "task:jwt-auth",
-      category: "task",
-      title: "Implement JWT auth",
-      content: "Sam's assistant edited auth.ts and ran the tests; they pass.",
-      status: "active",
-      evidence: "verified",
-      confidence: 0.83,
-      agents: [{ agent_connection_id: samAgent.connectionId, label: "Sam's claude assistant", client: "claude", user_name: "Sam" }],
-      file_ids: [doc.id],
-      evidence_count: 2,
-      updated_at: new Date(lastRunAt - 10).toISOString(),
-      superseded_by: null,
-      proposal_id: null,
-    });
-    expect(full.observed.entries[1]).toMatchObject({ status: "superseded", superseded_by: "task:jwt-auth" });
-    // The brief drops superseded entries.
-    expect(full.brief.observed.entries.map((e: { key: string }) => e.key)).toEqual(["task:jwt-auth"]);
+    // Superseded history stays on the dashboard, out of the agent-facing sync.
+    expect(full.observed.entries).toEqual([
+      {
+        key: "task:jwt-auth",
+        category: "task",
+        title: "Implement JWT auth",
+        content: "Sam's assistant edited auth.ts and ran the tests; they pass.",
+        status: "active",
+        evidence: "verified",
+        confidence: 0.83,
+        agents: ["Sam's claude assistant"],
+        updated_at: new Date(lastRunAt - 10).toISOString(),
+      },
+    ]);
+    const brief = await callTool(t, samAgent.apiKey, "sync_workspace", { detail: "brief" });
+    expect(brief.brief.observed).toEqual(full.observed);
 
+    // With since, an event page without an observed change leaves observed out.
     const since = await callTool(t, samAgent.apiKey, "sync_workspace", { since: first.cursor });
     expect(since.events).toEqual([]);
-    expect(since.observed).toEqual(full.observed);
+    expect(since.observed_changed).toBe(false);
+    expect(since).not.toHaveProperty("observed");
     const briefSince = await callTool(t, samAgent.apiKey, "sync_workspace", { since: first.cursor, detail: "brief" });
-    expect(briefSince.brief.observed).toEqual(full.brief.observed);
+    expect(briefSince.brief.observed_changed).toBe(false);
+    expect(briefSince.brief).not.toHaveProperty("observed");
 
     // syncedContextRevision stays tied to the approved context, not entriesRevision.
     const row = await t.run((ctx) => ctx.db.get(samAgent.connectionId));
@@ -237,7 +240,7 @@ describe("sync_workspace observed", () => {
     expect(full.brief.goal).toBe("");
   });
 
-  it("caps full and brief results and puts blockers and active tasks first in the brief", async () => {
+  it("caps full and brief results by priority, so blockers and active work outlast newer document digests", async () => {
     const { t, workspaceId, samAgent } = await setup();
     const base = Date.now() - 1_000_000;
     let at = base;
@@ -250,35 +253,32 @@ describe("sync_workspace observed", () => {
     for (let i = 0; i < OBSERVED_LIMIT + 5; i++)
       await insertEntry(t, {
         workspaceId,
-        key: `knowledge:${i}`,
+        key: `knowledge:doc-${i}`,
         category: "knowledge",
         content: "x".repeat(500),
         updatedAt: at++,
       });
-    for (let i = 0; i < OBSERVED_SUPERSEDED_LIMIT + 5; i++)
+    for (let i = 0; i < 15; i++)
       await insertEntry(t, { workspaceId, key: `old:${i}`, status: "superseded", updatedAt: at++ });
 
     const full = await callTool(t, samAgent.apiKey, "sync_workspace");
     const entries = full.observed.entries as { key: string; status: string; content: string }[];
-    expect(entries.filter((e) => e.status !== "superseded")).toHaveLength(OBSERVED_LIMIT);
-    expect(entries.filter((e) => e.status === "superseded")).toHaveLength(OBSERVED_SUPERSEDED_LIMIT);
+    expect(entries).toHaveLength(OBSERVED_LIMIT);
+    expect(entries.some((e) => e.status === "superseded")).toBe(false);
     expect(full.observed.truncated).toBe(true);
-    // Newest first, so the oldest (non-knowledge) rows fall outside the full cap.
-    expect(entries[0]!.key).toBe(`old:${OBSERVED_SUPERSEDED_LIMIT + 4}`);
-    // Full content is not clipped.
-    expect(entries.find((e) => e.key.startsWith("knowledge"))!.content).toHaveLength(500);
+    // Priority first, then recency: the old rows lead, newest digests fill the rest.
+    expect(entries.slice(0, 6).map((e) => e.key)).toEqual([
+      "blocker:ci", "task:active", "summary:sam", "task:done", "blocker:fixed", `knowledge:doc-${OBSERVED_LIMIT + 4}`,
+    ]);
+    // Full content is clipped too, but less than the brief's.
+    expect(entries.at(-1)!.content).toHaveLength(OBSERVED_CONTENT);
 
-    const brief = full.brief.observed;
+    const brief = (await callTool(t, samAgent.apiKey, "sync_workspace", { detail: "brief" })).brief.observed;
     expect(brief.entries).toHaveLength(OBSERVED_BRIEF_LIMIT);
     expect(brief.truncated).toBe(true);
     expect(brief.note).toBe(OBSERVED_NOTE);
-    for (const e of brief.entries) {
-      expect(e.status).not.toBe("superseded");
-      expect(e.content.length).toBeLessThanOrEqual(OBSERVED_BRIEF_CONTENT);
-    }
-    // The prioritized rows were pushed out of the full cap by 65 newer knowledge rows,
-    // so the brief is knowledge only, newest first.
-    expect(brief.entries[0].key).toBe(`knowledge:${OBSERVED_LIMIT + 4}`);
+    expect(brief.entries.map((e: { key: string }) => e.key)).toEqual(entries.slice(0, OBSERVED_BRIEF_LIMIT).map((e) => e.key));
+    for (const e of brief.entries) expect(e.content.length).toBeLessThanOrEqual(OBSERVED_BRIEF_CONTENT);
   });
 
   it("orders the brief by priority within the loaded entries", async () => {
@@ -294,6 +294,7 @@ describe("sync_workspace observed", () => {
     await insertEntry(t, { workspaceId, key: "knowledge:stack", category: "knowledge", updatedAt: at++ });
     await insertEntry(t, { workspaceId, key: "task:done", category: "task", status: "completed", updatedAt: at++ });
     await insertEntry(t, { workspaceId, key: "blocker:fixed", category: "blocker", status: "resolved", updatedAt: at++ });
+    await insertEntry(t, { workspaceId, key: "knowledge:doc-spec", category: "knowledge", updatedAt: at++ });
 
     const sync = await callTool(t, samAgent.apiKey, "sync_workspace", { detail: "brief" });
     expect(sync.brief.observed.entries.map((e: { key: string }) => e.key)).toEqual([
@@ -306,6 +307,8 @@ describe("sync_workspace observed", () => {
       "knowledge:stack",
       "task:done",
       "blocker:fixed",
+      // Document digests come last, when there is room.
+      "knowledge:doc-spec",
     ]);
     expect(sync.brief.observed.truncated).toBe(false);
   });
@@ -320,7 +323,7 @@ describe("sync_workspace observed", () => {
     const mine = await callTool(t, samAgent.apiKey, "sync_workspace");
     expect(mine.observed.revision).toBe(0);
     expect(mine.observed.entries.map((e: { key: string }) => e.key)).toEqual(["task:mine"]);
-    expect(mine.observed.entries[0].agents.map((a: { label: string }) => a.label)).toEqual(["Sam's claude assistant"]);
+    expect(mine.observed.entries[0].agents).toEqual(["Sam's claude assistant"]);
     expect(JSON.stringify(mine)).not.toContain("task:secret");
 
     const theirs = await callTool(t, jordanAgent.apiKey, "sync_workspace");
@@ -328,7 +331,7 @@ describe("sync_workspace observed", () => {
     expect(theirs.observed.entries.map((e: { key: string }) => e.key)).toEqual(["task:secret"]);
   });
 
-  it("surfaces the context manager's context.observed event to since-mode syncs", async () => {
+  it("surfaces the context manager's context.observed event, and observed with it, to since-mode syncs", async () => {
     const { t, workspaceId, samAgent } = await setup();
     const first = await callTool(t, samAgent.apiKey, "sync_workspace");
     await t.run((ctx) =>
@@ -356,6 +359,9 @@ describe("sync_workspace observed", () => {
     expect(since.changed_files).toEqual([]);
     expect(since.tasks).toEqual([]);
 
+    // The page holds an observed change, so observed comes along.
+    expect(since.observed_changed).toBe(true);
+    expect(since.observed).toMatchObject({ note: OBSERVED_NOTE, revision: 0, entries: [] });
     // The raw internal result carries the same observed state toSyncResult shapes.
     const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: samAgent.principal });
     expect(toSyncResult(raw).observed).toEqual(since.observed);
