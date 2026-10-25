@@ -101,6 +101,45 @@ const activityResource = v.object({
   label: v.optional(v.string()),
 });
 
+// Context intelligence (docs/context-intelligence.md).
+const activitySource = v.union(
+  v.literal("mcp"),
+  v.literal("claude_code"),
+  v.literal("workspace"),
+  // Development replay only; always labeled as simulated in the dashboard.
+  v.literal("simulator"),
+);
+
+const contextEntryCategory = v.union(
+  v.literal("goal"),
+  v.literal("objective"),
+  v.literal("decision"),
+  v.literal("task"),
+  v.literal("progress"),
+  v.literal("blocker"),
+  v.literal("knowledge"),
+  v.literal("agent_summary"),
+  v.literal("coordination"),
+);
+
+const contextEntryStatus = v.union(
+  v.literal("active"),
+  v.literal("completed"),
+  v.literal("resolved"),
+  v.literal("superseded"),
+  v.literal("retracted"),
+);
+
+// Evidence ladder, weakest first. "completed" needs verified or
+// human_confirmed; an assistant saying it's done is only "claimed".
+const contextEvidence = v.union(
+  v.literal("requested"),
+  v.literal("claimed"),
+  v.literal("observed"),
+  v.literal("verified"),
+  v.literal("human_confirmed"),
+);
+
 export default defineSchema({
   ...authTables,
   users: defineTable({
@@ -457,6 +496,167 @@ export default defineSchema({
   })
     .index("by_workspace_and_created", ["workspaceId", "createdAt"])
     .index("by_connection_and_created", ["agentConnectionId", "createdAt"]),
+
+  // Context intelligence (docs/context-intelligence.md). The unified, raw
+  // activity log the context manager reads: MCP tool calls (with redacted,
+  // bounded arguments), Claude Code hook events, and workspace file changes.
+  // Raw evidence only; nothing here is derived by a model. Pruned with
+  // agent_activity's retention.
+  activity_events: defineTable({
+    workspaceId: v.id("workspaces"),
+    agentConnectionId: v.optional(v.id("agent_connections")),
+    actor,
+    source: activitySource,
+    // Namespaced: "mcp.tool_call", "claude_code.prompt", "file.updated", ...
+    type: v.string(),
+    tool: v.optional(v.string()),
+    outcome: v.union(v.literal("ok"), v.literal("conflict"), v.literal("error")),
+    errorCode: v.optional(v.string()),
+    // Short and generated; never a credential.
+    summary: v.string(),
+    // Redacted, size-capped JSON (lib/redact.ts). Untrusted text.
+    payload: v.optional(v.string()),
+    resources: v.array(activityResource),
+    // Claude Code session_id, or the MCP connection's id for MCP calls.
+    sessionId: v.optional(v.string()),
+    correlationId: v.optional(v.string()),
+    // Idempotency: a second event with the same key in a workspace is dropped.
+    dedupeKey: v.string(),
+    // Whether the context manager should look at it at all.
+    significant: v.boolean(),
+    intelStatus: v.union(
+      v.literal("pending"),
+      v.literal("processed"),
+      v.literal("skipped"),
+    ),
+    intelRunId: v.optional(v.id("context_intel_runs")),
+    // When the source says it happened (hooks may arrive late); createdAt is
+    // when Tandem stored it.
+    occurredAt: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_workspace_and_created", ["workspaceId", "createdAt"])
+    .index("by_workspace_and_dedupe_key", ["workspaceId", "dedupeKey"])
+    .index("by_workspace_and_intel_status_and_created", [
+      "workspaceId",
+      "intelStatus",
+      "createdAt",
+    ])
+    .index("by_connection_and_created", ["agentConnectionId", "createdAt"]),
+
+  // Derived, model-maintained workspace state: what the team is observed to be
+  // doing. Separate from structured_context, which only people approve; goal
+  // and decision findings reach that through context_proposals.
+  context_entries: defineTable({
+    workspaceId: v.id("workspaces"),
+    // Stable per workspace, chosen by the context manager ("task:jwt-auth").
+    key: v.string(),
+    category: contextEntryCategory,
+    title: v.string(),
+    content: v.string(),
+    status: contextEntryStatus,
+    evidence: contextEvidence,
+    // 0..1, the model's own estimate, clamped.
+    confidence: v.number(),
+    // Newest first, at most 20.
+    evidenceEventIds: v.array(v.id("activity_events")),
+    // The assistants the entry is about.
+    agentConnectionIds: v.array(v.id("agent_connections")),
+    fileIds: v.array(v.id("files")),
+    // Coordination entries only.
+    severity: v.optional(v.union(v.literal("potential"), v.literal("actual"))),
+    supersededBy: v.optional(v.string()),
+    // A goal or decision finding raised for human approval.
+    proposalId: v.optional(v.id("context_proposals")),
+    model: v.optional(v.string()),
+    lastRunId: v.optional(v.id("context_intel_runs")),
+    createdBy: actor,
+    updatedBy: actor,
+    revision: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workspace_and_key", ["workspaceId", "key"])
+    .index("by_workspace_and_updated_at", ["workspaceId", "updatedAt"])
+    .index("by_workspace_and_category_and_updated_at", [
+      "workspaceId",
+      "category",
+      "updatedAt",
+    ]),
+
+  // Append-only history of context_entries: one row per revision.
+  context_entry_revisions: defineTable({
+    workspaceId: v.id("workspaces"),
+    entryId: v.id("context_entries"),
+    key: v.string(),
+    revision: v.number(),
+    change: v.union(
+      v.literal("created"),
+      v.literal("updated"),
+      v.literal("status_changed"),
+      v.literal("superseded"),
+      v.literal("reopened"),
+      v.literal("corrected"),
+    ),
+    category: contextEntryCategory,
+    title: v.string(),
+    content: v.string(),
+    status: contextEntryStatus,
+    evidence: contextEvidence,
+    confidence: v.number(),
+    // Why it changed: the model's one-line rationale, or a person's note.
+    reason: v.string(),
+    evidenceEventIds: v.array(v.id("activity_events")),
+    runId: v.optional(v.id("context_intel_runs")),
+    actor,
+    createdAt: v.number(),
+  })
+    .index("by_entry_and_revision", ["entryId", "revision"])
+    .index("by_workspace_and_created", ["workspaceId", "createdAt"]),
+
+  // One row per context-manager batch, for history, provenance and recovery.
+  context_intel_runs: defineTable({
+    workspaceId: v.id("workspaces"),
+    status: v.union(
+      v.literal("running"),
+      v.literal("succeeded"),
+      v.literal("failed"),
+      v.literal("skipped"),
+    ),
+    method: v.union(v.literal("llm"), v.literal("heuristic")),
+    model: v.optional(v.string()),
+    eventIds: v.array(v.id("activity_events")),
+    attempt: v.number(),
+    // One line from the model about the batch, or why it was skipped.
+    summary: v.optional(v.string()),
+    // Short reason only, never a raw provider body.
+    error: v.optional(v.string()),
+    created: v.number(),
+    updated: v.number(),
+    proposals: v.number(),
+    // Derived-context revision (context_intel_state.entriesRevision) after it.
+    entriesRevision: v.optional(v.number()),
+    inputTokens: v.optional(v.number()),
+    outputTokens: v.optional(v.number()),
+    startedAt: v.number(),
+    finishedAt: v.optional(v.number()),
+  }).index("by_workspace_and_started_at", ["workspaceId", "startedAt"]),
+
+  // Per-workspace scheduler state for the context manager (one row each).
+  context_intel_state: defineTable({
+    workspaceId: v.id("workspaces"),
+    status: v.union(v.literal("idle"), v.literal("scheduled"), v.literal("running")),
+    scheduledFor: v.optional(v.number()),
+    // A run that crashed without finishing is taken over after this.
+    leaseExpiresAt: v.optional(v.number()),
+    consecutiveFailures: v.number(),
+    nextRetryAt: v.optional(v.number()),
+    lastRunId: v.optional(v.id("context_intel_runs")),
+    lastRunAt: v.optional(v.number()),
+    // Bumped by every applied change to context_entries; sync reports it.
+    entriesRevision: v.number(),
+    updatedAt: v.number(),
+  }).index("by_workspace", ["workspaceId"]),
 
   outbox_events: defineTable({
     workspaceId: v.id("workspaces"),
