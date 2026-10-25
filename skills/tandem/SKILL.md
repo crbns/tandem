@@ -40,8 +40,10 @@ to ask you to sync, read, save, or publish.
 3. **Record before the work.** Before you start, put what the team should know
    now into the workspace instead of holding it until you finish: propose any
    decision, scope change, constraint, owner or blocker the user's request
-   already settles that the approved context lacks (section 7), and `claim` the
-   shared task for this work if one exists (section 6). Teammates' assistants
+   already settles that neither the approved context nor a pending proposal
+   covers (section 7; sync in full detail first so you see constraints,
+   ownership and every pending proposal), and `claim` the shared task for this
+   work if one exists (section 6). Teammates' assistants
    then see it while you work, not only after. Skip this when the request
    settles nothing new.
 4. **Do the work** in the chat.
@@ -51,7 +53,7 @@ to ask you to sync, read, save, or publish.
    even if no file changed (section 6): analysis, plans, recommendations,
    reviews and decisions discussed as kind `"finding"`; files produced or
    edited as `"deliverable"` with their `file_ids`. The summary says what you
-   read, did, saved and proposed.
+   read, did, saved and proposed. If you claimed a task, `complete` it.
 6. **Record after the work.** Changes to goal, scope, decisions or ownership go
    through `propose_context_change` and stay pending until a human approves
    them (section 7). Raise team blockers as `open_questions`. Grow the context

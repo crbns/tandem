@@ -807,6 +807,7 @@ describe("read-before / write-back loop", () => {
       "read brief first",
       "Record before the work",
       "manage_task",
+      "complete claimed tasks",
       "Record after",
     ])
       expect(MCP_INSTRUCTIONS).toContain(term);
