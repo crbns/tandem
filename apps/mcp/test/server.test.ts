@@ -809,6 +809,9 @@ describe("read-before / write-back loop", () => {
       "manage_task",
       "complete claimed tasks",
       "Record after",
+      "Reply as usual",
+      "showing docs you write",
+      "long edit",
     ])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);

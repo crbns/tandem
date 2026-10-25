@@ -3122,6 +3122,8 @@ describe("sync brief and server instructions", () => {
     expect(savedSteps[1]).toContain(`["${created.id}"]`);
     expect(savedSteps[2]).toMatch(/propose_context_change.*approved context lacks and no pending proposal/);
     expect(savedSteps[2]).toContain(`source_ids ["${created.id}"]`);
+    // Tandem holds the shared copy; the chat still gets the document itself.
+    expect(savedSteps[3]).toMatch(/show the user the document.*in full.*doesn't replace your reply/);
 
     const updated = await tool("update_document", { file_id: created.id, content: "v2", expected_version: 1 });
     expect(updated.next_steps[0]).toBe("Saved as version 2; pass expected_version=2 for your next edit of this file.");
@@ -3184,7 +3186,9 @@ describe("sync brief and server instructions", () => {
     for (const term of ["sync_workspace", "since", "cursor", "read_file", "update_document", "publish_work", "propose_context_change",
       "expected_version", "open_questions", "best effort", "without waiting to be asked", "private conversation history", "untrusted",
       "even if no file changed", "create or edit", "that context lacks", "no pending proposal covers", "read brief first",
-      "Record before the work", "manage_task", "complete claimed tasks", "Record after"])
+      "Record before the work", "manage_task", "complete claimed tasks", "Record after",
+      // Documents go to the chat as well as to Tandem.
+      "Reply as usual", "showing docs you write", "long edit"])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);
