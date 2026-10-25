@@ -44,7 +44,9 @@ type ReadCtx = QueryCtx | MutationCtx;
 
 const LEASE_MS = 2 * 60 * 1000;
 const TIMEOUT_MS = 25_000;
-const MAX_TOKENS = 4096;
+const MAX_TOKENS = 8192;
+const TRUNCATED = "output truncated";
+const MIN_RETRY_EVENTS = 5;
 const MAX_FILE_CHANGES = 5;
 const MAX_CONNECTIONS = 50;
 const MAX_PENDING_PROPOSALS = 20;
@@ -372,12 +374,17 @@ export const claimBatch = internalMutation({
     const now = Date.now();
     const state = await getState(ctx, workspaceId);
     if (state?.status === "running" && (state.leaseExpiresAt ?? 0) > now) return null;
-    if (state?.status === "running" && state.lastRunId) {
-      const crashed = await ctx.db.get(state.lastRunId);
-      if (crashed?.status === "running")
-        await ctx.db.patch(crashed._id, { status: "failed", error: "lease expired", finishedAt: now });
-    }
-    const events = await pendingEvents(ctx, workspaceId, MAX_EVENTS);
+    // No live lease here, so a last run still marked running crashed, even if
+    // requestIntelRun has since moved the state to scheduled.
+    const last = state?.lastRunId ? await ctx.db.get(state.lastRunId) : null;
+    if (last?.status === "running")
+      await ctx.db.patch(last._id, { status: "failed", error: "lease expired", finishedAt: now });
+    // A reply cut off at max_tokens: retry with half the events.
+    const limit =
+      last?.status === "failed" && last.error?.startsWith(TRUNCATED)
+        ? Math.max(MIN_RETRY_EVENTS, Math.floor(last.eventIds.length / 2))
+        : MAX_EVENTS;
+    const events = await pendingEvents(ctx, workspaceId, limit);
     const method = process.env.ANTHROPIC_API_KEY ? ("llm" as const) : ("heuristic" as const);
     const model = method === "llm" ? contextModel() : undefined;
     const runId = await ctx.db.insert("context_intel_runs", {
@@ -784,6 +791,18 @@ export const releaseStale = internalMutation({
   },
 });
 
+/** INTEL_DISABLED at fire time: don't leave the workspace marked scheduled. */
+export const releaseDisabled = internalMutation({
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.null(),
+  handler: async (ctx, { workspaceId }) => {
+    const state = await getState(ctx, workspaceId);
+    if (state?.status === "scheduled")
+      await patchState(ctx, workspaceId, { status: "idle", scheduledFor: undefined });
+    return null;
+  },
+});
+
 type Analysis = { result: IntelResult; inputTokens?: number; outputTokens?: number };
 
 /** One Messages API call; throws with a short reason, never a provider body. */
@@ -827,6 +846,9 @@ async function askModel(key: string, model: string, batch: IntelBatch) {
     throw new IntelParseError();
   }
   if (body.stop_reason === "refusal") throw new Error("model refused");
+  // Partial JSON would only fail as unparseable, the same way every retry;
+  // claimBatch halves the batch after this error instead.
+  if (body.stop_reason === "max_tokens") throw new Error(TRUNCATED);
   const text = (body.content ?? [])
     .filter((b) => b.type === "text")
     .map((b) => b.text ?? "")
@@ -849,13 +871,16 @@ async function analyze(batch: Batch): Promise<Analysis> {
   };
 }
 
-const KNOWN_ERRORS = /^(timeout|request failed|HTTP \d{3}|unparseable response|model refused|no API key)$/;
+const KNOWN_ERRORS = /^(timeout|request failed|HTTP \d{3}|unparseable response|model refused|no API key|output truncated)$/;
 
 export const processWorkspace = internalAction({
   args: { workspaceId: v.id("workspaces") },
   returns: v.null(),
   handler: async (ctx, { workspaceId }) => {
-    if (intelDisabled()) return null;
+    if (intelDisabled()) {
+      await ctx.runMutation(internal.intel.releaseDisabled, { workspaceId });
+      return null;
+    }
     let batch: Batch | null = await ctx.runMutation(internal.intel.claimBatch, { workspaceId });
     if (!batch) return null;
     for (let attempt = 1; ; attempt++) {

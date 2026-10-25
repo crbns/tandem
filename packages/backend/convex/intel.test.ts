@@ -18,6 +18,7 @@ import {
   verifiedSignal,
   type IntelBatch,
 } from "./lib/intel";
+import { requestIntelRun } from "./lib/intelQueue";
 import schema from "./schema";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -299,6 +300,51 @@ describe("context manager: model path", () => {
     expect(state).toMatchObject({ status: "idle", consecutiveFailures: 5 });
     expect(state!.nextRetryAt).toBeUndefined();
     expect(await s.event(e1)).toMatchObject({ intelStatus: "pending" });
+  });
+
+  it("halves the batch after a reply cut off at max_tokens instead of failing the same way", async () => {
+    const s = await setup();
+    for (let i = 0; i < 12; i++)
+      await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: `Updated ${i}`, connection: s.claude });
+    stubModel(() =>
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: '{"summary": "cut' }], stop_reason: "max_tokens" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    await s.process();
+    expect((await s.runs())[0]).toMatchObject({ status: "failed", error: "output truncated" });
+    stubModel(() => ({ summary: "ok", entries: [], proposals: [] }));
+    await s.process();
+    const [, retry] = await s.runs();
+    expect(retry).toMatchObject({ status: "succeeded" });
+    expect(retry!.eventIds).toHaveLength(6);
+  });
+
+  it("never leaves a workspace stuck at scheduled", async () => {
+    const s = await setup();
+    // A scheduled run that never claimed: the next event schedules again.
+    await s.t.run((ctx) =>
+      ctx.db.insert("context_intel_state", {
+        workspaceId: s.workspaceId,
+        status: "scheduled",
+        scheduledFor: Date.now() - 5 * 60_000,
+        consecutiveFailures: 0,
+        entriesRevision: 0,
+        updatedAt: Date.now(),
+      }),
+    );
+    await s.t.run((ctx) => requestIntelRun(ctx, s.workspaceId));
+    expect((await s.state())!.scheduledFor!).toBeGreaterThan(Date.now());
+    expect((await s.scheduled()).filter((f) => f.state.kind === "pending")).toHaveLength(1);
+    // Disabled when the run fires: the state goes idle instead of staying scheduled.
+    process.env.INTEL_DISABLED = "1";
+    try {
+      await s.process();
+    } finally {
+      delete process.env.INTEL_DISABLED;
+    }
+    expect(await s.state()).toMatchObject({ status: "idle" });
   });
 
   it("drops low-confidence, unknown-category, unknown-op and foreign-event items", async () => {
@@ -719,6 +765,11 @@ describe("lib/intel", () => {
     expect(verifiedSignal(stored({ command: "pnpm test", output_tail: "Tests 2 failed | 10 passed", success: true }))).toBeNull();
     expect(verifiedSignal(stored({ command: "pnpm test", exit_code: 1, success: false }, "error"))).toBeNull();
     expect(verifiedSignal(stored({ command: "git push", exit_code: 0, success: true }))).toBeNull();
+    // Runner invocations only, not commands that merely mention the words.
+    for (const command of ["ls tests/", "rm -rf build", "mkdir build", "cat test-plan.md", "git commit -m 'fix failing test'", "cat vitest.config.ts"])
+      expect(verifiedSignal(stored({ command, exit_code: 0, success: true })), command).toBeNull();
+    for (const command of ["pnpm --filter web test", "npx vitest run src/auth", "cd api && pnpm vitest run", "npm run build", "pytest -q", "go test ./...", "npx convex deploy"])
+      expect(verifiedSignal(stored({ command, exit_code: 0, success: true })), command).toBe("verified");
   });
 
   it("bounds diffs and the data payload", () => {

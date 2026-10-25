@@ -86,7 +86,8 @@ quality depended entirely on assistants remembering to write it.
 ### Ingestion rules
 
 - **MCP:** centralized in `mcp.ts` `run()`: after every call (success or
-  failure, including argument errors) it calls
+  failure, including the handler's own argument errors; calls the MCP
+  component rejects in schema validation never reach `run()`) it calls
   `internal.activityLog.ingestMcpCall` with the tool name, redacted args, a
   result digest (ids, versions, counts — never document bodies), outcome,
   error code, duration and a fresh `correlationId`. Wrapped in `try/catch`:
@@ -132,7 +133,12 @@ quality depended entirely on assistants remembering to write it.
    person (or apply at once in automatic workspaces, exactly like an
    assistant's proposal).
 6. Failures: provider errors/timeouts/unparseable output mark the run failed,
-   leave events pending, and back off (`30s × 2^n`, max 10 min). Without
+   leave events pending, and back off (`30s × 2^n`, max 10 min). After 5
+   consecutive failures automatic retries stop; the next significant event
+   or the dashboard's Run now starts a fresh attempt. A reply cut off at
+   `max_tokens` is retried with half the events. A run that was scheduled
+   but never claimed (disabled at fire time, or crashed first) doesn't hold
+   the workspace: the next event reschedules after a 60 s grace. Without
    `ANTHROPIC_API_KEY` a deterministic heuristic run records observed
    activity entries (marked `method: "heuristic"`) so the pipeline still works.
 

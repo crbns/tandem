@@ -41,8 +41,13 @@ export const WRITE_TOOLS = new Set([
   "publish_work", "propose_context_change", "manage_task",
 ]);
 
-/** A test, build, type check or deploy command: success here is a verified signal. */
-const VERIFY_COMMAND = /\b(test|tests|vitest|jest|pytest|mocha|tsc|typecheck|check-types|build|deploy|cargo|go test)\b/i;
+/**
+ * A test, build, type check or deploy runner invocation: success here is a
+ * verified signal. Matches runners, not words, so `ls tests/`, `rm -rf build`
+ * or `cat test-plan.md` never count.
+ */
+const VERIFY_COMMAND =
+  /(^|[\s;&|(])((npm|pnpm|yarn|bun)\b[^;&|]*?\s(run\s+)?(test|build|deploy|check-types|typecheck)(?=[\s;&|)]|$)|(vitest|jest|pytest|mocha|tsc|playwright)(?=[\s;&|)]|$)|(cargo|go)\s+(test|build)\b|(gradle|gradlew|\.\/gradlew)\s+(test|build)\b|mvn\s+(test|verify|package)\b|(convex|vercel)\s+deploy\b)/i;
 
 export type BatchEvent = {
   id: string;

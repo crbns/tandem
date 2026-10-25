@@ -14,6 +14,8 @@ export const INTEL_ACTOR: Actor = { type: "system", label: "Tandem context manag
 
 export const DEFAULT_CONTEXT_MODEL = "claude-haiku-5-5";
 
+const SCHEDULE_GRACE_MS = 60_000;
+
 /** CONTEXT_MODEL, else the default Haiku model. */
 export function contextModel(): string {
   return process.env.CONTEXT_MODEL || DEFAULT_CONTEXT_MODEL;
@@ -46,7 +48,9 @@ export async function requestIntelRun(
     .query("context_intel_state")
     .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
     .unique();
-  if (state?.status === "scheduled") return;
+  // A scheduled run that never claimed (disabled at fire time, or it died
+  // before claimBatch committed) would otherwise hold the workspace forever.
+  if (state?.status === "scheduled" && (state.scheduledFor ?? 0) + SCHEDULE_GRACE_MS > now) return;
   if (state?.status === "running" && (state.leaseExpiresAt ?? 0) > now) return;
   if (state?.nextRetryAt !== undefined && state.nextRetryAt > now) return;
   const delay = batchWindowMs();
