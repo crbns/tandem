@@ -268,6 +268,11 @@ export interface DecideProposalOptions {
   note?: string;
   /** The revision the person was shown; a newer one fails with PROPOSAL_CHANGED. */
   expectedRevision?: number;
+  /**
+   * Accepted only: the conflict targets (decision or constraint ids) the
+   * proposal replaces. Defaults to those the check is sure about.
+   */
+  supersede?: string[];
 }
 
 /** Proposals that ever had a conflict: those waiting on a person, and those already settled. */

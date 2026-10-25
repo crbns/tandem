@@ -111,6 +111,8 @@ export interface TandemApi {
    * settled (newest first). Every member may read them.
    */
   listConflicts(workspaceId: string): Promise<ConflictList>;
+  /** Owner/admin: runs a conflict check again when it is stuck on "checking". */
+  recheckConflict(proposal: Pick<ContextProposal, "id" | "workspaceId">): Promise<void>;
   /** The MCP server URL people paste into their assistant. */
   getMcpServerUrl(): Promise<string>;
   /** Only the signed-in person's own API-key connection; the key is returned once. */

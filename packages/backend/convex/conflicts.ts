@@ -15,15 +15,13 @@ import {
 import { recordWorkspaceEvent } from "./lib/auth";
 import {
   CONFLICT_ACTOR,
-  applyApprovedProposal,
-  appliesImmediately,
   conflictCandidates,
   conflictStatus,
   markCompeting,
-  toProposal,
   type ConflictCandidate,
   type ConflictItem,
-} from "./lib/ops";
+} from "./lib/conflicts";
+import { applyApprovedProposal, appliesImmediately, toProposal } from "./lib/ops";
 import { actorValidator, conflictValidator, proposalValidator } from "./lib/validators";
 
 declare const process: { env: Record<string, string | undefined> };

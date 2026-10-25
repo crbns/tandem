@@ -974,7 +974,7 @@ export function createMockApi({
         .map(cloneProposal);
     },
 
-    async decideProposal({ id, workspaceId }, decision, { resolution, note, expectedRevision } = {}) {
+    async decideProposal({ id, workspaceId }, decision, { resolution, note, expectedRevision, supersede } = {}) {
       await delay();
       const proposal = proposals.find((p) => p.id === id && p.workspaceId === workspaceId);
       if (!proposal) throw new TandemApiError("PROPOSAL_DECIDED");
@@ -982,11 +982,21 @@ export function createMockApi({
       if (proposal.status !== "pending") throw new TandemApiError("PROPOSAL_DECIDED");
       if (expectedRevision !== undefined && expectedRevision !== proposal.revision) throw new TandemApiError("PROPOSAL_CHANGED");
       const approving = decision === "approved";
-      if (resolution && (resolution === "accepted" || resolution === "kept_both") !== approving) throw new TandemApiError("INVALID_INPUT");
+      if (approving && proposal.conflict?.status === "checking") throw new TandemApiError("CONFLICT_CHECK_PENDING");
+      const scalar = proposal.field === "goal" || proposal.field === "scope";
+      if (resolution && ((resolution === "accepted" || resolution === "kept_both") !== approving || (resolution === "kept_both" && scalar)))
+        throw new TandemApiError("INVALID_INPUT");
       const decisionNote = note?.trim() ?? "";
       if (decisionNote.length > 2000) throw new TandemApiError("INVALID_INPUT");
-      // A proposal that went through a conflict check always records how it was settled.
-      const outcome = resolution ?? (proposal.conflict ? (approving ? "accepted" : "rejected") : null);
+      // A proposal still in conflict records how it was settled.
+      const items = proposal.conflict?.items ?? [];
+      let outcome = resolution ?? (items.length > 0 ? (approving ? "accepted" : "rejected") : null);
+      // Accepting supersedes the targets the check is sure about, or the ones picked.
+      const supersedable = items.filter((item) => item.kind !== "competing" && (item.targetType === "decision" || item.targetType === "constraint"));
+      if (supersede && (outcome !== "accepted" || supersede.some((target) => !supersedable.some((item) => item.targetId === target))))
+        throw new TandemApiError("INVALID_INPUT");
+      const supersedeIds = outcome === "accepted" ? (supersede ?? supersedable.filter((item) => !item.uncertain).map((item) => item.targetId)) : [];
+      if (outcome === "accepted" && supersedable.length > 0 && supersedeIds.length === 0 && !proposal.supersedes) outcome = "kept_both";
       const actor = getActor();
       const now = Date.now();
       const ctx = contexts.get(workspaceId);
@@ -1019,7 +1029,7 @@ export function createMockApi({
         const working = details.get(workspaceId)!;
         if (proposal.field === "decision" || proposal.field === "constraint") newEntryId = working[entryKey[proposal.field]].at(-1)!.id;
         if (outcome === "accepted" && newEntryId) {
-          const targets = new Set(proposal.conflict!.items.filter((item) => item.kind !== "competing").map((item) => item.targetId));
+          const targets = new Set(supersedeIds);
           if (proposal.supersedes) targets.add(proposal.supersedes);
           for (const entry of [...working.decisions, ...working.constraints]) {
             if (targets.has(entry.id) && entry.status === "active" && entry.id !== newEntryId) Object.assign(entry, { status: "superseded", supersededBy: newEntryId });
@@ -1050,6 +1060,19 @@ export function createMockApi({
         other.revision++;
       }
       notify(workspaceId);
+    },
+
+    async recheckConflict({ id, workspaceId }) {
+      await delay();
+      const proposal = proposals.find((p) => p.id === id && p.workspaceId === workspaceId);
+      if (!proposal) throw new TandemApiError("PROPOSAL_DECIDED");
+      requireAdmin(workspaceId);
+      // The mock has no scheduled check to re-run: a stuck one just comes back clear.
+      if (proposal.status === "pending" && proposal.conflict?.status === "checking") {
+        proposal.conflict = { ...proposal.conflict, status: proposal.conflict.items.length > 0 ? "conflict" : "clear" };
+        proposal.revision++;
+        notify(workspaceId);
+      }
     },
 
     async listConflicts(workspaceId): Promise<ConflictList> {

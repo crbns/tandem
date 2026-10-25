@@ -13,7 +13,10 @@ for realtime.
 ## Detection
 
 Detection runs inside `proposeContextChangeCore` (`convex/lib/ops.ts`), in the
-same transaction that inserts the proposal.
+same transaction that inserts the proposal. The conflict helpers it calls
+(detection, dedupe, candidates, retargeting, resolved-conflict mapping) live in
+`convex/lib/conflicts.ts`. The demo seed passes `skipConflictCheck` for its
+known-good context; no client-facing path can.
 
 | Layer | When it runs | Result |
 | --- | --- | --- |
@@ -26,8 +29,9 @@ A `competing` item is mirrored onto the earlier proposal, so both cards show
 the conflict and whichever is decided first retargets the other (see
 Resolution). The semantic check never runs for goal, scope, ownership, open questions,
 resolve or remove. It also skips workspaces with no candidates, and duplicate
-requests (see Idempotency). An add whose normalized text equals an active entry
-is clear.
+requests (see Idempotency). A decision or constraint add whose normalized text
+equals an active decision or constraint fails with `ALREADY_IN_CONTEXT` (and
+the entry's `entryId`): nothing is written, so it can't add a duplicate entry.
 
 ### Semantic check (`convex/conflicts.ts`)
 
@@ -114,37 +118,44 @@ three optional ones:
 { proposalId, decision: "approved" | "rejected",
   resolution?: "accepted" | "kept_both" | "retained_current" | "rejected",
   note?: string,               // ≤ 2000 chars
-  expectedRevision?: number }  // proposal.revision the UI showed
+  expectedRevision?: number,   // proposal.revision the UI showed
+  supersede?: string[] }       // accepted only: the targets to supersede
 ```
+
+`api.context.recheckConflict({ proposalId })` (owners and admins) schedules
+the check again for a proposal still `checking`, for when the scheduled check
+failed. It's a no-op once a verdict is in; the dashboard offers it as "Check
+again" after 20 seconds.
 
 | UI action | decision | resolution | Effect |
 | --- | --- | --- | --- |
-| Accept proposed | approved | accepted (default when approving a proposal with `hasConflict`) | Applies the proposal. Every active decision or constraint it `replaces` or `contradicts` becomes `superseded`, with `supersededBy` set to the new entry |
-| Keep both (not a conflict) | approved | kept_both | Applies as a plain addition and supersedes nothing |
+| Accept proposed | approved | accepted (default when approving a proposal with conflict items) | Applies the proposal. Supersedes the active decisions and constraints in `supersede`, or by default the `replaces`/`contradicts` targets the check is sure about (never an `uncertain` one). Each becomes `superseded`, with `supersededBy` set to the new entry. If that supersedes nothing and there is no explicit `supersedes`, it is recorded as `kept_both` |
+| Keep both (not a conflict) | approved | kept_both | Applies as a plain addition and supersedes nothing. Not allowed for goal or scope (`INVALID_INPUT`), which hold one value |
 | Keep current | rejected | retained_current | Changes nothing in the context. Records that the current value was kept |
-| Reject | rejected | rejected (default when `hasConflict`) | Changes nothing in the context |
+| Reject | rejected | rejected (default when it has conflict items) | Changes nothing in the context |
 
 Each resolution:
 
 - Is serializable: it runs in one Convex mutation, and a second decide fails with `PROPOSAL_ALREADY_DECIDED`.
 - Fails with `PROPOSAL_CHANGED` when `expectedRevision` doesn't match. For example, the verdict arrived while the person was looking at the card.
-- Can approve a `checking` proposal. The late verdict is then a no-op. Without `hasConflict` it records no resolution unless one is passed.
+- Can't approve a `checking` proposal: that fails with `CONFLICT_CHECK_PENDING`, so nobody decides without the verdict in view. Rejecting is allowed (it changes nothing), and the late verdict is then a no-op. A proposal with no conflict items left (its rival was rejected) records no resolution unless one is passed.
 - Fails with `INVALID_INPUT` when `resolution` doesn't match `decision` (approved takes accepted or kept_both; rejected takes retained_current or rejected).
 - Leaves a target that is no longer active alone instead of failing.
 - Updates pending proposals that list the decided proposal as a `competing` target. On approval, they retarget to the new decision entry. On rejection, the item is dropped, and the status becomes `clear` when no items remain. A proposal cleared this way still waits for a person, even in an automatic workspace.
-- Records `context.approved` or `context.rejected` as before. A proposal with `hasConflict` also records `context.conflict_resolved`, with a summary such as: `Kept "Use Convex Auth" over "Switch authentication to Clerk"`.
+- Fails with `INVALID_INPUT` when `supersede` is given for anything but accepted, or names something other than one of the proposal's decision or constraint targets.
+- Records `context.approved` or `context.rejected` as before. A proposal that still has conflict items also records `context.conflict_resolved`, with a summary such as: `Kept "Use Convex Auth" over "Switch authentication to Clerk"`.
 
 ## MCP
 
 - **`propose_context_change`:**
   - The response adds `proposal.conflict` (snake_case, see the shape below), `proposal.resolution`, `proposal.decision_note` and `deduplicated`.
-  - When the status is `checking`, the handler polls the proposal for up to `CONFLICT_WAIT_MS` (default 8000 ms) so it can return the verdict inline. If the check is still running, it returns `checking`.
+  - When the status is `checking`, the handler polls the proposal for up to `CONFLICT_WAIT_MS` (default 4000 ms) so it can return the verdict inline. If the check is still running, it returns `checking`.
   - When the status is `conflict` or `uncertain`, `next_steps` names the conflicting approved entry, its text, and `context_version`. It also says the proposal is pending human resolution and NOT in effect, so the assistant keeps following the approved value and tells the user.
 - **`sync_workspace`:**
   - `pending_proposals[].conflict` (full mode).
   - `brief.blockers.conflicts`, which lists unresolved conflicts: `{ proposal_id, field, proposed_value, proposed_by, status, conflicts_with: [{ type, id, text }], context_version }`.
   - `resolved_conflicts`, in both brief and full mode:
-    - In a snapshot, the newest 5. With `since`, those resolved within the event page.
+    - In a snapshot, the 5 most recently resolved (read from `context.conflict_resolved` events, so an old conflict resolved last still shows). With `since`, those resolved within the event page.
     - Each one is `{ proposal_id, field, proposed_value, outcome, note, resolved_by, resolved_at, in_effect: [{ id, text }], not_in_effect: [text] }`.
     - `in_effect` lists the authoritative entries after resolution.
 - **`get_approvals`:** each proposal adds `conflict`, `resolution` and `decision_note`.
@@ -190,7 +201,9 @@ as `expectedRevision`.
 - On the Approvals page, a proposal whose conflict status is `checking`, `conflict` or `uncertain` renders as a conflict card:
   - **Current:** the approved value, who set it, and when. It sits beside **Proposed**: the new value, the proposing agent's badge, and the rationale.
   - The explanation, confidence, and how the conflict was found (AI check, structural, or heuristic).
-  - **Actions:** Accept proposed, Keep current, Reject, and a secondary "Not a conflict, keep both", plus an optional note field.
+  - **Actions:** Accept proposed, Keep current, Reject, and a secondary "Not a conflict, keep both" (not shown for goal or scope), plus an optional note field.
+  - Each approved decision or constraint it conflicts with has an "Accepting replaces this" checkbox, ticked only when the check is sure. Accept and Keep both are disabled while the check runs, with "Check again" after 20 seconds.
+- Every decision, plain proposal cards included, sends `expectedRevision`, so a conflict attached after the card loaded fails with `PROPOSAL_CHANGED` instead of being approved unseen.
 - The status badge reads pending, accepted, or rejected. A **Conflict history** section lists resolved conflicts with the outcome, note, resolver, and both values.
 - The overview's pending-approvals panel calls out conflicts.
 - Realtime comes from the existing `watchWorkspace` subscription. Every verdict and resolution records a workspace event.

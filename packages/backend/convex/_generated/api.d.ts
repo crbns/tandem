@@ -19,6 +19,7 @@ import type * as http from "../http.js";
 import type * as lib_agent from "../lib/agent.js";
 import type * as lib_auth from "../lib/auth.js";
 import type * as lib_binaries from "../lib/binaries.js";
+import type * as lib_conflicts from "../lib/conflicts.js";
 import type * as lib_fs from "../lib/fs.js";
 import type * as lib_mcpConfig from "../lib/mcpConfig.js";
 import type * as lib_mcpContract from "../lib/mcpContract.js";
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   "lib/agent": typeof lib_agent;
   "lib/auth": typeof lib_auth;
   "lib/binaries": typeof lib_binaries;
+  "lib/conflicts": typeof lib_conflicts;
   "lib/fs": typeof lib_fs;
   "lib/mcpConfig": typeof lib_mcpConfig;
   "lib/mcpContract": typeof lib_mcpContract;

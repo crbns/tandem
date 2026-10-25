@@ -53,23 +53,25 @@ export default function ApprovalsPage() {
   const [deciding, setDeciding] = useState<{ id: string; decision: Decision; action?: ConflictAction } | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
 
-  async function decide(proposal: ContextProposal, decision: Decision, action?: ConflictAction, note?: string) {
+  async function decide(
+    proposal: ContextProposal,
+    decision: Decision,
+    action?: ConflictAction,
+    note?: string,
+    supersede?: string[],
+  ) {
     setDeciding({ id: proposal.id, decision, action });
     setOutcome(null);
     const field = FIELD_LABELS[proposal.field].toLowerCase();
     try {
-      await api.decideProposal(
-        proposal,
-        decision,
-        action
-          ? {
-              resolution: CONFLICT_ACTIONS[action].resolution,
-              ...(note?.trim() ? { note: note.trim() } : {}),
-              // A verdict that lands while the card is open fails with PROPOSAL_CHANGED.
-              expectedRevision: proposal.revision,
-            }
-          : undefined,
-      );
+      await api.decideProposal(proposal, decision, {
+        ...(action ? { resolution: CONFLICT_ACTIONS[action].resolution } : {}),
+        ...(note?.trim() ? { note: note.trim() } : {}),
+        ...(action === "accept" && supersede ? { supersede } : {}),
+        // A verdict or competing proposal that lands while the card is open
+        // fails with PROPOSAL_CHANGED, plain cards included.
+        expectedRevision: proposal.revision,
+      });
       toast.success(
         action === "accept"
           ? `Accepted. The proposed ${field} is in effect; what it replaced stays in history.`
@@ -87,6 +89,15 @@ export default function ApprovalsPage() {
       setDeciding(null);
       // Stale and already-decided proposals have moved on; show where they landed.
       reload();
+    }
+  }
+
+  async function recheck(proposal: ContextProposal) {
+    try {
+      await api.recheckConflict(proposal);
+      toast.success("Checking again. The card updates when the verdict is in.");
+    } catch (err) {
+      setOutcome({ proposal, error: normalizeError(err) });
     }
   }
 
@@ -175,7 +186,10 @@ export default function ApprovalsPage() {
                     canDecide={canDecide}
                     deciding={deciding?.id === proposal.id ? (deciding.action ?? null) : null}
                     busy={deciding !== null}
-                    onDecide={(action, note) => void decide(proposal, CONFLICT_ACTIONS[action].decision, action, note)}
+                    onDecide={(action, note, supersede) =>
+                      void decide(proposal, CONFLICT_ACTIONS[action].decision, action, note, supersede)
+                    }
+                    onRecheck={() => void recheck(proposal)}
                   />
                 ) : (
                   <ProposalCard

@@ -460,7 +460,7 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         });
         return proposals.map(toProposal);
       }),
-    decideProposal: ({ id, workspaceId }, decision, { resolution, note, expectedRevision } = {}) =>
+    decideProposal: ({ id, workspaceId }, decision, { resolution, note, expectedRevision, supersede } = {}) =>
       call(async () => {
         const proposalId = id as Id<"context_proposals">;
         // Only the keys that are set: Convex rejects `undefined` in some clients.
@@ -470,6 +470,7 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
           ...(resolution ? { resolution } : {}),
           ...(note ? { note } : {}),
           ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+          ...(supersede ? { supersede } : {}),
         });
         if (decision !== "approved") return;
         // A stale approval doesn't throw: the backend marks the proposal stale
@@ -479,6 +480,10 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
           status: "stale",
         });
         if (stale.some((p) => p.id === proposalId)) throw new TandemApiError("VERSION_CONFLICT");
+      }),
+    recheckConflict: ({ id }) =>
+      call(async () => {
+        await convex.mutation(api.context.recheckConflict, { proposalId: id as Id<"context_proposals"> });
       }),
     listConflicts: (workspaceId) =>
       call(async () => {

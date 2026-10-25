@@ -156,7 +156,7 @@ describe("conflict labels", () => {
 
 describe("ConflictCard", () => {
   const render = (proposal: ContextProposal, canDecide: boolean) =>
-    renderToStaticMarkup(createElement(ConflictCard, { proposal, canDecide, deciding: null, busy: false, onDecide: () => {} }));
+    renderToStaticMarkup(createElement(ConflictCard, { proposal, canDecide, deciding: null, busy: false, onDecide: () => {}, onRecheck: () => {} }));
 
   it("shows both values, who set each, why, and the actions for deciders only", async () => {
     const { api } = setup();
@@ -178,5 +178,43 @@ describe("ConflictCard", () => {
     const html = render({ ...proposal, conflict: { status: "checking", method: "semantic", items: [] } }, true);
     expect(html).toContain("Checking for conflicts…");
     expect(html).toContain('aria-busy="true"');
+    expect(html).toContain("Approving waits for the conflict check");
+  });
+
+  it("pre-ticks only the targets the check is sure about, and offers no keep-both for a goal", async () => {
+    const { api } = setup();
+    const proposal = await seededConflict(api);
+    const sure = proposal.conflict!.items[0]!;
+    const html = render({
+      ...proposal,
+      conflict: { ...proposal.conflict!, items: [sure, { ...sure, targetId: "unsure", targetText: "Unsure one", uncertain: true }] },
+    }, true);
+    expect(html.match(/type="checkbox"/g)).toHaveLength(2);
+    expect(html.match(/checked=""/g)).toHaveLength(1);
+    expect(html).toContain("Accepting supersedes 1 approved entry");
+    expect(render({ ...proposal, field: "goal" }, true)).not.toContain(CONFLICT_ACTIONS.keep_both.label);
+  });
+});
+
+describe("mock resolution guards", () => {
+  it("won't keep both for a goal, which holds one value", async () => {
+    const { api } = setup();
+    const first = await api.proposeContextChange(workspaceId, { field: "goal", proposedValue: "Ship by Sunday", rationale: "More time", sourceFileIds: [] });
+    const competing = (await api.listProposals(workspaceId)).find((p) => p.id === first.id)!;
+    expect(competing.conflict?.items).toHaveLength(1);
+    await expect(api.decideProposal(competing, "approved", { resolution: "kept_both" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+
+  it("accepting supersedes only the targets picked, and nothing when none are", async () => {
+    const { api } = setup();
+    const proposal = await seededConflict(api);
+    const target = proposal.conflict!.items[0]!;
+    await expect(api.decideProposal(proposal, "approved", { resolution: "accepted", supersede: ["nope"] }))
+      .rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await api.decideProposal(proposal, "approved", { resolution: "accepted", supersede: [] });
+    const details = await api.getContextDetails(workspaceId);
+    expect(details.decisions.find((entry) => entry.id === target.targetId)).toMatchObject({ status: "active" });
+    const [decided] = (await api.listProposals(workspaceId)).filter((p) => p.id === proposal.id);
+    expect(decided).toMatchObject({ status: "approved", resolution: "kept_both" });
   });
 });

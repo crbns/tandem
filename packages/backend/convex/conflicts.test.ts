@@ -339,20 +339,49 @@ describe("concurrent resolutions", () => {
     expect((await proposal(r.proposal.id))!.status).toBe("pending");
   });
 
-  it("ignores a verdict that arrives after a person decided", async () => {
+  it("refuses to approve while the check runs, and ignores a verdict that arrives after a rejection", async () => {
     const { t, alex, workspaceId, chatgpt, propose, approve, proposal, settle } = await setup();
     const fetch = stubModel(contradicts);
     await approve("decision", "Use Convex Auth");
     const r = await propose(chatgpt, { field: "decision", proposedValue: "Switch authentication to Clerk" });
-    await alex.mutation(api.context.decideContextProposal, { proposalId: r.proposal.id, decision: "approved", resolution: "kept_both" });
+    for (const resolution of ["accepted", "kept_both"] as const)
+      expect(await errorData(alex.mutation(api.context.decideContextProposal, {
+        proposalId: r.proposal.id, decision: "approved", resolution,
+      }))).toMatchObject({ code: "CONFLICT_CHECK_PENDING" });
+    // Rejecting changes nothing, so it doesn't have to wait.
+    await alex.mutation(api.context.decideContextProposal, { proposalId: r.proposal.id, decision: "rejected" });
     await settle();
     // A late record is a no-op too.
     await t.mutation(internal.conflicts.recordVerdict, { proposalId: r.proposal.id, method: "semantic", items: [] });
     expect(fetch).not.toHaveBeenCalled();
-    expect(await proposal(r.proposal.id)).toMatchObject({ status: "approved", resolution: "kept_both", conflict: { status: "checking" } });
+    expect(await proposal(r.proposal.id)).toMatchObject({ status: "rejected", conflict: { status: "checking" } });
     const events = await t.run((ctx) => ctx.db.query("workspace_events").collect());
     expect(events.some((e) => e.kind === "context.conflict_checked")).toBe(false);
-    expect((await alex.query(api.context.getDetails, { workspaceId })).decisions.map((e) => e.status)).toEqual(["active", "active"]);
+    expect((await alex.query(api.context.getDetails, { workspaceId })).decisions.map((e) => e.status)).toEqual(["active"]);
+  });
+
+  it("re-runs a check that got stuck, and only for owners and admins", async () => {
+    const { t, alex, sam, chatgpt, propose, approve, proposal } = await setup();
+    const fetch = stubModel(contradicts);
+    await approve("decision", "Use Convex Auth");
+    const r = await propose(chatgpt, { field: "decision", proposedValue: "Switch authentication to Clerk" });
+    // The scheduled check dies without recording anything.
+    await t.run(async (ctx) => {
+      for (const job of await ctx.db.system.query("_scheduled_functions").collect())
+        await ctx.scheduler.cancel(job._id);
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await proposal(r.proposal.id))!.conflict!.status).toBe("checking");
+    expect(await errorData(sam.mutation(api.context.recheckConflict, { proposalId: r.proposal.id })))
+      .toMatchObject({ code: "FORBIDDEN" });
+    await alex.mutation(api.context.recheckConflict, { proposalId: r.proposal.id });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect((await proposal(r.proposal.id))!.conflict!.status).toBe("conflict");
+    // Once the verdict is in, a recheck is a no-op.
+    await alex.mutation(api.context.recheckConflict, { proposalId: r.proposal.id });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -494,6 +523,69 @@ describe("resolution outcomes", () => {
       ["Use Convex Auth", "active"],
       ["Switch authentication to Clerk", "active"],
     ]);
+  });
+
+  it("supersedes nothing the check was only unsure about, unless the person picks it", async () => {
+    const s = await setup();
+    const first = await s.approve("decision", "Use Convex Auth");
+    const second = await s.approve("constraint", "Authentication must support SSO");
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network down"); }));
+    const r = await s.propose(s.chatgpt, { field: "decision", proposedValue: "Switch authentication to Clerk" });
+    await s.settle();
+    const held = (await s.proposal(r.proposal.id))!;
+    expect(held.conflict).toMatchObject({ status: "uncertain" });
+    expect(held.conflict!.items.map((i) => i.uncertain)).toEqual([true, true]);
+    // Accept over uncertain-only items is keeping both: nothing is superseded.
+    await s.alex.mutation(api.context.decideContextProposal, {
+      proposalId: r.proposal.id, decision: "approved", resolution: "accepted", expectedRevision: held.revision,
+    });
+    expect(await s.proposal(r.proposal.id)).toMatchObject({ status: "approved", resolution: "kept_both" });
+    let context = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    expect([...context.decisions, ...context.constraints].map((e) => e.status)).toEqual(["active", "active", "active"]);
+
+    // The person can tick which ones it replaces.
+    const again = await s.propose(s.claude, { field: "decision", proposedValue: "Use Auth0 instead" });
+    await s.settle();
+    const picked = (await s.proposal(again.proposal.id))!;
+    expect(await errorData(s.alex.mutation(api.context.decideContextProposal, {
+      proposalId: again.proposal.id, decision: "approved", resolution: "accepted", supersede: ["not-a-target"],
+    }))).toMatchObject({ code: "INVALID_INPUT", field: "supersede" });
+    expect(await errorData(s.alex.mutation(api.context.decideContextProposal, {
+      proposalId: again.proposal.id, decision: "rejected", resolution: "retained_current", supersede: [first.id],
+    }))).toMatchObject({ code: "INVALID_INPUT", field: "supersede" });
+    await s.alex.mutation(api.context.decideContextProposal, {
+      proposalId: again.proposal.id, decision: "approved", resolution: "accepted", supersede: [first.id],
+      expectedRevision: picked.revision,
+    });
+    context = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    const auth0 = context.decisions.find((e) => e.text === "Use Auth0 instead")!;
+    expect(context.decisions.find((e) => e.id === first.id)).toMatchObject({ status: "superseded", supersededBy: auth0.id });
+    expect(context.constraints.find((e) => e.id === second.id)).toMatchObject({ status: "active" });
+    expect(await s.proposal(again.proposal.id)).toMatchObject({ resolution: "accepted" });
+  });
+
+  it("doesn't offer keeping both for a goal or scope, which hold one value", async () => {
+    const { alex, claude, chatgpt, propose } = await setup();
+    const a = await propose(claude, { field: "goal", proposedValue: "Ship the beta" });
+    await propose(chatgpt, { field: "goal", proposedValue: "Win Cal Hacks" });
+    expect(await errorData(alex.mutation(api.context.decideContextProposal, {
+      proposalId: a.proposal.id, decision: "approved", resolution: "kept_both",
+    }))).toMatchObject({ code: "INVALID_INPUT", field: "resolution" });
+  });
+
+  it("decides a conflict that was cleared like a plain proposal, without a resolution event", async () => {
+    const { t, alex, claude, chatgpt, propose, proposal } = await setup();
+    const c = await propose(claude, { field: "scope", proposedValue: "Web only" });
+    const d = await propose(chatgpt, { field: "scope", proposedValue: "Web and mobile" });
+    await alex.mutation(api.context.decideContextProposal, { proposalId: d.proposal.id, decision: "rejected" });
+    expect(await proposal(c.proposal.id)).toMatchObject({ hasConflict: true, conflict: { items: [] } });
+    await alex.mutation(api.context.decideContextProposal, { proposalId: c.proposal.id, decision: "approved" });
+    const decided = (await proposal(c.proposal.id))!;
+    expect(decided.status).toBe("approved");
+    expect(decided.resolution).toBeUndefined();
+    const resolvedEvents = (await t.run((ctx) => ctx.db.query("workspace_events").collect()))
+      .filter((e) => e.kind === "context.conflict_resolved");
+    expect(resolvedEvents.map((e) => e.entityId)).toEqual([d.proposal.id]);
   });
 
   it("rejects a resolution that doesn't match the decision, or an overlong note", async () => {
@@ -710,5 +802,44 @@ describe("context that changes during the check", () => {
     await settle();
     expect(calls).toBe(1);
     expect(await proposal(r.proposal.id)).toMatchObject({ status: "pending", conflict: { status: "clear", items: [] } });
+  });
+});
+
+describe("an exact copy of approved context", () => {
+  it("is refused with ALREADY_IN_CONTEXT instead of adding a duplicate entry", async () => {
+    const { t, alex, workspaceId, chatgpt, propose, approve } = await setup();
+    const fetch = stubModel(compatible);
+    const existing = await approve("decision", "Use Convex Auth");
+    await alex.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "automatic" });
+    for (const proposedValue of ["Use Convex Auth", "  use convex   AUTH "])
+      expect(await errorData(propose(chatgpt, { field: "decision", proposedValue })))
+        .toMatchObject({ code: "ALREADY_IN_CONTEXT", entryId: existing.id });
+    expect(await errorData(propose(chatgpt, { field: "constraint", proposedValue: "Use Convex Auth" })))
+      .toMatchObject({ code: "ALREADY_IN_CONTEXT" });
+    expect(await t.run((ctx) => ctx.db.query("context_proposals").collect())).toEqual([]);
+    expect((await alex.query(api.context.getDetails, { workspaceId })).decisions).toHaveLength(1);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolved_conflicts in a snapshot", () => {
+  it("lists the newest resolutions, including an old conflict resolved last", async () => {
+    const s = await setup();
+    stubModel(contradicts);
+    await s.approve("decision", "Use Convex Auth");
+    const old = await s.propose(s.chatgpt, { field: "decision", proposedValue: "Switch authentication to Clerk" });
+    await s.settle();
+    const later = [];
+    for (let i = 0; i < 6; i++) {
+      const r = await s.propose(s.claude, { field: "decision", proposedValue: `Use auth provider number ${i}` });
+      await s.settle();
+      later.push(r.proposal.id);
+    }
+    for (const id of later)
+      await s.alex.mutation(api.context.decideContextProposal, { proposalId: id, decision: "rejected" });
+    await s.alex.mutation(api.context.decideContextProposal, { proposalId: old.proposal.id, decision: "rejected", resolution: "retained_current" });
+    const snapshot = await callTool(s.t, s.chatgpt.apiKey, "sync_workspace", { detail: "brief" });
+    expect(snapshot.resolved_conflicts).toHaveLength(5);
+    expect(snapshot.resolved_conflicts[0]).toMatchObject({ proposal_id: old.proposal.id, outcome: "retained_current" });
   });
 });

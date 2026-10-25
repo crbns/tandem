@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useState, type ReactNode } from "react";
-import { AlertTriangleIcon, CheckIcon, Loader2Icon, SplitIcon, UndoIcon, XIcon } from "lucide-react";
+import { AlertTriangleIcon, CheckIcon, Loader2Icon, RotateCwIcon, SplitIcon, UndoIcon, XIcon } from "lucide-react";
 import type { ConflictItem, ContextProposal } from "@/lib/api";
 import { CONFLICT_ACTIONS, conflictMethodLabel, FIELD_LABELS, type ConflictAction } from "@/lib/proposals";
 import { formatAbsolute, formatRelative } from "@/lib/time";
@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const MAX_NOTE = 2000;
+/** After this long "checking", offer to run the check again. */
+const STUCK_MS = 20_000;
 
 const TARGET_LABELS: Record<ConflictItem["targetType"], string> = {
   decision: "decision",
@@ -28,17 +30,26 @@ interface ConflictCardProps {
   deciding: ConflictAction | null;
   /** Any decision in flight on the page: one at a time. */
   busy: boolean;
-  onDecide: (action: ConflictAction, note: string) => void;
+  /** `supersede`: for accept, the targets the person chose to replace. */
+  onDecide: (action: ConflictAction, note: string, supersede?: string[]) => void;
+  onRecheck: () => void;
 }
+
+/** Items accepting can supersede: approved decisions and constraints. */
+const supersedable = (item: ConflictItem) =>
+  item.kind !== "competing" && (item.targetType === "decision" || item.targetType === "constraint");
 
 /**
  * A pending proposal that collides with the approved context (or another
  * proposal): the current value beside the proposed one, why they conflict,
  * and how to settle it. Nothing changes until a person picks an action.
  */
-export function ConflictCard({ proposal, canDecide, deciding, busy, onDecide }: ConflictCardProps) {
+export function ConflictCard({ proposal, canDecide, deciding, busy, onDecide, onRecheck }: ConflictCardProps) {
   const now = useNow();
   const [note, setNote] = useState("");
+  // Which targets accepting replaces: those the check is sure about, unless
+  // the person ticks otherwise. Never an unsure one by default.
+  const [picked, setPicked] = useState<Record<string, boolean>>({});
   const noteId = useId();
   const conflict = proposal.conflict!;
   const checking = conflict.status === "checking";
@@ -46,6 +57,11 @@ export function ConflictCard({ proposal, canDecide, deciding, busy, onDecide }: 
   const headingId = `conflict-${proposal.id}`;
   const label = FIELD_LABELS[proposal.field];
   const competingOnly = items.length > 0 && items.every((item) => item.targetType === "proposal");
+  const scalar = proposal.field === "goal" || proposal.field === "scope";
+  const replaceable = items.filter(supersedable);
+  const isPicked = (item: ConflictItem) => picked[item.targetId] ?? !item.uncertain;
+  const supersede = replaceable.filter(isPicked).map((item) => item.targetId);
+  const stuck = checking && now - proposal.createdAt > STUCK_MS;
 
   return (
     <article aria-labelledby={headingId} aria-busy={checking} className="rounded-md border border-warn-rule bg-card px-5 py-4">
@@ -85,6 +101,18 @@ export function ConflictCard({ proposal, canDecide, deciding, busy, onDecide }: 
                     <span title={formatAbsolute(item.targetAt)}>{formatRelative(item.targetAt, now)}</span>
                     <span>· context v{item.contextVersion}</span>
                   </p>
+                  {canDecide && !checking && supersedable(item) && (
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={isPicked(item)}
+                        disabled={busy || (item.kind === "replaces" && proposal.supersedes === item.targetId)}
+                        onChange={(event) => setPicked((prev) => ({ ...prev, [item.targetId]: event.target.checked }))}
+                        className="size-3.5 accent-current"
+                      />
+                      Accepting replaces this {TARGET_LABELS[item.targetType]}
+                    </label>
+                  )}
                 </li>
               ))}
             </ul>
@@ -139,19 +167,46 @@ export function ConflictCard({ proposal, canDecide, deciding, busy, onDecide }: 
               className="flex min-h-16 w-full min-w-0 resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
             />
           </div>
+          {replaceable.length > 0 && !checking && (
+            <p className="text-xs text-muted-foreground">
+              {supersede.length > 0 || proposal.supersedes
+                ? `Accepting supersedes ${Math.max(supersede.length, proposal.supersedes ? 1 : 0)} approved ${supersede.length === 1 || (!supersede.length && proposal.supersedes) ? "entry" : "entries"}; history is kept.`
+                : "Nothing is ticked, so accepting adds the proposal beside the current entries."}
+            </p>
+          )}
+          {checking && (
+            <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>Approving waits for the conflict check. You can reject it now.</span>
+              {stuck && (
+                <Button size="sm" variant="outline" onClick={onRecheck} disabled={busy}>
+                  <RotateCwIcon />
+                  Check again
+                </Button>
+              )}
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Resolve conflict">
-            <ActionButton action="accept" icon={<CheckIcon />} deciding={deciding} busy={busy} onClick={() => onDecide("accept", note)} />
+            <ActionButton
+              action="accept"
+              icon={<CheckIcon />}
+              deciding={deciding}
+              busy={busy || checking}
+              onClick={() => onDecide("accept", note, replaceable.length > 0 ? supersede : undefined)}
+            />
             <ActionButton action="keep_current" icon={<UndoIcon />} variant="outline" deciding={deciding} busy={busy} onClick={() => onDecide("keep_current", note)} />
             <ActionButton action="reject" icon={<XIcon />} variant="outline" deciding={deciding} busy={busy} onClick={() => onDecide("reject", note)} />
-            <ActionButton
-              action="keep_both"
-              icon={<SplitIcon />}
-              variant="ghost"
-              className="sm:ml-auto"
-              deciding={deciding}
-              busy={busy}
-              onClick={() => onDecide("keep_both", note)}
-            />
+            {/* A goal or scope holds one value, so there's no keeping both. */}
+            {!scalar && (
+              <ActionButton
+                action="keep_both"
+                icon={<SplitIcon />}
+                variant="ghost"
+                className="sm:ml-auto"
+                deciding={deciding}
+                busy={busy || checking}
+                onClick={() => onDecide("keep_both", note)}
+              />
+            )}
           </div>
         </div>
       )}

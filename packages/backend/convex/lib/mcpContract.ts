@@ -419,6 +419,7 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
     case "PROPOSAL_NOT_FOUND":
     case "PROPOSAL_ALREADY_DECIDED":
     case "CONTEXT_NOT_INITIALIZED":
+    case "ALREADY_IN_CONTEXT":
       return invalidInput(str("message") ?? `Invalid request (${code}).`, data);
     default:
       return err;

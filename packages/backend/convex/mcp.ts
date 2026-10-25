@@ -65,7 +65,7 @@ declare const process: { env: Record<string, string | undefined> };
 
 /** How long propose_context_change waits for a conflict verdict (CONFLICT_WAIT_MS). */
 function conflictWaitMs(): number {
-  const ms = Number(process.env.CONFLICT_WAIT_MS ?? 8000);
+  const ms = Number(process.env.CONFLICT_WAIT_MS ?? 4000);
   return Number.isFinite(ms) && ms > 0 ? Math.min(ms, 30_000) : 0;
 }
 
@@ -601,7 +601,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "A decisions addition may supersede an active decision ID using supersedes; the old decision changes when the proposal applies. " +
         "Tandem checks additions for conflicts with approved context and other pending proposals: proposal.conflict.status is clear, checking, conflict or uncertain. " +
         "A conflicting, uncertain or checking proposal stays pending for a human, even in an automatic workspace, and is NOT in effect: keep following the approved value, and tell the user. " +
-        "Repeating a pending (or just applied) proposal returns it with deduplicated true instead of a new one. " +
+        "Repeating a pending (or just applied) proposal returns it with deduplicated true instead of a new one; adding a decision or constraint that is already approved word for word fails with ALREADY_IN_CONTEXT. " +
         "For add, proposed_value is required text (1–2000 characters), or { area, owner_user_id } for ownership; for resolve/remove omit it because it is ignored. " +
         "Field and rationale (1–2000 characters) remain required. Cite up to 20 supporting files in source_ids.",
       args: {
