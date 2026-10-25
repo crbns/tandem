@@ -23,6 +23,13 @@ as `next_steps` on `sync_workspace`, save, publish, and propose results, so it
 reaches assistants without the skill too. `TESTING.md` → "Continuous loop"
 measures it.
 
+**Observed activity.** Tandem also records assistants' MCP calls and, with the
+optional Claude Code hooks (`docs/claude-code-hooks.md`), their Claude Code
+activity. Its context manager turns that into the `observed` section of every
+`sync_workspace` result, labeled with evidence and never treated as approved
+context. Assistants read it to see what teammates' assistants are doing, so
+they no longer write progress updates by hand.
+
 > **Limits.** A skill only nudges the model. Whether it activates, and whether
 > the assistant calls `sync_workspace`/`list_files`, is probabilistic. A skill
 > cannot force tool calls, and Tandem cannot wake a native chat when files

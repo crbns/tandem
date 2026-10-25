@@ -1,0 +1,13 @@
+{
+  "name": "@repo/claude-code-hooks",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Tandem activity hook for Claude Code (docs/claude-code-hooks.md). Zero dependencies.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test tandem-activity-hook.test.mjs"
+  }
+}

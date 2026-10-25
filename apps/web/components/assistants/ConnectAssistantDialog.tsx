@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { CheckIcon, CopyIcon, Loader2Icon, PlusIcon } from "lucide-react";
+import { Loader2Icon, PlusIcon } from "lucide-react";
 import { normalizeError, useTandemApi, type AgentClient } from "@/lib/api";
 import { ERROR_COPY } from "@/lib/api/errorCopy";
 import { claudeCodeCommand } from "@/lib/assistants";
@@ -19,6 +19,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { ClaudeCodeHooksSetup } from "./ClaudeCodeHooksSetup";
+import { CopyButton } from "./CopyButton";
 
 const CLIENT_OPTIONS: ReadonlyArray<{ value: AgentClient; label: string }> = [
   { value: "claude", label: "Claude" },
@@ -157,6 +159,8 @@ function TokenReveal({
         </div>
       )}
 
+      {(client === "claude" || client === "other") && <ClaudeCodeHooksSetup mcpUrl={mcpUrl} token={token} />}
+
       <dl className="grid gap-x-4 gap-y-1.5 text-sm sm:grid-cols-[7rem_minmax(0,1fr)]">
         <dt className="label-caps pt-0.5 text-muted-foreground">Server URL</dt>
         <dd className="break-all font-mono text-xs leading-5">{mcpUrl}</dd>
@@ -180,23 +184,5 @@ function CopyField({ id, label, value }: { id: string; label: string; value: str
         <CopyButton value={value} label={`Copy ${label.toLowerCase()}`} />
       </div>
     </div>
-  );
-}
-
-function CopyButton({ value, label }: { value: string; label: string }) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(value);
-      setState("copied");
-    } catch {
-      setState("failed");
-    }
-  }
-  return (
-    <Button type="button" variant="outline" onClick={copy} className="w-fit">
-      {state === "copied" ? <CheckIcon /> : <CopyIcon />}
-      {state === "copied" ? "Copied" : state === "failed" ? "Select and copy manually" : label}
-    </Button>
   );
 }
