@@ -37,25 +37,33 @@ to ask you to sync, read, save, or publish.
 2. **Read.** `search_files` / `read_file` the files the request touches before
    you answer or edit. Use the approved context (goal, scope, constraints,
    decisions) as the frame for the work. Cite path and version (section 2).
-3. **Do the work** in the chat.
-4. **Write back.** Save edits to existing files with `update_document` and the
+3. **Record before the work.** Before you start, put what the team should know
+   now into the workspace instead of holding it until you finish: propose any
+   decision, scope change, constraint, owner or blocker the user's request
+   already settles that the approved context lacks (section 7), and `claim` the
+   shared task for this work if one exists (section 6). Teammates' assistants
+   then see it while you work, not only after. Skip this when the request
+   settles nothing new.
+4. **Do the work** in the chat.
+5. **Write back.** Save edits to existing files with `update_document` and the
    `expected_version` you read (section 3); create new deliverables with
    `create_document` (section 5). Then log the request with `publish_work`,
    even if no file changed (section 6): analysis, plans, recommendations,
    reviews and decisions discussed as kind `"finding"`; files produced or
    edited as `"deliverable"` with their `file_ids`. The summary says what you
    read, did, saved and proposed.
-5. **Propose.** Changes to goal, scope, decisions or ownership go through
-   `propose_context_change` and stay pending until a human approves them
-   (section 7). Raise team blockers as `open_questions`. Grow the context from
-   files: when the approved context is empty, seed it from the files you read
-   or save; otherwise, after each file you create or edit, propose any goal,
+6. **Record after the work.** Changes to goal, scope, decisions or ownership go
+   through `propose_context_change` and stay pending until a human approves
+   them (section 7). Raise team blockers as `open_questions`. Grow the context
+   from files: when the approved context is empty, seed it from the files you
+   read or save; otherwise, after each file you create or edit, propose any goal,
    scope, constraint, decision, owner or open question it shows. Either way,
    cite the file in `source_ids` and propose only what neither the approved
    context nor a pending proposal already covers. A full sync's
    `pending_proposals` lists every pending proposal; the brief's
-   `blockers.pending_approvals` shows at most 10.
-6. **Report** in one line what you read, saved, published and proposed, with
+   `blockers.pending_approvals` shows at most 10. Don't re-propose what you
+   already proposed before the work.
+7. **Report** in one line what you read, saved, published and proposed, with
    paths and versions, and anything you skipped and why.
 
 Skip the `publish_work` log only when the request was a pure lookup that just
@@ -239,6 +247,9 @@ Someone else saved a newer version since you read it.
   save. Otherwise, each time you create or edit a file, check whether it shows
   a goal, scope, constraint, decision, owner, or open question. Propose each
   one, citing the file in `source_ids`.
+- Also record what the user's request itself settles, before you do the work
+  ("we're going with Stripe", "Sam owns onboarding", "launch slipped to
+  March"). Cite the files you read that it touches in `source_ids`, or none.
 - Propose only what neither the approved context nor a pending proposal
   already covers. Pending proposals are listed in the brief's
   `blockers.pending_approvals` (and `pending_proposals` in a full sync). A

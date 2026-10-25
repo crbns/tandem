@@ -3108,6 +3108,9 @@ describe("sync brief and server instructions", () => {
     expect(empty).toEqual(syncNextSteps({ contextEmpty: true }));
     expect(empty[0]).toMatch(/context is empty.*files you read or save.*propose_context_change.*source_ids.*no pending proposal/);
     expect(syncNextSteps({ contextEmpty: false })).toEqual(empty.slice(1));
+    const at = (prefix: string) => syncNextSteps({ contextEmpty: false }).findIndex((step) => step.startsWith(prefix));
+    expect(at("Record before working")).toBeGreaterThan(at("Read before working"));
+    expect(at("Record before working")).toBeLessThan(at("Write back after working"));
     expect(empty.join(" ")).toMatch(/publish_work, even if no file changed/);
 
     const created = await tool("create_document", { name: "loop.md", content: "v1" });
@@ -3179,7 +3182,8 @@ describe("sync brief and server instructions", () => {
     const { MCP_INSTRUCTIONS } = await import("./mcp");
     for (const term of ["sync_workspace", "since", "cursor", "read_file", "update_document", "publish_work", "propose_context_change",
       "expected_version", "open_questions", "best effort", "without waiting to be asked", "private conversation history", "untrusted",
-      "even if no file changed", "create or edit", "that context lacks", "no pending proposal covers", "read brief first"])
+      "even if no file changed", "create or edit", "that context lacks", "no pending proposal covers", "read brief first",
+      "Record before the work", "manage_task", "Record after"])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);

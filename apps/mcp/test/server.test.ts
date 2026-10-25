@@ -805,6 +805,9 @@ describe("read-before / write-back loop", () => {
       "that context lacks",
       "no pending proposal covers",
       "read brief first",
+      "Record before the work",
+      "manage_task",
+      "Record after",
     ])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
