@@ -7,7 +7,7 @@ This document describes the integration boundary between the dashboard, MCP serv
 | Surface                             | Current implementation                                                                                 | Shared data?                                                                         |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
 | Dashboard (`apps/web`)              | Existing session/provider and `TandemApi` layers, backed by Convex Auth and generated Convex functions | Yes, uses `NEXT_PUBLIC_CONVEX_URL`                                                   |
-| MCP (`packages/backend/convex/mcp.ts`) | `@convex-dev/mcp` in Convex HTTP actions at `<CONVEX_SITE_URL>/mcp`: 14 tools, OAuth 2.1 (DCR, PKCE, refresh) and API keys | Yes: same deployment and core helpers as the dashboard (see "Agent path" below) |
+| MCP (`packages/backend/convex/mcp.ts`) | `@convex-dev/mcp` in Convex HTTP actions at `<CONVEX_SITE_URL>/mcp`: 15 tools, OAuth 2.1 (DCR, PKCE, refresh) and API keys | Yes: same deployment and core helpers as the dashboard (see "Agent path" below) |
 | Mock MCP (`apps/mcp`)               | Stateless Streamable HTTP over `MockBackend` (dev tokens), for the skill eval only                     | No, in-memory                                                                        |
 | Backend (`packages/backend/convex`) | Workspace membership, files, revisions, project context                                                | Dashboard functions are authenticated; MCP tools call internal functions with the component-verified principal |
 

@@ -875,7 +875,7 @@ export const resolveObservation = internalMutation({
     expectedRevision: v.number(),
     note: v.string(),
   },
-  returns: v.object({ revision: v.number(), observedRevision: v.number() }),
+  returns: v.object({ key: v.string(), revision: v.number(), observedRevision: v.number() }),
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal, { write: true });
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
@@ -884,7 +884,10 @@ export const resolveObservation = internalMutation({
     if (!entry || entry.workspaceId !== workspaceId)
       throw new ConvexError({ code: "INVALID_INPUT" });
     if (entry.revision !== args.expectedRevision)
-      throw new ConvexError({ code: "VERSION_CONFLICT", currentVersion: entry.revision });
+      throw new ConvexError({
+        code: "VERSION_CONFLICT", entryId: args.entryId,
+        currentRevision: entry.revision, expectedRevision: args.expectedRevision,
+      });
     if (entry.status !== "active")
       throw new ConvexError({ code: "INVALID_INPUT", message: "Only active observations can be resolved." });
     const note = boundedText(args.note, 300, "note");
@@ -911,7 +914,13 @@ export const resolveObservation = internalMutation({
       entityId: entry._id, summary: `Resolved observed ${entry.category}: ${entry.title.slice(0, 80)}`,
       actor: session.actor,
     });
-    return { revision, observedRevision };
+    await recordActivity(ctx, session, {
+      tool: "resolve_observation",
+      kind: "write",
+      summary: `Resolved observed ${entry.category}`,
+      resource: { type: "context", id: entry._id, label: entry.title.slice(0, 80) },
+    });
+    return { key: entry.key, revision, observedRevision };
   },
 });
 

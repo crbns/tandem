@@ -123,6 +123,7 @@ const MCP_WRITE_TOOLS = new Set([
   "publish_work",
   "update_context",
   "manage_task",
+  "resolve_observation",
 ]);
 
 /**

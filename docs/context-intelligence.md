@@ -64,7 +64,9 @@ or disproving a stale lead, an agent may call `resolve_observation` with
 its ID, `expected_revision` and a short note. The mutation checks
 workspace access and revision, preserves the evidence level, records
 agent attribution and emits `context.corrected`. It does not change
-`structured_context`.
+`structured_context`. The call is a significant event for the context
+manager, and a later batch only reopens the lead when it cites an event
+recorded after the resolution.
 
 Tandem cannot wake native chats. Assistants receive this context when
 they next call `sync_workspace`.

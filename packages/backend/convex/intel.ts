@@ -81,8 +81,6 @@ const MIN_RETRY_EVENTS = 5;
 const MAX_DOCUMENTS = 12;
 /** Model calls in flight at once within a run. */
 const CONCURRENCY = 4;
-/** Project context changes one run records across all its calls. */
-const MAX_RUN_CHANGES = 12;
 const COMPACT_SCAN = 120;
 const MAX_CONNECTIONS = 50;
 const MAX_MEMBERS = 100;
@@ -180,17 +178,6 @@ const entryOpValidator = v.object({
   sourceHash: v.optional(v.string()),
 });
 type EntryOpArg = Infer<typeof entryOpValidator>;
-
-const changeOpValidator = v.object({
-  field: v.union(v.literal("goal"), v.literal("decision"), v.literal("ownership")),
-  text: v.string(),
-  ownerUserId: v.optional(v.string()),
-  confidence: v.number(),
-  evidenceEventIds: v.array(v.id("activity_events")),
-  fileIds: v.array(v.id("files")),
-  supersedes: v.optional(v.string()),
-  key: v.string(),
-});
 
 const clip = (text: string, max: number) =>
   text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -558,14 +545,14 @@ const sameList = (a: readonly string[], b: readonly string[]) =>
 /**
  * Upserts one entry by key. Identical content writes nothing (a re-run is
  * idempotent). An entry a person confirmed or corrected only changes on
- * stronger evidence.
+ * stronger evidence; one an assistant resolved only reopens on newer events.
  */
 async function applyEntry(
   ctx: MutationCtx,
   workspaceId: Id<"workspaces">,
   op: EntryOpArg,
   run: { runId: Id<"context_intel_runs">; model?: string; now: number },
-): Promise<"created" | "updated" | "protected" | null> {
+): Promise<"created" | "updated" | "protected" | "kept_resolved" | null> {
   const existing = await getEntry(ctx, workspaceId, op.key);
   const { now } = run;
   const snapshot = {
@@ -618,6 +605,16 @@ async function applyEntry(
     existing.updatedBy.type === "human" ||
     (op.sourceHash === undefined && existing.evidence === "human_confirmed");
   if (byPerson && evidenceRank(op.evidence) <= evidenceRank(existing.evidence)) return "protected";
+  // An assistant resolved this lead after fixing or disproving it; the batch
+  // may predate that, so only an event recorded since reopens it (the
+  // resolve call's own event, logged just after, doesn't count).
+  if (existing.status === "resolved" && existing.updatedBy.type === "agent" && op.status !== "resolved") {
+    const events = await Promise.all(op.evidenceEventIds.map((id) => ctx.db.get(id)));
+    const newer = events.some(
+      (e) => e !== null && e.createdAt > existing.updatedAt && e.tool !== "resolve_observation",
+    );
+    if (!newer) return "kept_resolved";
+  }
   const evidenceEventIds = [...new Set([...op.evidenceEventIds, ...existing.evidenceEventIds])]
     .slice(0, MAX_EVIDENCE_IDS) as Id<"activity_events">[];
   const agentConnectionIds = [...new Set([...existing.agentConnectionIds, ...op.agentConnectionIds])]
@@ -705,7 +702,6 @@ export const applyResult = internalMutation({
     eventIds: v.array(v.id("activity_events")),
     summary: v.string(),
     entries: v.array(entryOpValidator),
-    changes: v.array(changeOpValidator),
     dropped: v.array(v.string()),
     inputTokens: v.optional(v.number()),
     outputTokens: v.optional(v.number()),
@@ -733,10 +729,11 @@ export const applyResult = internalMutation({
       if (outcome === "created") created++;
       else if (outcome === "updated") updated++;
       else if (outcome === "protected") dropped.push(`${op.key}: kept the person's version`);
+      else if (outcome === "kept_resolved") dropped.push(`${op.key}: an assistant resolved it; no newer evidence`);
     }
 
-    // Validated model findings live in context_entries. Do not promote them
-    // to structured_context without a person's direction.
+    // Validated model findings live in context_entries and are never
+    // promoted to structured_context; contextChanges stays 0 (legacy field).
     const contextChanges = 0;
 
     // A deleted document's digest leaves observed context with it; nothing
@@ -986,7 +983,6 @@ export const applyCompaction = internalMutation({
     entriesRevision: v.number(),
     summary: v.string(),
     entries: v.array(entryOpValidator),
-    changes: v.array(changeOpValidator),
     dropped: v.array(v.string()),
     inputTokens: v.optional(v.number()),
     outputTokens: v.optional(v.number()),
@@ -1014,6 +1010,7 @@ export const applyCompaction = internalMutation({
       if (outcome === "created") created++;
       else if (outcome === "updated") updated++;
       else if (outcome === "protected") dropped.push(`${op.key}: kept the person's version`);
+      else if (outcome === "kept_resolved") dropped.push(`${op.key}: an assistant resolved it; no newer evidence`);
       if (outcome === "updated" && op.op === "supersede") superseded++;
     }
     // Preserve legacy context links on merged historical entries.
@@ -1026,7 +1023,6 @@ export const applyCompaction = internalMutation({
         ? { contextEntryId: folded.contextEntryId }
         : { contextSkipped: folded.contextSkipped ?? folded.proposalSkipped ?? "PROPOSED" });
     }
-    const contextChanges = 0;
     const changed = created + updated > 0;
     const entriesRevision = state.entriesRevision + (changed ? 1 : 0);
     const add = (a: number | undefined, b: number | undefined) =>
@@ -1036,7 +1032,6 @@ export const applyCompaction = internalMutation({
     await ctx.db.patch(run._id, {
       created: run.created + created,
       updated: run.updated + updated,
-      contextChanges: (run.contextChanges ?? 0) + contextChanges,
       ...(changed
         ? { entriesRevision, summary: clip(`${run.summary ?? ""} Compacted ${superseded} entries${args.summary ? ` (${args.summary})` : ""}.`.trim(), 300) }
         : {}),
@@ -1058,7 +1053,7 @@ export const applyCompaction = internalMutation({
         actor: INTEL_ACTOR,
       });
     }
-    return { stale: false, superseded, contextChanges };
+    return { stale: false, superseded, contextChanges: 0 };
   },
 });
 
@@ -1240,8 +1235,8 @@ function similar(a: string, b: string, mode: "strict" | "restates" = "strict"): 
  * The activity call and every digest call, CONCURRENCY at a time. Any failure
  * fails the whole analysis, so no event is marked processed unless every
  * document in the batch was read. Results merge into one: the later call
- * wins a shared key; context changes dedupe, at most MAX_RUN_CHANGES, one
- * goal and one that supersedes a decision.
+ * wins a shared key. Legacy context changes (already observed entries) only
+ * dedupe: they decide which new goal and decision entries restate one.
  */
 async function analyze(batch: Batch): Promise<Analysis> {
   const [activity, ...digests] = await pooled<Analysis | null>([
@@ -1254,8 +1249,6 @@ async function analyze(batch: Batch): Promise<Analysis> {
   const changes: IntelResult["changes"] = [];
   const dropped: string[] = [];
   const seen = new Set<string>();
-  let superseding = false;
-  let goal = false;
   for (const { result } of parts) {
     dropped.push(...result.dropped);
     for (const e of result.entries) {
@@ -1266,21 +1259,7 @@ async function analyze(batch: Batch): Promise<Analysis> {
     for (const c of result.changes) {
       const id = c.field === "ownership" ? `ownership:${normalize(c.text)}:${c.ownerUserId}` : `${c.field}:${normalize(c.text)}`;
       if (seen.has(id)) continue;
-      if (c.supersedes !== undefined && superseding) {
-        dropped.push(`context change ${c.key}: one superseding change per run`);
-        continue;
-      }
-      if (c.field === "goal" && goal) {
-        dropped.push(`context change ${c.key}: one goal per run`);
-        continue;
-      }
-      if (changes.length >= MAX_RUN_CHANGES) {
-        dropped.push(`context change ${c.key}: at most ${MAX_RUN_CHANGES} context changes per run`);
-        continue;
-      }
       seen.add(id);
-      if (c.supersedes !== undefined) superseding = true;
-      if (c.field === "goal") goal = true;
       changes.push(c);
     }
   }
@@ -1330,7 +1309,7 @@ const knownError = (err: unknown) => {
  */
 async function compact(
   ctx: ActionCtx,
-  args: { workspaceId: Id<"workspaces">; runId: Id<"context_intel_runs">; model?: string; allowSupersede: boolean },
+  args: { workspaceId: Id<"workspaces">; runId: Id<"context_intel_runs">; model?: string },
 ) {
   const { entriesRevision, sections } = await ctx.runQuery(internal.intel.loadCompaction, {
     workspaceId: args.workspaceId,
@@ -1346,7 +1325,7 @@ async function compact(
           content: compactMessage(section),
           timeoutMs: TIMEOUT_MS,
         });
-        return { result: validateCompaction(reply.raw, section, args.allowSupersede), ...usageOf(reply) };
+        return { result: validateCompaction(reply.raw, section), ...usageOf(reply) };
       } catch (err) {
         dropped.push(`${section.category} failed (${knownError(err)})`);
         return null;
@@ -1355,9 +1334,8 @@ async function compact(
   );
   const parts = results.filter((r): r is Analysis => r !== null);
   const entries = parts.flatMap((p) => p.result.entries);
-  const changes = parts.flatMap((p) => p.result.changes).slice(0, 1);
   dropped.push(...parts.flatMap((p) => p.result.dropped));
-  if (entries.length === 0 && changes.length === 0 && dropped.length === 0) return;
+  if (entries.length === 0 && dropped.length === 0) return;
   const sum = (key: keyof Usage) =>
     parts.some((p) => p[key] !== undefined) ? parts.reduce((n, p) => n + (p[key] ?? 0), 0) : undefined;
   await ctx.runMutation(internal.intel.applyCompaction, {
@@ -1366,7 +1344,6 @@ async function compact(
     entriesRevision,
     summary: parts.map((p) => p.result.summary).filter(Boolean).join("; "),
     entries: entries as EntryOpArg[],
-    changes: changes as Infer<typeof changeOpValidator>[],
     dropped,
     ...usageOf({ inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens") }),
   });
@@ -1404,19 +1381,13 @@ export const processWorkspace = internalAction({
           eventIds: batch.events.map((e) => e.id as Id<"activity_events">),
           summary: result.summary,
           entries: result.entries as EntryOpArg[],
-          changes: result.changes as Infer<typeof changeOpValidator>[],
           dropped: result.dropped,
           ...usageOf(analysis),
         },
       );
       if (!applied.stale) {
         if (batch.method === "llm" && applied.created + applied.updated > 0)
-          await compact(ctx, {
-            workspaceId,
-            runId: batch.runId,
-            model: batch.model,
-            allowSupersede: !result.changes.some((c) => c.supersedes !== undefined),
-          });
+          await compact(ctx, { workspaceId, runId: batch.runId, model: batch.model });
         return null;
       }
       // Retry once against fresh state; then leave the events for a later run.

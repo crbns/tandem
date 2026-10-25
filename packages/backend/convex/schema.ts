@@ -568,11 +568,11 @@ export default defineSchema({
     // Coordination entries only.
     severity: v.optional(v.union(v.literal("potential"), v.literal("actual"))),
     supersededBy: v.optional(v.string()),
-    // A goal, decision or ownership finding recorded in project context: the
-    // structured_context entry id ("goal" for the goal).
+    // Legacy (the removed promotion of findings): the structured_context
+    // entry id a finding was recorded as ("goal" for the goal). Compaction
+    // keeps it on merged entries; nothing sets it now.
     contextEntryId: v.optional(v.string()),
-    // Why recording it in project context was refused (an error code); it
-    // isn't tried again.
+    // Legacy: why that promotion was refused (an error code).
     contextSkipped: v.optional(v.string()),
     // Legacy (the removed proposal flow); contextMigrations.removeProposals clears them.
     proposalId: v.optional(v.id("context_proposals")),
@@ -645,7 +645,8 @@ export default defineSchema({
     error: v.optional(v.string()),
     created: v.number(),
     updated: v.number(),
-    // Project context changes the run recorded (goal, decisions, ownership).
+    // Legacy: project context changes the run recorded. The context manager
+    // no longer changes project context, so new runs record 0.
     contextChanges: v.optional(v.number()),
     // Legacy: proposals the removed proposal flow raised.
     proposals: v.optional(v.number()),

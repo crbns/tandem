@@ -355,11 +355,33 @@ export interface SyncInput {
   workspace_id?: string;
   /** Opaque cursor from a previous sync of the same workspace. */
   since?: string;
+  /** Accepted for parity; the mock always returns the full shape. */
+  detail?: "brief" | "full";
+}
+
+/** The current project rules: active entries only, as production returns them. */
+export interface ActiveContext {
+  goal: string;
+  goal_source_ids: string[];
+  scope: string;
+  scope_source_ids: string[];
+  constraints: ActiveEntry[];
+  decisions: ActiveEntry[];
+  ownership: (ActiveEntry & Ownership)[];
+  open_questions: ActiveEntry[];
+}
+
+export interface ActiveEntry {
+  id: string;
+  text: string;
+  source_ids: string[];
 }
 
 export interface SyncResult {
   workspace: { id: string; name: string };
   context: StructuredContext;
+  /** Complete in every sync; production also has it in brief syncs. */
+  active_context: ActiveContext;
   context_version: number;
   /** Newest updated_at first, at most 50. */
   changed_files: FileMetadata[];

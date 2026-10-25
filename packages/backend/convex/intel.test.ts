@@ -490,7 +490,7 @@ describe("context manager: model path", () => {
     // The crashed run applying late is a no-op.
     const late = await s.t.mutation(internal.intel.applyResult, {
       workspaceId: s.workspaceId, runId: first!.runId, entriesRevision: first!.entriesRevision,
-      eventIds: [e1], summary: "late", entries: [], changes: [], dropped: [],
+      eventIds: [e1], summary: "late", entries: [], dropped: [],
     });
     expect(late).toEqual({ stale: false, created: 0, updated: 0, contextChanges: 0 });
     expect(await s.event(e1)).toMatchObject({ intelStatus: "processed", intelRunId: runs[1]!._id });
@@ -598,6 +598,18 @@ describe("context manager: model path", () => {
     await s.process();
     expect((await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId })).goal?.text).toBe("Human goal");
     expect((await s.runs())[0]).toMatchObject({ contextChanges: 0 });
+    expect(await s.entry("goal:model-goal")).toMatchObject({ category: "goal", status: "active", evidence: "observed" });
+  });
+
+  it("skips a goal claim that restates the project goal", async () => {
+    const s = await setup();
+    const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    await s.alex.mutation(api.context.updateContextField, { workspaceId: s.workspaceId, field: "goal", proposedValue: "Human goal", sourceFileIds: [], expectedVersion: before.revision });
+    await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Wrote the plan", connection: s.claude });
+    stubModel((data: any) => ({ summary: "goal", entries: [], context_changes: [{ field: "goal", text: "human goal", owner_user_id: "", confidence: 0.9, evidence_event_ids: [data.events[0].id], supersedes: "" }] }));
+    await s.process();
+    expect(await s.entry("goal:human-goal")).toBeUndefined();
+    expect((await s.runs())[0]!.error).toContain("already in project context");
   });
 
   it("treats a finding project context already holds as a no-op without rolling back the rest of the apply", async () => {
@@ -1118,6 +1130,43 @@ describe("context manager: section compaction", () => {
     const context = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
     expect(context.decisions.map((d) => d.text)).toEqual(["Use JWT for auth"]);
     expect((await s.runs())[0]).toMatchObject({ contextChanges: 0 });
+    expect((await s.runs())[0]!.error).toContain("decision_supersede: ignored");
+  });
+});
+
+describe("context manager: leads an assistant resolved", () => {
+  async function resolvedLead() {
+    const s = await setup();
+    const first = await s.addEvent({ type: "mcp.tool_call", tool: "update_document", outcome: "conflict", summary: "Auth test failed", connection: s.claude });
+    stubModel((data) => ({ summary: "x", entries: [entryJson({ key: "blocker:auth-test", category: "blocker", title: "Auth test fails", evidence_event_ids: [data.events[0].id] })], context_changes: [] }));
+    await s.process();
+    const lead = (await s.entry("blocker:auth-test"))!;
+    // What resolve_observation writes.
+    const resolvedAt = (await s.event(first))!.createdAt + 10_000;
+    await s.t.run((ctx) => ctx.db.patch(lead._id, {
+      status: "resolved", revision: lead.revision + 1, updatedAt: resolvedAt,
+      updatedBy: { type: "agent", agentConnectionId: s.chatgpt, label: "ChatGPT" },
+    }));
+    return { s, resolvedAt };
+  }
+  const reopen = (data: any) => ({ summary: "x", entries: [entryJson({ key: "blocker:auth-test", category: "blocker", title: "Auth test fails", evidence_event_ids: [data.events[0].id] })], context_changes: [] });
+
+  it("keeps it resolved against events from before the resolution", async () => {
+    const { s } = await resolvedLead();
+    await s.addEvent({ type: "mcp.tool_call", tool: "update_document", outcome: "conflict", summary: "Auth test failed again", connection: s.claude });
+    stubModel(reopen);
+    await s.process();
+    expect(await s.entry("blocker:auth-test")).toMatchObject({ status: "resolved", updatedBy: { type: "agent" } });
+    expect((await s.runs()).at(-1)!.error).toContain("an assistant resolved it");
+  });
+
+  it("reopens it on an event recorded after the resolution", async () => {
+    const { s, resolvedAt } = await resolvedLead();
+    const later = await s.addEvent({ type: "mcp.tool_call", tool: "update_document", outcome: "conflict", summary: "Auth test failed again", connection: s.claude });
+    await s.t.run((ctx) => ctx.db.patch(later, { createdAt: resolvedAt + 1 }));
+    stubModel(reopen);
+    await s.process();
+    expect(await s.entry("blocker:auth-test")).toMatchObject({ status: "active", updatedBy: { type: "system" } });
   });
 });
 
@@ -1292,7 +1341,7 @@ describe("lib/intel", () => {
         { key: "task:a", title: "AB", content: "ab", status: "completed", evidence: "verified", confidence: 0.9, evidence_event_ids: [], replaces: ["task:b"] },
         { key: "task:c", title: "CD", content: "cd", status: "completed", evidence: "verified", confidence: 0.9, evidence_event_ids: ["ev-task:c"], replaces: ["task:d", "task:a"] },
       ],
-    }, section, true);
+    }, section);
     // Mixing completed and active work would demote task:a: the merge is refused.
     expect(result.entries.find((e) => e.key === "task:a" && e.op === "upsert")).toBeUndefined();
     expect(result.dropped.some((d) => d.includes("different statuses"))).toBe(true);

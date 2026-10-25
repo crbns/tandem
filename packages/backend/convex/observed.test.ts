@@ -167,16 +167,40 @@ describe("sync_workspace observed", () => {
     const resolved = await callTool(t, samAgent.apiKey, "resolve_observation", {
       entry_id: id, expected_revision: lead.revision, note: "Re-ran the auth test; it passes.",
     });
-    expect(resolved).toEqual({ entry_id: id, revision: 2, observed_revision: 2 });
+    expect(resolved).toEqual({ entry_id: id, key: "blocker:auth-test", revision: 2, observed_revision: 2 });
     const row = await t.run((ctx) => ctx.db.get(id));
     expect(row).toMatchObject({ status: "resolved", evidence: "observed", revision: 2 });
+    // The context manager sees the call, and the agent's activity shows it.
+    const logged = await t.run((ctx) => ctx.db.query("activity_events").collect());
+    expect(logged.find((e) => e.tool === "resolve_observation")).toMatchObject({ significant: true, intelStatus: "pending" });
+    const activity = await t.run((ctx) => ctx.db.query("agent_activity").collect());
+    expect(activity.find((a) => a.tool === "resolve_observation")).toMatchObject({
+      kind: "write", summary: "Resolved observed blocker", resource: { type: "context", id },
+    });
     const after = await callTool(t, samAgent.apiKey, "sync_workspace", { since: before.cursor });
     expect(after.observed_changed).toBe(true);
     expect(after.context_version).toBe(before.context_version);
     expect(after.events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "context.corrected", subject_id: id })]));
-    await expect(t.mutation(internal.mcpTools.resolveObservation, {
-      principal: samAgent.principal, workspaceId, entryId: id, expectedRevision: 1, note: "Stale",
-    })).rejects.toThrow();
+    // A stale revision gets observation recovery advice, not a file's.
+    const res = await t.fetch("/mcp", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2025-06-18",
+        Authorization: `Bearer ${samAgent.apiKey}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "resolve_observation", arguments: { entry_id: id, expected_revision: 1, note: "Stale" } },
+      }),
+    });
+    const stale = (await res.json()).result;
+    expect(stale.isError).toBe(true);
+    const text = JSON.stringify(stale);
+    expect(text).toContain("VERSION_CONFLICT");
+    expect(text).toContain("retry resolve_observation with expected_revision=2");
+    expect(text).not.toContain("update_document");
   });
 
   it("reports an empty observed state, labeled, before the context manager has run", async () => {

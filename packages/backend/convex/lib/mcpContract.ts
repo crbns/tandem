@@ -201,6 +201,19 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
     case "INVALID_SOURCE_FILE":
       return fileNotFound(str("fileId") ?? hint.fileId ?? "(unknown)");
     case "VERSION_CONFLICT": {
+      const entryId = str("entryId");
+      if (entryId) {
+        // An observed entry: resolve_observation's lock is its revision.
+        const current = num("currentRevision") ?? 0;
+        const expected = num("expectedRevision") ?? 0;
+        return new ToolError(
+          "VERSION_CONFLICT",
+          `Observation ${entryId} is at revision ${current}, not ${expected}; someone else changed it. ` +
+            `Call sync_workspace to re-read it; if it is still active and your fix still applies, ` +
+            `retry resolve_observation with expected_revision=${current}.`,
+          { entry_id: entryId, current_revision: current, expected_revision: expected },
+        );
+      }
       if (num("currentRevision") !== undefined) {
         // A folder: its optimistic-lock counter is `revision`.
         const folderId = str("folderId") ?? hint.folderId ?? "(unknown)";
@@ -498,6 +511,16 @@ function toContextEntry(e: ContextEntry) {
   };
 }
 
+function toOwnership(e: ContextRow["ownership"][number]) {
+  if (e.ownerUserId !== null && e.ownerArea !== null)
+    return { area: e.ownerArea, owner_user_id: e.ownerUserId };
+  // Legacy free-text entry ("area: owner").
+  const sep = e.text.lastIndexOf(": ");
+  return sep > 0
+    ? { area: e.text.slice(0, sep), owner_user_id: e.text.slice(sep + 2) }
+    : { area: e.text, owner_user_id: "" };
+}
+
 function toContext(c: ContextRow) {
   return {
     goal: c.goal?.text ?? "",
@@ -508,23 +531,7 @@ function toContext(c: ContextRow) {
       decided_at: iso(e.updatedAt),
       source_ids: e.sourceFileIds,
     })),
-    ownership: c.ownership.map((e) => {
-      if (e.ownerUserId !== null && e.ownerArea !== null)
-        return {
-          ...toContextEntry(e),
-          area: e.ownerArea,
-          owner_user_id: e.ownerUserId,
-        };
-      // Legacy free-text entry ("area: owner").
-      const sep = e.text.lastIndexOf(": ");
-      return sep > 0
-        ? {
-            ...toContextEntry(e),
-            area: e.text.slice(0, sep),
-            owner_user_id: e.text.slice(sep + 2),
-          }
-        : { ...toContextEntry(e), area: e.text, owner_user_id: "" };
-    }),
+    ownership: c.ownership.map((e) => ({ ...toContextEntry(e), ...toOwnership(e) })),
     open_questions: c.openQuestions.map((e) => ({
       ...toContextEntry(e),
       created_at: iso(e.updatedAt),
@@ -549,11 +556,7 @@ function toActiveContext(c: ContextRow) {
     decisions: active(c.decisions),
     ownership: c.ownership
       .filter((e) => e.status === "active")
-      .map((e) => ({
-        id: e.id, text: e.text, source_ids: e.sourceFileIds,
-        area: e.ownerArea ?? e.text.split(": ")[0] ?? e.text,
-        owner_user_id: e.ownerUserId ?? "",
-      })),
+      .map((e) => ({ id: e.id, text: e.text, source_ids: e.sourceFileIds, ...toOwnership(e) })),
     open_questions: active(c.openQuestions),
   };
 }

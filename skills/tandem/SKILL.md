@@ -51,8 +51,11 @@ to ask you to sync, read, or save.
    new documents with `create_document` (section 5). That is the whole write
    step: the context manager reads what you save, so teammates' assistants get
    it from `observed` without you publishing. After fixing an issue or
-   disproving a stale lead, call `resolve_observation` with its `id`,
-   `revision` and a short note. Verification alone leaves a valid lead active.
+   disproving a stale lead, call `resolve_observation` with `entry_id` set to
+   the entry's `id`, `expected_revision` set to its `revision`, and a `note`
+   (up to 300 characters) giving the evidence. On `VERSION_CONFLICT`, sync
+   again and retry only if the lead is still active. Verification alone
+   leaves a valid lead active.
 5. **Reply as you would without Tandem, then report.** When you create or edit
    a document, show it to the user in your reply too: the full text for a new
    or short document, the changed sections for a long edit. Tandem keeps the

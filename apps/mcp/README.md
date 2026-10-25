@@ -1,6 +1,6 @@
 # Tandem MCP mock server (eval harness)
 
-> **Not the real MCP server.** Tandem's MCP server is `@convex-dev/mcp` in the Convex deployment, at `https://<deployment>.convex.site/mcp`, with OAuth and API keys (`packages/backend/convex/mcp.ts`, setup in [`docs/local-dev.md`](../../docs/local-dev.md)). This package is an in-memory mock with the same tools except `manage_task` (13), used by the skill eval (`skills/tandem/eval`) and for local tool experiments. It never talks to Convex and never deploys.
+> **Not the real MCP server.** Tandem's MCP server is `@convex-dev/mcp` in the Convex deployment, at `https://<deployment>.convex.site/mcp`, with OAuth and API keys (`packages/backend/convex/mcp.ts`, setup in [`docs/local-dev.md`](../../docs/local-dev.md)). This package is an in-memory mock with the same tools except `manage_task` (14; `resolve_observation` is a stub because the mock records no observations), used by the skill eval (`skills/tandem/eval`) and for local tool experiments. It never talks to Convex and never deploys.
 
 Stateless Streamable HTTP server over `MockBackend`.
 

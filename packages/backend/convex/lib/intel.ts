@@ -41,7 +41,7 @@ const KEY_RE = /^[a-z_]+:[a-z0-9-]{1,60}$/;
 /** Tools whose ok call changes workspace state. */
 export const WRITE_TOOLS = new Set([
   "create_document", "update_document", "create_folder", "move_file", "move_folder",
-  "publish_work", "update_context", "manage_task",
+  "publish_work", "update_context", "manage_task", "resolve_observation",
 ]);
 
 /**
@@ -169,6 +169,7 @@ export const SYSTEM_PROMPT = [
   "Prefer updating an existing entry over creating a new one: reuse the keys given in entries exactly. New keys look like category:short-slug (lowercase letters, digits and dashes).",
   "Emit a coordination entry (severity potential or actual) when two different connections touch the same files or components with diverging objectives, when one changes a decision another depends on, or when work is claimed complete while a blocker is active. Parallel work that does not conflict is at most potential.",
   CONTEXT_CHANGES_RULE,
+  "A resolve_observation call means an assistant fixed or disproved the entry its result key names: keep that entry resolved unless a later event shows the problem again.",
   "Cite only event ids from events, connection ids from connections, member ids from members, and file ids from files.",
   'Reply with JSON only: {"summary": one line, "entries": [{"op": "upsert"|"supersede"|"complete"|"reopen"|"resolve"|"retract", "key", "category", "title", "content", "status", "evidence", "confidence", "evidence_event_ids", "agent_connection_ids", "file_ids", "superseded_by" (key, or ""), "severity" ("potential"|"actual"; read only for coordination), "reason"}], "context_changes": [{"field": "goal"|"decision"|"ownership", "text", "owner_user_id" (a member id for ownership, else ""), "confidence", "evidence_event_ids", "supersedes" (an active decision id, or "")}]}.',
 ].join("\n");
@@ -621,7 +622,9 @@ function validateChanges(
   const changes: ContextChangeOp[] = [];
   const decisionIds = new Set(batch.context.decisions.map((d) => d.id));
   const memberIds = new Set(batch.members.map((m) => m.id));
+  // A goal that differs from the project's is a lead worth showing a person.
   const seen = new Set([
+    ...(batch.context.goal ? [`goal:${normalize(batch.context.goal)}`] : []),
     ...batch.context.decisions.map((d) => `decision:${normalize(d.text)}`),
     ...batch.context.ownership
       .filter((o) => o.ownerUserId)
@@ -639,10 +642,6 @@ function validateChanges(
     const max = field === "ownership" ? MAX_AREA : MAX_CHANGE_TEXT;
     if (!text || text.length > max) {
       dropped.push(`${label}: text must be 1-${max} characters`);
-      continue;
-    }
-    if (field === "goal" && batch.context.goal) {
-      dropped.push(`${label}: project context already has a goal`);
       continue;
     }
     const ownerUserId = str(item.owner_user_id);
@@ -1131,13 +1130,9 @@ export function compactMessage(section: CompactSection): string {
  * protected, each into one item only. It inherits the union of their
  * evidence events and the weakest of their evidence, raised only as far as
  * the strongest folded entry whose events it cites; mixed statuses stay
- * active. decision_supersede becomes at most one decision context change.
+ * active. decision_supersede is never applied.
  */
-export function validateCompaction(
-  raw: unknown,
-  section: CompactSection,
-  allowSupersede: boolean,
-): IntelResult {
+export function validateCompaction(raw: unknown, section: CompactSection): IntelResult {
   const root = obj(raw);
   if (!root || !Array.isArray(root.merged)) throw new IntelParseError();
   const { category } = section;
@@ -1246,27 +1241,9 @@ export function validateCompaction(
     }
   }
 
-  const changes: ContextChangeOp[] = [];
-  const sup = obj(root.decision_supersede);
-  const decisionId = str(sup?.decision_id);
-  if (sup && decisionId && category === "decision") {
-    const text = str(sup.text);
-    const confidence = clamp01(sup.confidence);
-    const current = new Set(section.contextDecisions.map((d) => normalize(d.text)));
-    if (!allowSupersede) dropped.push("decision_supersede: one per run");
-    else if (!section.contextDecisions.some((d) => d.id === decisionId)) dropped.push("decision_supersede: unknown decision");
-    else if (!text || text.length > MAX_CHANGE_TEXT || current.has(normalize(text))) dropped.push("decision_supersede: unusable text");
-    else if (confidence < MIN_CHANGE_CONFIDENCE) dropped.push(`decision_supersede: confidence ${confidence.toFixed(2)} below ${MIN_CHANGE_CONFIDENCE}`);
-    else
-      changes.push({
-        field: "decision",
-        text,
-        confidence,
-        evidenceEventIds: [],
-        fileIds: [],
-        supersedes: decisionId,
-        key: `decision:${slug(text) || "finding"}`,
-      });
-  }
-  return { summary: clip(str(root.summary), 300), entries, changes, dropped };
+  // The schema keeps decision_supersede so older replies still parse; only a
+  // person changes a project decision, so say why one was ignored.
+  if (str(obj(root.decision_supersede)?.decision_id))
+    dropped.push("decision_supersede: ignored; only a person changes project decisions");
+  return { summary: clip(str(root.summary), 300), entries, changes: [], dropped };
 }
