@@ -9,6 +9,7 @@
  */
 
 import type * as activity from "../activity.js";
+import type * as activityLog from "../activityLog.js";
 import type * as agentConnections from "../agentConnections.js";
 import type * as auth from "../auth.js";
 import type * as conflicts from "../conflicts.js";
@@ -19,6 +20,7 @@ import type * as files from "../files.js";
 import type * as folders from "../folders.js";
 import type * as http from "../http.js";
 import type * as intel from "../intel.js";
+import type * as lib_activityLog from "../lib/activityLog.js";
 import type * as lib_agent from "../lib/agent.js";
 import type * as lib_auth from "../lib/auth.js";
 import type * as lib_binaries from "../lib/binaries.js";
@@ -32,6 +34,7 @@ import type * as lib_mcpContract from "../lib/mcpContract.js";
 import type * as lib_mcpLoop from "../lib/mcpLoop.js";
 import type * as lib_names from "../lib/names.js";
 import type * as lib_ops from "../lib/ops.js";
+import type * as lib_redact from "../lib/redact.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as mcp from "../mcp.js";
 import type * as mcpTools from "../mcpTools.js";
@@ -48,6 +51,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   activity: typeof activity;
+  activityLog: typeof activityLog;
   agentConnections: typeof agentConnections;
   auth: typeof auth;
   conflicts: typeof conflicts;
@@ -58,6 +62,7 @@ declare const fullApi: ApiFromModules<{
   folders: typeof folders;
   http: typeof http;
   intel: typeof intel;
+  "lib/activityLog": typeof lib_activityLog;
   "lib/agent": typeof lib_agent;
   "lib/auth": typeof lib_auth;
   "lib/binaries": typeof lib_binaries;
@@ -71,6 +76,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mcpLoop": typeof lib_mcpLoop;
   "lib/names": typeof lib_names;
   "lib/ops": typeof lib_ops;
+  "lib/redact": typeof lib_redact;
   "lib/validators": typeof lib_validators;
   mcp: typeof mcp;
   mcpTools: typeof mcpTools;
