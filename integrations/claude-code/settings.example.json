@@ -1,0 +1,45 @@
+{
+  "env": {
+    "TANDEM_MCP_URL": "https://YOUR-DEPLOYMENT.convex.site/mcp",
+    "TANDEM_API_KEY": "mcp_sk_REPLACE_ME"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node /ABS/PATH/tandem-activity-hook.mjs", "timeout": 5, "async": true }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node /ABS/PATH/tandem-activity-hook.mjs", "timeout": 5, "async": true }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          { "type": "command", "command": "node /ABS/PATH/tandem-activity-hook.mjs", "timeout": 5, "async": true }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          { "type": "command", "command": "node /ABS/PATH/tandem-activity-hook.mjs", "timeout": 5, "async": true }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node /ABS/PATH/tandem-activity-hook.mjs", "timeout": 5, "async": true }
+        ]
+      }
+    ]
+  }
+}
