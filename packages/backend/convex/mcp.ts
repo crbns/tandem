@@ -421,7 +421,8 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "Check list_files first so you don't create a duplicate of an existing file; " +
         "a name already used by a file or folder in the same folder (case-insensitive, surrounding whitespace ignored) fails with NAME_EXISTS. " +
         "If you haven't called sync_workspace in this conversation, do that first. " +
-        "workspace_id defaults to your workspace.",
+        "workspace_id defaults to your workspace. " +
+        "Also show the user the document in full in your reply: Tandem keeps the team's shared copy, it doesn't replace your answer.",
       args: {
         name: v.string(),
         content: v.string(),
@@ -455,7 +456,8 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "Replace a document's full content (not a diff), creating version N+1. expected_version must equal the file.version you last read; " +
         "if someone else changed the file since, this fails with VERSION_CONFLICT and nothing is written. " +
         "On conflict, re-sync with since to see what changed, re-read with read_file, merge your changes into the latest content, and retry with the new version. " +
-        "If you haven't called sync_workspace this session, do that first.",
+        "If you haven't called sync_workspace this session, do that first. " +
+        "Also show the user the document in your reply (in full, or the changed sections of a long edit): Tandem keeps the team's shared copy, it doesn't replace your answer.",
       args: { file_id: v.string(), content: v.string(), expected_version: v.number() },
       // Idempotent: a retry with the same expected_version can't apply twice.
       annotations: write(true),

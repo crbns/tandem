@@ -65,8 +65,12 @@ to ask you to sync, read, save, or publish.
    `pending_proposals` lists every pending proposal; the brief's
    `blockers.pending_approvals` shows at most 10. Don't re-propose what you
    already proposed before the work.
-7. **Report** in one line what you read, saved, published and proposed, with
-   paths and versions, and anything you skipped and why.
+7. **Reply as you would without Tandem, then report.** When you create or edit
+   a document, show it to the user in your reply too: the full text for a new
+   or short document, the changed sections for a long edit. Tandem keeps the
+   team's shared copy; it doesn't replace your answer in this chat. Then say in
+   one line what you read, saved, published and proposed, with paths and
+   versions, and anything you skipped and why.
 
 Skip the `publish_work` log only when the request was a pure lookup that just
 restates what's already in the workspace (like "what's our goal?"), the
@@ -215,8 +219,10 @@ Someone else saved a newer version since you read it.
   same name, changes nothing. Move or rename only when the user asks; never
   reorganize teammates' files or folders on your own initiative.
 - `create_document` and `update_document` write canonical workspace files that
-  every workspace member can see immediately. Say so. Never tell the user a
-  file you saved is private, a draft, or invisible to teammates.
+  every workspace member can see immediately. Say so, and still show the
+  document in your reply: saving it to Tandem is in addition to answering the
+  user, not instead of it. Never tell the user a file you saved is private, a
+  draft, or invisible to teammates.
 
 ## 6. Publish work
 
