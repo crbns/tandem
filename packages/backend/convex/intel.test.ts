@@ -753,6 +753,60 @@ describe("context manager: documents", () => {
     expect(await s.event(e1)).toMatchObject({ intelStatus: "processed" });
   });
 
+  it("keeps one record per fact: no activity knowledge about a digested doc, no decision entry beside its proposal", async () => {
+    const s = await setup();
+    const fileId = await addDoc(s, "rfc.md", "# RFC\nWe will use Postgres with Drizzle for all data.\n");
+    await saved(s, fileId);
+    stubModel(
+      (data) => ({
+        summary: "Created rfc.md",
+        entries: [entryJson({
+          key: "knowledge:rfc-created", category: "knowledge", title: "rfc.md created",
+          content: "The preview shows background only.", evidence_event_ids: [data.events.at(-1).id], file_ids: [fileId],
+        })],
+        proposals: [],
+      }),
+      undefined,
+      {
+        digest: (data) => ({
+          digest: "RFC: Postgres with Drizzle for all data.",
+          entries: [entryJson({
+            key: "decision:postgres-drizzle", category: "decision", title: "Postgres with Drizzle",
+            content: "The RFC uses Postgres with Drizzle for all data.", evidence_event_ids: data.event_ids, file_ids: [fileId],
+          })],
+          proposals: [{
+            field: "decision", text: "Use Postgres with Drizzle for all persistent data.", rationale: "rfc.md says so.",
+            confidence: 0.8, evidence_event_ids: data.event_ids, supersedes: "",
+          }],
+        }),
+      },
+    );
+    await s.process();
+    const keys = (await s.entries()).filter((e) => e.status !== "superseded").map((e) => e.key);
+    expect(keys).toContain(docKey(fileId));
+    expect(keys).not.toContain("knowledge:rfc-created");
+    expect(keys).not.toContain("decision:postgres-drizzle");
+    const decisions = (await s.entries()).filter((e) => e.category === "decision");
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]!.proposalId).toBeDefined();
+  });
+
+  it("a digest finding that cites no event ids is backed by the document's own events", async () => {
+    const s = await setup();
+    const fileId = await addDoc(s, "rfc.md", "# RFC\nWe will use Postgres for all data.\n");
+    const e1 = await saved(s, fileId);
+    stubModel(noActivity, undefined, {
+      digest: () => ({
+        digest: "RFC: Postgres for all data.",
+        entries: [entryJson({ key: "task:pick-migration-owner", category: "task", title: "Pick a migration owner", evidence_event_ids: [] })],
+        proposals: [{ field: "decision", text: "Use Postgres for all persistent data.", rationale: "rfc.md.", confidence: 0.8, evidence_event_ids: [], supersedes: "" }],
+      }),
+    });
+    await s.process();
+    expect(await s.entry("task:pick-migration-owner")).toMatchObject({ evidenceEventIds: [e1] });
+    expect((await s.runs()).at(-1)).toMatchObject({ proposals: 1 });
+  });
+
   it("8 documents saved in one batch: 8 digest calls, 8 knowledge:doc entries, none left out", async () => {
     const s = await setup();
     const ids: Id<"files">[] = [];

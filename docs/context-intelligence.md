@@ -1,9 +1,11 @@
 # Context intelligence: autonomous, event-driven workspace context
 
-Assistants do their work; Tandem watches what it is authorized to see, and a
-Haiku-powered context manager keeps a structured, evidence-backed picture of
-the workspace that every assistant receives through the existing
-`sync_workspace` loop.
+Assistants do their work and save their documents; Tandem watches what it is
+authorized to see, and a Haiku-powered context manager reads each document in
+full, interprets the activity, and keeps one compacted, evidence-backed
+picture of the workspace that every assistant receives through the existing
+`sync_workspace` loop. Assistants no longer write progress notes, findings or
+"what this file shows" proposals: they sync, read, work and save files.
 
 ```
 Connected assistants ──► ingestion ──► activity_events (raw, redacted, append-only)
@@ -11,10 +13,13 @@ Connected assistants ──► ingestion ──► activity_events (raw, redacte
   Claude Code hooks (POST /activity/claude-code)│  requestIntelRun (debounced)
   Workspace file changes (recordWorkspaceEvent) ▼
                                    intel.processWorkspace (Convex action)
-                                    bounded batch + relevant entries
-                                    ──► Haiku (CONTEXT_MODEL) structured JSON
+                                    activity call + one digest call per
+                                    changed document (full text, cached
+                                    system prompt) ──► Haiku (CONTEXT_MODEL)
                                     ──► schema validation + evidence rules
                                     ──► one transactional apply mutation
+                                    ──► per-section compaction over a size
+                                        threshold (merge + supersede)
                                            │
               ┌────────────────────────────┼─────────────────────────────┐
               ▼                            ▼                             ▼
@@ -24,7 +29,7 @@ Connected assistants ──► ingestion ──► activity_events (raw, redacte
    summaries, coordination         detection + human approval)
               │
               ▼
-   sync_workspace `observed` section (brief + full) ──► every assistant
+   sync_workspace `observed`: compacted, slim, sent only when it changed ──► every assistant
    Dashboard: Live activity feed, observed state, change history, evidence
 ```
 
@@ -103,36 +108,72 @@ quality depended entirely on assistants remembering to write it.
 - **Workspace changes:** `recordWorkspaceEvent` mirrors `file.*` events and
   human context decisions into `activity_events` with the file id and
   version. Events by `INTEL_ACTOR` or the conflict check are never mirrored
-  (no feedback loop). The context manager computes bounded line diffs between
-  versions (`lib/diff.ts`) instead of re-reading whole documents.
+  (no feedback loop). The context manager reads the changed documents
+  themselves (see Document digests).
+- **Existing documents:** the first run in a workspace backfills one
+  `file.backfill` event per live text file (`context_intel_state.backfilledAt`,
+  200 files per mutation with a continuation; dedupe key
+  `backfill:<fileId>:v<version>`), so documents that predate the context
+  manager are read too. Owners/admins can re-run it from the dashboard
+  ("Read existing documents", `intelligence.backfillDocuments`).
 
 ### Processing rules
 
 1. `requestIntelRun` schedules `processWorkspace` after
    `INTEL_BATCH_WINDOW_MS` (default 5 s) unless already scheduled/running.
-2. The action claims the workspace (lease), loads ≤ 40 pending events
+2. The action claims the workspace (lease, 6 min), loads ≤ 40 pending events
    (oldest first), the active entries (≤ 60, newest first), approved
-   goal/decisions and pending proposals, and bounded diffs for changed files.
-3. Haiku is called with untrusted data inside `<data>` and must return JSON:
+   goal/decisions and pending proposals.
+3. **Document digests.** Every text file the batch touched (`file.created`,
+   `file.updated`, `file.restored`, `file.backfill`; deduped per file,
+   current version; binaries and deleted files skipped; ≤ 12 per batch, the
+   rest stay pending for the next one) gets its own call with the file's full
+   text (up to 24 KB; beyond that the first 18 KB, a `[middle omitted]`
+   marker and the last 4 KB), its previous digest, and the approved context.
+   The result is one `knowledge:doc-<id>` entry per file (≤ 800 characters,
+   with a `sourceHash`: an unchanged file is never re-sent) plus the goals,
+   decisions, tasks and blockers the document states. A finding that cites no
+   event is backed by the document's own events. Calls run 4 at a time; any
+   failure fails the run, so no event is processed without its document
+   being read. The activity call never sees document text.
+4. The activity call gets the events (untrusted data inside `<data>`) and must return JSON:
    `{ summary, entries: [{ op: "upsert"|"supersede"|"complete"|"reopen"|"resolve"|"retract", key, category, title, content, status, evidence, confidence, evidence_event_ids, agent_connection_ids, file_ids, superseded_by?, severity? }], proposals: [{ field: "goal"|"decision", text, rationale, evidence_event_ids, supersedes? }] }`.
-4. Validation is deterministic: unknown ops/categories dropped, ids must be
+5. Validation is deterministic: unknown ops/categories dropped, ids must be
    from the batch / workspace, text clamped, confidence clamped, `completed`
    downgraded to `active` + `claimed` unless the evidence includes a verified
    signal (successful test/build/deploy tool result, or a human), entries
    below 0.35 confidence dropped, proposals below 0.5 dropped. Which events
    count as verified is computed deterministically and handed to the model
-   as `evidence_signal`, so it never has to guess.
-5. One mutation applies everything, guarded by `entriesRevision` read at load
+   as `evidence_signal`, so it never has to guess. One record per fact: the
+   activity call's knowledge entries about a digested document, and decision
+   or goal entries that restate a proposal, are dropped (the digest and the
+   proposal's companion entry are the records).
+6. One mutation applies everything, guarded by `entriesRevision` read at load
    (stale ⇒ retry the batch once against fresh state), writes revisions,
    marks the batch processed, bumps `entriesRevision`, records a
    `context.observed` workspace event, and raises goal/decision findings via
-   `proposeContextChangeCore` with `INTEL_ACTOR` (≤ 2 per run, each tracked
+   `proposeContextChangeCore` with `INTEL_ACTOR` (≤ 4 per run, at most one
+   superseding an approved decision, each tracked
    by a companion `goal:`/`decision:` entry carrying `proposalId`; dedupe and
    `ALREADY_IN_CONTEXT` are swallowed). Those proposals go through the
    existing structural + semantic conflict detection and stay pending for a
    person (or apply at once in automatic workspaces, exactly like an
    assistant's proposal).
-6. Failures: provider errors/timeouts/unparseable output mark the run failed,
+7. **Compaction.** After an apply that changed something (model mode), every
+   section whose live entries pass its threshold (goal 2, objective 2,
+   decision 6, task 8, progress 6, blocker 6, knowledge 10 excluding
+   digests, coordination 4) is compacted in one call: merged entries are
+   upserted and folded ones superseded (`superseded_by`), in one mutation
+   guarded by `entriesRevision`. A merge keeps the union of evidence and the
+   weakest evidence it folds; entries a person confirmed or corrected are
+   never folded. For approved context, the only compaction is one
+   `supersedes` proposal per run for an approved decision a newer one
+   replaces; goal, scope, decisions and ownership still change only through a
+   human-approved proposal.
+8. **Prompt caching.** All three calls send the system prompt as a cached
+   block (`cache_control: ephemeral`); cache reads count toward the run's
+   input tokens.
+9. Failures: provider errors/timeouts/unparseable output mark the run failed,
    leave events pending, and back off (`30s × 2^n`, max 10 min). After 5
    consecutive failures automatic retries stop; the next significant event
    or the dashboard's Run now starts a fresh attempt. A reply cut off at
@@ -144,12 +185,39 @@ quality depended entirely on assistants remembering to write it.
 
 ### Consumption
 
-`sync_workspace` gains `observed` (both details): `revision`
-(`entriesRevision`), `updated_at`, and entries grouped by category with
-`evidence`, `confidence`, `status`, the assistants involved and
-`evidence_count`. It is labeled as *observed, not approved*: only `context`
-is authoritative. Brief mode caps it. A `context.observed` event appears in
-`recent_changes`/`events` so assistants syncing with `since` notice it.
+`sync_workspace` gains `observed`, the compacted summary assistants read
+instead of skimming recent work and events: `revision` (`entriesRevision`),
+`updated_at`, a one-line note (not approved; claimed ≠ done) and slim
+entries `{ key, category, title, content, status, evidence, confidence,
+agents (labels), updated_at }`. Full: ≤ 30 entries, content ≤ 400, no
+superseded history. Brief: ≤ 10, content ≤ 160, blockers and active work
+first, document digests last. Snapshots always include it; with `since` it
+is sent only when the page holds a `context.observed` or `context.corrected`
+event (otherwise `observed_changed: false`). In brief mode, when the
+workspace has observed context, `recent_work` shrinks to titles (no
+summaries).
+
+### Agent loop
+
+Sync (brief first; read `observed`) → read the files the task touches → work
+→ save files with `create_document` / `update_document` → reply. Removed:
+`publish_work` on every request, proposals before and after the work, and
+seeding empty context; the context manager does that from the saved files and
+activity. `publish_work` is only for a deliverable the user wants announced,
+and `propose_context_change` only for a change the user directs.
+
+### Measured (`syncBudget.test.ts`, realistic workspace)
+
+| | Before this PR | PR as first reviewed | Now |
+| --- | --- | --- | --- |
+| Brief sync | 22.6 KB | 33.1 KB | 15.7 KB (budget 18 KB) |
+| Full sync | — | 95 KB | 69 KB |
+| Writes per edit request | save + publish + proposals | same | save |
+| `MCP_INSTRUCTIONS` | 1285 chars | | 1189 chars |
+| Sync `next_steps` | 7 lines / 1708 chars | | 4 lines / 675 chars |
+
+A live run (local backend, real model) gave a 3–4.5 KB brief sync and a
+1.3 KB `since` sync with nothing new.
 
 ## Configuration
 
@@ -204,6 +272,11 @@ replays `demo-events.jsonl` (labeled simulated everywhere).
 - `activity_events` follows the 14-day `agent_activity` retention, so evidence
   links on old entries can dangle.
 - Model output varies: confidence on contradicting decisions is ~0.6, which
-  is why the proposal gate is 0.5. Duplicate-ish entries can still appear and
-  can be retracted on the dashboard.
-- The context manager runs per workspace, one batch at a time (≤ 40 events).
+  is why the proposal gate is 0.5. Compaction folds near-duplicates once a
+  section passes its threshold; below it they can be retracted on the
+  dashboard.
+- The context manager runs per workspace, one batch at a time (≤ 40 events,
+  ≤ 12 documents).
+- Approved sections are compacted only one superseded decision at a time; a
+  proposal type that merges several approved entries at once doesn't exist.
+- Documents over 24 KB are read as head and tail, not in full.

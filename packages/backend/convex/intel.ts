@@ -1204,6 +1204,19 @@ async function analyzeDocument(doc: DocumentInput, batch: Batch): Promise<Analys
   return { result: validateDigest(reply.raw, doc, batch), ...usageOf(reply) };
 }
 
+const words = (text: string) =>
+  new Set(normalize(text).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3));
+
+/** Most of the shorter text's words appear in the longer one. */
+function similar(a: string, b: string): boolean {
+  const [x, y] = [words(a), words(b)];
+  const [small, large] = x.size <= y.size ? [x, y] : [y, x];
+  if (small.size === 0) return false;
+  let shared = 0;
+  for (const w of small) if (large.has(w)) shared++;
+  return shared / small.size >= 0.6;
+}
+
 /**
  * The activity call and every digest call, CONCURRENCY at a time. Any failure
  * fails the whole analysis, so no event is marked processed unless every
@@ -1242,6 +1255,24 @@ async function analyze(batch: Batch): Promise<Analysis> {
       seen.add(id);
       if (p.supersedes !== undefined) superseding = true;
       proposals.push(p);
+    }
+  }
+  // The prompts ask for this too, but the model doesn't reliably comply:
+  // a document's digest is its knowledge record (the activity call only saw a
+  // preview), and a proposal's companion entry is its decision/goal record.
+  const digested = new Set(batch.documents.map((d) => d.fileId as string));
+  const activityKeys = new Set(activity?.result.entries.map((e) => e.key) ?? []);
+  for (const e of [...entries.values()]) {
+    const aboutDigested =
+      activityKeys.has(e.key) && e.category === "knowledge" &&
+      e.fileIds.length > 0 && e.fileIds.every((id) => digested.has(id));
+    const proposed =
+      (e.category === "decision" || e.category === "goal") &&
+      !proposals.some((p) => p.key === e.key) &&
+      proposals.some((p) => p.field === e.category && similar(p.text, `${e.title} ${e.content}`));
+    if (aboutDigested || proposed) {
+      entries.delete(e.key);
+      dropped.push(`${e.key}: ${aboutDigested ? "the document's digest covers it" : "covered by its proposal"}`);
     }
   }
   const read = batch.documents.length;

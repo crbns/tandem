@@ -218,6 +218,21 @@ function clip(text: string, max: number): string {
 }
 
 /** The <data> payload, shrunk until it fits MAX_DATA_CHARS. */
+/**
+ * The activity call never sees document text (not even the logged preview):
+ * the per-document digest reads the whole file, and a preview only leads the
+ * model to describe a document from its first lines.
+ */
+function withoutDocumentText(e: BatchEvent): string {
+  if (e.type !== "mcp.tool_call" || (e.tool !== "create_document" && e.tool !== "update_document"))
+    return e.payload ?? "";
+  const payload = parsePayload(e.payload);
+  const args = obj(payload?.args);
+  if (!payload || !args || !("content" in args)) return e.payload ?? "";
+  const { content: _content, ...rest } = args;
+  return JSON.stringify({ ...payload, args: rest });
+}
+
 export function buildData(batch: IntelBatch): string {
   const fileName = new Map(batch.files.map((f) => [f.id, f.name]));
   // Computed here, not by the model: which events validation will accept as
@@ -253,7 +268,7 @@ export function buildData(batch: IntelBatch): string {
       ...(e.fileIds.length
         ? { files: e.fileIds.map((id) => ({ id, name: fileName.get(id) ?? "" })) }
         : {}),
-      ...(e.payload && payloadMax > 0 ? { payload: clip(e.payload, payloadMax) } : {}),
+      ...(e.payload && payloadMax > 0 ? { payload: clip(withoutDocumentText(e), payloadMax) } : {}),
     })),
   });
   const steps: [number, number, number][] = [
@@ -897,7 +912,23 @@ export function validateDigest(raw: unknown, doc: DocumentInput, batch: IntelBat
     events: batch.events.filter((e) => events.has(e.id)),
     files: batch.files.filter((f) => f.id === doc.fileId),
   };
-  const result = validateIntelOutput({ summary: "", entries: root.entries, proposals: root.proposals }, scoped);
+  // The document is the evidence for what it states: a finding that cites
+  // none of this file's events gets them, instead of being dropped as
+  // unsupported (the model often leaves evidence_event_ids empty here).
+  const cite = (item: unknown) => {
+    const o = obj(item);
+    if (!o) return item;
+    const cited = ids(o.evidence_event_ids).filter((id) => events.has(id));
+    return { ...o, evidence_event_ids: cited.length > 0 ? cited : doc.eventIds };
+  };
+  const result = validateIntelOutput(
+    {
+      summary: "",
+      entries: root.entries.map(cite),
+      proposals: Array.isArray(root.proposals) ? root.proposals.map(cite) : root.proposals,
+    },
+    scoped,
+  );
   const digest = clip(str(root.digest), MAX_DIGEST) || doc.previous?.content || `${doc.name} (no summary)`;
   return {
     summary: `Read ${doc.name} v${doc.version}`,
