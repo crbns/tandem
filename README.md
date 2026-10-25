@@ -4,6 +4,14 @@ Shared workspace files and project context for people and the assistants they us
 
 Live app: https://tandem-pink.vercel.app
 
+## How we use Convex
+
+- Every file save is a Convex mutation guarded by `expectedVersion`, so stale writes return `VERSION_CONFLICT` instead of overwriting.
+- The remote MCP server and its OAuth run inside Convex HTTP actions through the `@convex-dev/mcp` component.
+- The dashboard's file list, Overview, Live and Context screens update live from reactive Convex queries.
+- Scheduled functions and actions run the claude-haiku-5-5 context manager; file storage holds uploads.
+- Feature-by-feature evidence and the build log are in [hackathon.md](hackathon.md).
+
 ## Run locally
 
 Install dependencies once:
