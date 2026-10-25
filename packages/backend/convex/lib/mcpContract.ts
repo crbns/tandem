@@ -4,6 +4,7 @@
 // and error codes as before. Pure functions: no ctx, no database.
 import { ConvexError, type Value } from "convex/values";
 import type { Doc } from "../_generated/dataModel";
+import { briefObserved, OBSERVED_NOTE, type Observed } from "./observed";
 
 type Actor = Doc<"workspace_events">["actor"];
 
@@ -633,10 +634,45 @@ type SyncRow = {
   workTruncated: boolean;
   tasks: TaskRow[];
   tasksTruncated: boolean;
+  observed: Observed;
   events: EventRow[];
   eventsTruncated: boolean;
   cursorSeq: number;
 };
+
+/**
+ * lib/observed.ts in the tool contract. `note` travels with every copy so an
+ * assistant never mistakes derived state for approved context.
+ */
+function toObserved(o: Observed) {
+  return {
+    note: OBSERVED_NOTE,
+    revision: o.revision,
+    updated_at: isoOrNull(o.updatedAt),
+    last_run_at: isoOrNull(o.lastRunAt),
+    entries: o.entries.map((e) => ({
+      key: e.key,
+      category: e.category,
+      title: e.title,
+      content: e.content,
+      status: e.status,
+      evidence: e.evidence,
+      confidence: e.confidence,
+      agents: e.agents.map((a) => ({
+        agent_connection_id: a.agentConnectionId,
+        label: a.label,
+        client: a.client,
+        user_name: a.userName,
+      })),
+      file_ids: e.fileIds,
+      evidence_count: e.evidenceCount,
+      updated_at: iso(e.updatedAt),
+      superseded_by: e.supersededBy,
+      proposal_id: e.proposalId,
+    })),
+    truncated: o.truncated,
+  };
+}
 
 /** Cap on each list in the sync brief. */
 export const BRIEF_LIMIT = 10;
@@ -707,6 +743,8 @@ function toSyncBrief(r: SyncRow) {
       at: iso(e.createdAt),
     })),
     changed_file_count: r.changedFiles.length,
+    // Derived, not approved; capped on its own, so `truncated` below ignores it.
+    observed: toObserved(briefObserved(r.observed)),
     truncated:
       decisions.length > BRIEF_LIMIT ||
       questions.length > BRIEF_LIMIT ||
@@ -770,6 +808,7 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
     work_truncated: r.workTruncated,
     tasks: r.tasks.map(toTask),
     tasks_truncated: r.tasksTruncated,
+    observed: toObserved(r.observed),
     events: r.events.map((e) => ({
       seq: e.seq,
       workspace_id: r.workspace.id,

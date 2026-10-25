@@ -23,6 +23,7 @@ import {
   toResolvedConflict,
 } from "./conflicts";
 import { nameKey } from "./names";
+import { loadObservedContext } from "./observed";
 
 export { toFileMetadata };
 
@@ -1279,6 +1280,9 @@ export async function syncCore(
     workTruncated: work.length > SYNC_WORK_LIMIT,
     tasks: await Promise.all(tasks.map((task) => toTask(ctx, task))),
     tasksTruncated,
+    // Always the current derived state, in snapshots and with since: it is
+    // small and bounded, and its revision tells the assistant whether it moved.
+    observed: await loadObservedContext(ctx, workspaceId, { brief: false }),
     events: events.map(toEvent),
     eventsTruncated,
     headSeq,

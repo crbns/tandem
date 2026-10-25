@@ -3021,7 +3021,7 @@ describe("sync brief and server instructions", () => {
     expect(Object.keys(sync).at(-1)).toBe("next_steps");
     expect(next_steps).toEqual(syncNextSteps({ contextEmpty: false }));
     expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "pending_proposals", "resolved_conflicts", "changed_files", "files_truncated", "folders", "folders_truncated",
-      "recent_work", "work_truncated", "tasks", "tasks_truncated", "events", "events_truncated", "cursor"]);
+      "recent_work", "work_truncated", "tasks", "tasks_truncated", "observed", "events", "events_truncated", "cursor"]);
     const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
     expect(rest.workspace).toEqual({ id: workspaceId, name: "Demo" });
     expect(rest.context_version).toBe(raw.context.revision);
