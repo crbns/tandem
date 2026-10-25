@@ -34,7 +34,7 @@ export function EntryHistoryDialog({
           <DialogTitle>{resource.status === "ready" ? resource.data.entry.title : "Entry history"}</DialogTitle>
           <DialogDescription>
             {resource.status === "ready"
-              ? `Observed ${CATEGORY_NOUN[resource.data.entry.category]}, revision ${resource.data.entry.revision}. Observed context is derived from activity; it is not approved context.`
+              ? `Observed ${CATEGORY_NOUN[resource.data.entry.category]}, revision ${resource.data.entry.revision}. Observed context is derived from activity; it is not project context.`
               : "How this observed entry changed, and the activity behind it."}
           </DialogDescription>
         </DialogHeader>
@@ -55,7 +55,7 @@ export function EntryHistoryDialog({
                 Evidence ({resource.data.evidence.length})
               </h3>
               {resource.data.evidence.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No recorded events are cited. Entries confirmed by a person or seeded from approved context have none.</p>
+                <p className="text-sm text-muted-foreground">No recorded events are cited. Entries confirmed by a person or seeded from project context have none.</p>
               ) : (
                 <ol className="overflow-hidden rounded-sm border">
                   {resource.data.evidence.map((event) => (

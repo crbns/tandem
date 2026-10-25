@@ -27,33 +27,6 @@ export function describeError(error: TandemApiError, overrides: Partial<Record<A
   return overrides[error.code] ?? ERROR_COPY[error.code].description;
 }
 
-/** Copy for deciding a proposal, where VERSION_CONFLICT means the context moved on. */
-export const DECIDE_ERROR_COPY: Partial<Record<ApiErrorCode, { title: string; description: string }>> = {
-  VERSION_CONFLICT: {
-    title: "The context changed since this was proposed",
-    description:
-      "Someone approved a different change to this field first, so approving this one would overwrite it. It's now marked stale; ask for a fresh proposal based on the current value.",
-  },
-  FORBIDDEN: {
-    title: "Only owners and admins can decide",
-    description: "You can read proposals, but a workspace owner or admin has to approve or reject them.",
-  },
-  PROPOSAL_CHANGED: {
-    title: "This proposal changed while you were looking",
-    description:
-      "A conflict check finished or the proposal was updated after you opened it. Nothing was decided; review the refreshed card and decide again.",
-  },
-  CONFLICT_CHECK_PENDING: {
-    title: "The conflict check isn't done yet",
-    description:
-      "Tandem is still comparing this proposal with the approved context. Wait for the verdict, or check again if it seems stuck. You can reject it now.",
-  },
-  PROPOSAL_DECIDED: {
-    title: "Someone already decided this",
-    description: "Another owner or admin settled it first, so your choice wasn't applied. The list shows where it stands now.",
-  },
-};
-
 /** User-facing copy for each error code. Components never show raw messages. */
 export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: string }> = {
   LIST_LIMIT_EXCEEDED: { title: "File list is too large", description: "Tandem can load up to 10,000 files across 100 pages at once. The server returned more pages than this view can load; no partial list is shown." },
@@ -102,24 +75,8 @@ export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: stri
     description: "Sign in again to continue. Your unsaved text is kept.",
   },
   APPROVAL_REQUIRED: {
-    title: "Needs approval",
-    description: "This change needs a workspace member's approval before it applies.",
-  },
-  PROPOSAL_DECIDED: {
-    title: "Already decided",
-    description: "Someone decided this proposal before you did, or it was withdrawn. The list shows where it stands now.",
-  },
-  PROPOSAL_CHANGED: {
-    title: "Proposal changed",
-    description: "It was updated after you opened it. Review the latest version and try again.",
-  },
-  CONFLICT_CHECK_PENDING: {
-    title: "Still checking for conflicts",
-    description: "Wait for the conflict check to finish before approving.",
-  },
-  ALREADY_IN_CONTEXT: {
-    title: "Already in the context",
-    description: "This exact entry is already approved, so there's nothing to add.",
+    title: "Sign in as yourself",
+    description: "This needs a signed-in person with a verified account. An assistant's connection can't do it.",
   },
   REQUEST_EXPIRED: {
     title: "This request expired",

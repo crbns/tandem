@@ -1,42 +1,42 @@
 {
-  "description": "Fresh-chat auto-invocation prompts. Project prompts come verbatim from COMPATIBILITY.md and never mention Tandem, the workspace, or MCP. Controls are unrelated to any project; tool calls are not wanted there. Prompts with \"conflict\": true get the harness's teammate injector, and prompts with \"folders\" get the fixtures FOLDER_SEED tree and a folder grader, and prompts with \"loop\" get a loop grader: required steps need a successful call and forbidden steps must not be attempted, so an ordinary edit or draft forbids publish_work and propose_context_change (see run.mjs).",
+  "description": "Fresh-chat auto-invocation prompts. Project prompts come verbatim from COMPATIBILITY.md and never mention Tandem, the workspace, or MCP. Controls are unrelated to any project; tool calls are not wanted there. Prompts with \"conflict\": true get the harness's teammate injector, and prompts with \"folders\" get the fixtures FOLDER_SEED tree and a folder grader, and prompts with \"loop\" get a loop grader: required steps need a successful call and forbidden steps must not be attempted, so an ordinary edit or draft forbids publish_work and update_context (see run.mjs).",
   "prompts": [
     {
       "id": "p1-launch-brief",
       "kind": "project",
       "text": "Draft a one-page brief for our launch plan that I can share with the team.",
-      "expected": "sync, then create_document; no publish_work or propose_context_change",
-      "loop": { "require": ["sync", "save"], "forbid": ["publish", "propose"] }
+      "expected": "sync, then create_document; no publish_work or update_context",
+      "loop": { "require": ["sync", "save"], "forbid": ["publish", "context"] }
     },
     {
       "id": "p2-goal-owners",
       "kind": "project",
       "text": "What's our current project goal, and who owns which parts?",
       "expected": "sync; read-only",
-      "loop": { "require": ["sync"], "forbid": ["save", "publish", "propose"] }
+      "loop": { "require": ["sync"], "forbid": ["save", "publish", "context"] }
     },
     {
       "id": "p3-status-update",
       "kind": "project",
       "text": "Write this week's status update for the project.",
-      "expected": "sync, then create_document; no publish_work or propose_context_change",
-      "loop": { "require": ["sync", "save"], "forbid": ["publish", "propose"] }
+      "expected": "sync, then create_document; no publish_work or update_context",
+      "loop": { "require": ["sync", "save"], "forbid": ["publish", "context"] }
     },
     {
       "id": "p4-cut-mobile",
       "kind": "project",
       "text": "We've decided to cut the mobile app from v1. Can you record that?",
-      "expected": "sync; propose_context_change reported as pending",
-      "loop": { "require": ["sync", "propose"], "forbid": ["publish"] }
+      "expected": "sync; update_context records the decision, reported as applied",
+      "loop": { "require": ["sync", "context"], "forbid": ["publish"] }
     },
     {
       "id": "p5-tighten-intro",
       "kind": "project",
       "text": "Tighten up the intro section of our spec.",
-      "expected": "sync; read_file then update_document with expected_version; no publish_work or propose_context_change. The bare env has no spec, so asking which file to edit (no save) is correct there",
+      "expected": "sync; read_file then update_document with expected_version; no publish_work or update_context. The bare env has no spec, so asking which file to edit (no save) is correct there",
       "loop": {
         "require": ["sync", "read"],
-        "forbid": ["publish", "propose"]
+        "forbid": ["publish", "context"]
       }
     },
     {
@@ -45,7 +45,7 @@
       "conflict": true,
       "text": "Tighten the intro paragraph of our project brief and save the change.",
       "expected": "read_file, update_document hits VERSION_CONFLICT (teammate edit injected), re-read, merge keeping the teammate's line, retry once",
-      "loop": { "require": ["read", "save"], "forbid": ["publish", "propose"] }
+      "loop": { "require": ["read", "save"], "forbid": ["publish", "context"] }
     },
     {
       "id": "p7-create-document",
@@ -54,7 +54,7 @@
       "expected": "read_file, then successful create_document; a duplicate name on later persistent-server repetitions may require a new name",
       "loop": {
         "require": ["sync", "read", "save"],
-        "forbid": ["publish", "propose"]
+        "forbid": ["publish", "context"]
       }
     },
     {
@@ -63,7 +63,7 @@
       "folders": { "expect": "create_in", "folder": "/meeting-notes" },
       "text": "Save notes from today's standup for the team: Sam shipped the version history panel, Alex finished the OAuth flow, Priya has no blockers. You have my permission to save this document for the team.",
       "expected": "list_files/sync shows /meeting-notes; create_document with folder_path \"/meeting-notes\" (or its parent_id), not the root",
-      "loop": { "require": ["sync", "save"], "forbid": ["publish", "propose"] }
+      "loop": { "require": ["sync", "save"], "forbid": ["publish", "context"] }
     },
     {
       "id": "p9-folder-new",
@@ -75,7 +75,7 @@
       },
       "text": "Start a retrospective doc for this sprint in a new retros folder, with sections for what went well, what didn't, and action items. You have my permission to save it for the team.",
       "expected": "create_folder { path: \"/retros\" }, then create_document with folder_path \"/retros\"",
-      "loop": { "require": ["sync", "save"], "forbid": ["publish", "propose"] }
+      "loop": { "require": ["sync", "save"], "forbid": ["publish", "context"] }
     },
     {
       "id": "p10-read-path",
@@ -83,7 +83,7 @@
       "folders": { "expect": "read", "path": "/specs/api-spec.md" },
       "text": "What rate limit does our API spec at /specs/api-spec.md set for clients?",
       "expected": "read_file { path: \"/specs/api-spec.md\" } (or its file_id); answer states 120 requests per minute",
-      "loop": { "require": ["read"], "forbid": ["save", "publish", "propose"] }
+      "loop": { "require": ["read"], "forbid": ["save", "publish", "context"] }
     },
     {
       "id": "c1-capital",

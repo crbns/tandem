@@ -33,7 +33,7 @@ export function TeamDoingCard({ workspaceId }: { workspaceId: string }) {
       {resource.status === "loading" && <Skeleton className="h-24" aria-label="Loading observed work" />}
       {resource.status === "error" && <ErrorState error={resource.error} onRetry={retry} />}
       {resource.status === "ready" && <Groups entries={resource.data.entries} />}
-      <p className="text-xs text-muted-foreground">Observed from recorded activity by the context manager; not approved context.</p>
+      <p className="text-xs text-muted-foreground">Observed from recorded activity by the context manager; not project context.</p>
     </section>
   );
 }

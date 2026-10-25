@@ -174,20 +174,18 @@ const systemText = (system: unknown) =>
   Array.isArray(system) ? system.map((b: { text: string }) => b.text).join("") : (system as string);
 const sentData = (body: any) => JSON.parse((body.messages[0].content as string).slice("<data>".length, -"</data>".length));
 
-const defaultDigest: Stub = (data) => ({ digest: `Digest of ${data.document.name}.`, entries: [], proposals: [] });
+const defaultDigest: Stub = (data) => ({ digest: `Digest of ${data.document.name}.`, entries: [], context_changes: [] });
 const noCompaction: Stub = () => ({
-  summary: "", merged: [], approved_supersede: { decision_id: "", text: "", rationale: "", confidence: 0 },
+  summary: "", merged: [], decision_supersede: { decision_id: "", text: "", confidence: 0 },
 });
 
 /**
  * Stubs the Messages API, telling the calls apart by system prompt. Activity
  * calls get `reply(data)`, document digests `digest(data)`, section
- * compaction `compact(data)`; the conflict check gets `verdict` for every
- * candidate.
+ * compaction `compact(data)`.
  */
 function stubModel(
   reply: Stub,
-  verdict: { relation: string; confidence: number } = { relation: "compatible", confidence: 0.9 },
   { digest = defaultDigest, compact = noCompaction }: { digest?: Stub; compact?: Stub } = {},
 ) {
   let calls = 0;
@@ -205,13 +203,10 @@ function stubModel(
     } else if (system === DIGEST_SYSTEM_PROMPT) {
       digestBodies.push(body);
       out = await digest(data, digestBodies.length);
-    } else if (system === COMPACT_SYSTEM_PROMPT) {
+    } else {
+      expect(system).toBe(COMPACT_SYSTEM_PROMPT);
       compactBodies.push(body);
       out = await compact(data, compactBodies.length);
-    } else {
-      out = {
-        verdicts: data.candidates.map((c: { id: string }) => ({ id: c.id, explanation: "Different databases.", ...verdict })),
-      };
     }
     if (out instanceof Response) return out;
     return new Response(
@@ -260,7 +255,7 @@ describe("context manager: model path", () => {
           content: "Edited auth.md and published notes.", evidence_event_ids: [data.events[0].id, data.events[1].id],
         }),
       ],
-      proposals: [],
+      context_changes: [],
     }));
     await s.process();
 
@@ -355,7 +350,7 @@ describe("context manager: model path", () => {
     );
     await s.process();
     expect((await s.runs())[0]).toMatchObject({ status: "failed", error: "output truncated" });
-    stubModel(() => ({ summary: "ok", entries: [], proposals: [] }));
+    stubModel(() => ({ summary: "ok", entries: [], context_changes: [] }));
     await s.process();
     const [, retry] = await s.runs();
     expect(retry).toMatchObject({ status: "succeeded" });
@@ -399,14 +394,14 @@ describe("context manager: model path", () => {
           entryJson({ key: "task:foreign", category: "task", title: "Foreign", evidence_event_ids: [other] }),
           entryJson({ key: "task:bad-status", category: "task", title: "Bad", status: "done", evidence_event_ids: [id] }),
         ],
-        proposals: [{ field: "decision", text: "Maybe use Redis", rationale: "hunch", confidence: 0.4, evidence_event_ids: [id] }],
+        context_changes: [{ field: "decision", text: "Maybe use Redis", owner_user_id: "", confidence: 0.4, evidence_event_ids: [id], supersedes: "" }],
       };
     });
     await s.process();
     expect((await s.entries()).map((e) => e.key)).toEqual(["task:keep"]);
     const [run] = await s.runs();
-    expect(run).toMatchObject({ status: "succeeded", created: 1, proposals: 0 });
-    for (const why of ["below 0.35", "unknown category", "unknown op", "outside the batch", "unknown status", "below 0.5"])
+    expect(run).toMatchObject({ status: "succeeded", created: 1, contextChanges: 0 });
+    for (const why of ["below 0.35", "unknown category", "unknown op", "outside the batch", "unknown status", "below 0.6"])
       expect(run!.error).toContain(why);
   });
 
@@ -422,7 +417,7 @@ describe("context manager: model path", () => {
         op: "complete", key: "task:jwt-auth", category: "task", title: "Implement JWT auth",
         evidence: "verified", confidence: 0.9, evidence_event_ids: [data.events[0].id],
       })],
-      proposals: [],
+      context_changes: [],
     }));
     await s.process();
     expect(await s.entry("task:jwt-auth")).toMatchObject({ status: "active", evidence: "claimed" });
@@ -447,7 +442,7 @@ describe("context manager: model path", () => {
         entryJson({ op: "complete", key: "task:jwt-auth", category: "task", title: "JWT auth", evidence: "verified", evidence_event_ids: [data.events[0].id] }),
         entryJson({ op: "complete", key: "task:build", category: "task", title: "Build", evidence: "verified", evidence_event_ids: [data.events[1].id] }),
       ],
-      proposals: [],
+      context_changes: [],
     }));
     await s.process();
     expect(await s.entry("task:jwt-auth")).toMatchObject({ status: "completed", evidence: "verified" });
@@ -460,7 +455,7 @@ describe("context manager: model path", () => {
     const reply = () => ({
       summary: "same",
       entries: [entryJson({ key: "task:jwt-auth", category: "task", title: "JWT auth", content: "Observed edit.", evidence_event_ids: [e1] })],
-      proposals: [],
+      context_changes: [],
     });
     stubModel(reply);
     await s.process();
@@ -487,7 +482,7 @@ describe("context manager: model path", () => {
     stubModel(() => ({
       summary: "x",
       entries: [entryJson({ key: "task:a", category: "task", title: "A", evidence_event_ids: [e1] })],
-      proposals: [],
+      context_changes: [],
     }));
     await s.process();
     const runs = await s.runs();
@@ -495,9 +490,9 @@ describe("context manager: model path", () => {
     // The crashed run applying late is a no-op.
     const late = await s.t.mutation(internal.intel.applyResult, {
       workspaceId: s.workspaceId, runId: first!.runId, entriesRevision: first!.entriesRevision,
-      eventIds: [e1], summary: "late", entries: [], proposals: [], dropped: [],
+      eventIds: [e1], summary: "late", entries: [], changes: [], dropped: [],
     });
-    expect(late).toEqual({ stale: false, created: 0, updated: 0, proposals: 0 });
+    expect(late).toEqual({ stale: false, created: 0, updated: 0, contextChanges: 0 });
     expect(await s.event(e1)).toMatchObject({ intelStatus: "processed", intelRunId: runs[1]!._id });
     expect(await s.entries()).toHaveLength(1);
   });
@@ -527,7 +522,7 @@ describe("context manager: model path", () => {
           entryJson({ key: "task:jwt-auth", category: "task", title: "JWT auth", content: "In progress.", evidence: "observed", evidence_event_ids: [data.events[0].id] }),
           entryJson({ key: "progress:auth", category: "progress", title: "Auth progress", evidence_event_ids: [data.events[0].id] }),
         ],
-        proposals: [],
+        context_changes: [],
       };
     });
     await s.process();
@@ -549,7 +544,7 @@ describe("context manager: model path", () => {
         const state = await ctx.db.query("context_intel_state").withIndex("by_workspace", (q) => q.eq("workspaceId", s.workspaceId)).unique();
         await ctx.db.patch(state!._id, { entriesRevision: state!.entriesRevision + 1 });
       });
-      return { summary: "x", entries: [entryJson({ key: "task:a", category: "task", title: "A", evidence_event_ids: [data.events[0].id] })], proposals: [] };
+      return { summary: "x", entries: [entryJson({ key: "task:a", category: "task", title: "A", evidence_event_ids: [data.events[0].id] })], context_changes: [] };
     });
     await s.process();
     expect(await s.entries()).toHaveLength(0);
@@ -558,7 +553,7 @@ describe("context manager: model path", () => {
     expect(await s.state()).toMatchObject({ status: "scheduled", consecutiveFailures: 0 });
   });
 
-  it("raises a decision finding as an INTEL_ACTOR proposal that goes through conflict detection, once", async () => {
+  it("records a decision finding in project context as the context manager, once", async () => {
     const s = await setup();
     const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
     await s.alex.mutation(api.context.updateContextField, {
@@ -569,52 +564,139 @@ describe("context manager: model path", () => {
       type: "mcp.tool_call", tool: "update_document", summary: "Rewrote auth.md for Redis sessions",
       connection: s.claude, resources: [{ type: "file", id: s.fileId }],
     });
-    const reply = (data: any) => ({
+    const { bodies } = stubModel((data: any) => ({
       summary: "Claude moved sessions to Redis",
       entries: [],
-      proposals: [{
-        field: "decision", text: "Store sessions in Redis", rationale: "auth.md now describes Redis sessions.",
-        confidence: 0.85, evidence_event_ids: [data.events.at(-1).id],
+      context_changes: [{
+        field: "decision", text: "Store sessions in Redis", owner_user_id: "",
+        confidence: 0.85, evidence_event_ids: [data.events.at(-1).id], supersedes: "",
       }],
-    });
-    stubModel(reply, { relation: "contradicts", confidence: 0.95 });
+    }));
     await s.process();
-    const finding = await s.entry("decision:store-sessions-in-redis");
-    expect(finding).toMatchObject({ category: "decision", evidence: "observed" });
-    const proposal = await s.t.run((ctx) => ctx.db.get(finding!.proposalId!));
-    expect(proposal).toMatchObject({
-      field: "decision", proposedValue: "Store sessions in Redis", status: "pending",
-      createdBy: { type: "system", label: "Tandem context manager" }, sourceFileIds: [s.fileId],
-      conflict: { status: "checking" },
+    // The model sees the project context it adds to.
+    expect(sentData(bodies[0]).project_context.decisions.map((d: { text: string }) => d.text)).toEqual(["Store sessions in Postgres"]);
+    const context = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    const added = context.decisions.find((d) => d.text === "Store sessions in Redis");
+    expect(added).toMatchObject({
+      status: "active", sourceFileIds: [s.fileId],
+      updatedBy: { type: "system", label: "Tandem context manager" },
     });
-    expect(proposal!.rationale).toContain("Rewrote auth.md for Redis sessions");
-    expect((await s.runs())[0]).toMatchObject({ proposals: 1 });
-    await s.settle();
-    expect(await s.t.run((ctx) => ctx.db.get(proposal!._id))).toMatchObject({ conflict: { status: "conflict" } });
+    expect(context.revision).toBe(before.revision + 2);
+    const finding = await s.entry("decision:store-sessions-in-redis");
+    expect(finding).toMatchObject({ category: "decision", evidence: "observed", contextEntryId: added!.id });
+    expect((await s.runs())[0]).toMatchObject({ contextChanges: 1 });
+    expect(await s.workspaceEvents("context.updated")).toEqual(
+      expect.arrayContaining([expect.objectContaining({ summary: "Updated decision", actor: expect.objectContaining({ type: "system" }) })]),
+    );
 
-    // The same finding in a later run is not proposed again.
+    // The same finding in a later run is not recorded again.
     await s.addEvent({ type: "mcp.tool_call", tool: "publish_work", summary: "Published Redis notes", connection: s.claude });
     await s.process();
-    const proposals = await s.t.run((ctx) =>
-      ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect());
-    expect(proposals).toHaveLength(1);
-    // (A skipped run from the settle above may sit in between: ingestion scheduled it.)
-    expect((await s.runs()).filter((r) => r.status === "succeeded").at(-1)).toMatchObject({ proposals: 0 });
-    expect((await s.runs()).filter((r) => r.status === "succeeded")).toHaveLength(2);
+    const after = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    expect(after.decisions.map((d) => d.text)).toEqual(["Store sessions in Postgres", "Store sessions in Redis"]);
+    expect((await s.runs()).filter((r) => r.status === "succeeded").at(-1)).toMatchObject({ contextChanges: 0 });
   });
 
-  it("dedupes repeated proposals from the context manager (system actors compare equal)", async () => {
+  it("records ownership for members named in the batch, and drops non-members", async () => {
     const s = await setup();
-    const raise = () => s.t.mutation(internal.intel.raiseProposal, {
-      workspaceId: s.workspaceId, field: "goal", text: "Ship JWT auth by Friday", rationale: "r", sourceFileIds: [],
+    await s.addEvent({
+      type: "mcp.tool_call", tool: "update_document", summary: "Wrote the team plan",
+      connection: s.claude, resources: [{ type: "file", id: s.fileId }],
     });
-    const first = await raise();
-    const second = await raise();
-    expect(first.deduplicated).toBe(false);
-    expect(second).toEqual({ proposalId: first.proposalId, deduplicated: true });
+    const { bodies } = stubModel((data: any) => ({
+      summary: "Team plan assigns owners",
+      entries: [],
+      context_changes: [
+        { field: "ownership", text: "Fetch.ai integration", owner_user_id: data.members[0].id, confidence: 0.9, evidence_event_ids: [data.events[0].id], supersedes: "" },
+        { field: "ownership", text: "Frontend", owner_user_id: "not-a-member", confidence: 0.9, evidence_event_ids: [data.events[0].id], supersedes: "" },
+      ],
+    }));
+    await s.process();
+    expect(sentData(bodies[0]).members).toEqual([{ id: s.alexId, name: "Alex" }]);
+    const context = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    expect(context.ownership).toMatchObject([
+      { ownerArea: "Fetch.ai integration", ownerUserId: s.alexId, text: "Fetch.ai integration: Alex", updatedBy: { label: "Tandem context manager" } },
+    ]);
+    const [run] = await s.runs();
+    expect(run).toMatchObject({ contextChanges: 1 });
+    expect(run!.error).toContain("owner is not a workspace member");
   });
 
-  it("swallows ALREADY_IN_CONTEXT without rolling back the rest of the apply", async () => {
+  it("never replaces an owner a person set, even when a document still names the old one", async () => {
+    const s = await setup();
+    const samId = await s.t.run((ctx) => ctx.db.insert("users", { name: "Sam", email: "sam@example.com" }));
+    await s.t.run((ctx) => ctx.db.insert("workspace_members", {
+      workspaceId: s.workspaceId, userId: samId, role: "member", joinedAt: Date.now(),
+      updatedBy: s.human, revision: 1, updatedAt: Date.now(),
+    }));
+    const assign = (data: any) => ({
+      summary: "plan", entries: [],
+      context_changes: [{ field: "ownership", text: "Frontend", owner_user_id: s.alexId, confidence: 0.9, evidence_event_ids: [data.events.at(-1).id], supersedes: "" }],
+    });
+    await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Wrote the plan", connection: s.claude });
+    stubModel(assign);
+    await s.process();
+    const owner = async () => (await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId })).ownership.map((o) => o.ownerUserId);
+    expect(await owner()).toEqual([s.alexId]);
+    // A person reassigns Frontend; the next read of the unchanged plan doesn't undo it.
+    await s.alex.mutation(api.context.changeContext, {
+      workspaceId: s.workspaceId, field: "ownership", value: "Frontend", ownerUserId: samId, sourceFileIds: [],
+    });
+    await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Touched the plan", connection: s.claude });
+    await s.process();
+    expect(await owner()).toEqual([samId]);
+    expect((await s.runs()).at(-1)!.error).toContain("kept the owner a person or assistant set");
+  });
+
+  it("doesn't overwrite a goal a person set while the model call was running", async () => {
+    const s = await setup();
+    await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Wrote the plan", connection: s.claude });
+    stubModel(async (data: any) => {
+      const { revision } = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+      await s.alex.mutation(api.context.updateContextField, {
+        workspaceId: s.workspaceId, field: "goal", proposedValue: "Human goal", sourceFileIds: [], expectedVersion: revision,
+      });
+      return {
+        summary: "goal", entries: [],
+        context_changes: [{ field: "goal", text: "Model goal", owner_user_id: "", confidence: 0.9, evidence_event_ids: [data.events[0].id], supersedes: "" }],
+      };
+    });
+    await s.process();
+    expect((await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId })).goal!.text).toBe("Human goal");
+  });
+
+  it("records a goal only while project context has none", async () => {
+    const s = await setup();
+    await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Wrote the plan", connection: s.claude });
+    const goal = (text: string) => (data: any) => ({
+      summary: "goal",
+      entries: [],
+      context_changes: [{ field: "goal", text, owner_user_id: "", confidence: 0.9, evidence_event_ids: [data.events[0].id], supersedes: "" }],
+    });
+    stubModel(goal("Ship the agent demo by Sunday"));
+    await s.process();
+    expect((await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId })).goal).toMatchObject({
+      text: "Ship the agent demo by Sunday", updatedBy: { type: "system" },
+    });
+    await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Rewrote the plan", connection: s.claude });
+    stubModel(goal("Win every sponsor prize"));
+    await s.process();
+    expect((await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId })).goal!.text).toBe("Ship the agent demo by Sunday");
+    expect((await s.runs()).at(-1)!.error).toContain("already has a goal");
+  });
+
+  it("dedupes repeated context changes from the context manager", async () => {
+    const s = await setup();
+    const record = () => s.t.mutation(internal.intel.recordContextChange, {
+      workspaceId: s.workspaceId, field: "goal", text: "Ship JWT auth by Friday", sourceFileIds: [],
+    });
+    const first = await record();
+    const second = await record();
+    expect(first).toEqual({ entryId: "goal", deduplicated: false });
+    expect(second).toEqual({ entryId: "goal", deduplicated: true });
+  });
+
+  it("treats a finding project context already holds as a no-op without rolling back the rest of the apply", async () => {
     const s = await setup();
     const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
     await s.alex.mutation(api.context.updateContextField, {
@@ -624,13 +706,14 @@ describe("context manager: model path", () => {
     stubModel((data) => ({
       summary: "x",
       entries: [entryJson({ key: "task:a", category: "task", title: "A", evidence_event_ids: [data.events[0].id] })],
-      // Different spacing/case from the approved text, so only the core check catches it.
-      proposals: [{ field: "decision", text: "use  JWT ", rationale: "r", confidence: 0.9, evidence_event_ids: [data.events[0].id] }],
+      // Different spacing/case from the recorded text, so only the core check catches it.
+      context_changes: [{ field: "decision", text: "use  JWT ", owner_user_id: "", confidence: 0.9, evidence_event_ids: [data.events[0].id], supersedes: "" }],
     }));
     await s.process();
     const [run] = await s.runs();
-    expect(run).toMatchObject({ status: "succeeded", proposals: 0 });
+    expect(run).toMatchObject({ status: "succeeded", contextChanges: 0 });
     expect(await s.entry("task:a")).toBeDefined();
+    expect((await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId })).decisions).toHaveLength(1);
   });
 
   it("processes concurrent events from two connections in one batch and flags a shared file", async () => {
@@ -651,7 +734,7 @@ describe("context manager: model path", () => {
           evidence_event_ids: data.events.filter((e: any) => e.connection === c.id).map((e: any) => e.id),
           agent_connection_ids: [c.id],
         })),
-      proposals: [],
+      context_changes: [],
     }));
     await s.process();
     expect(intelCalls()).toBe(1);
@@ -680,7 +763,7 @@ describe("context manager: model path", () => {
         op: "complete", key: "task:everything", category: "task", title: "Everything",
         evidence: "human_confirmed", confidence: 1, evidence_event_ids: [data.events[0].id],
       })],
-      proposals: [],
+      context_changes: [],
     }));
     await s.process();
     const body = bodies[0];
@@ -713,7 +796,7 @@ const saved = (s: Setup, fileId: Id<"files">, type = "file.created", version = 1
     payload: JSON.stringify({ kind: type, entityId: fileId, version }),
   });
 
-const noActivity = () => ({ summary: "", entries: [], proposals: [] });
+const noActivity = () => ({ summary: "", entries: [], context_changes: [] });
 
 describe("context manager: documents", () => {
   it("reads a whole 300-line document in its own cached digest call and stores one knowledge:doc entry", async () => {
@@ -721,14 +804,14 @@ describe("context manager: documents", () => {
     const text = Array.from({ length: 300 }, (_, i) => `Line ${i + 1}: design note ${i + 1}`).join("\n");
     const fileId = await addDoc(s, "design.md", `# Design\n${text}\n`);
     const e1 = await saved(s, fileId);
-    const { bodies, digestBodies } = stubModel(noActivity, undefined, {
+    const { bodies, digestBodies } = stubModel(noActivity, {
       digest: (data) => ({
         digest: "Design doc: 300 numbered design notes.",
         entries: [entryJson({
           key: "decision:use-postgres", category: "decision", title: "Use Postgres",
           content: "The design doc picks Postgres.", evidence_event_ids: data.event_ids, file_ids: [data.document.file_id],
         })],
-        proposals: [],
+        context_changes: [],
       }),
     });
     await s.process();
@@ -753,7 +836,7 @@ describe("context manager: documents", () => {
     expect(await s.event(e1)).toMatchObject({ intelStatus: "processed" });
   });
 
-  it("keeps one record per fact: no activity knowledge about a digested doc, no decision entry beside its proposal", async () => {
+  it("keeps one record per fact: no activity knowledge about a digested doc, no decision entry beside its context change", async () => {
     const s = await setup();
     const fileId = await addDoc(s, "rfc.md", "# RFC\nWe will use Postgres with Drizzle for all data.\n");
     await saved(s, fileId);
@@ -764,9 +847,8 @@ describe("context manager: documents", () => {
           key: "knowledge:rfc-created", category: "knowledge", title: "rfc.md created",
           content: "The preview shows background only.", evidence_event_ids: [data.events.at(-1).id], file_ids: [fileId],
         })],
-        proposals: [],
+        context_changes: [],
       }),
-      undefined,
       {
         digest: (data) => ({
           digest: "RFC: Postgres with Drizzle for all data.",
@@ -774,8 +856,8 @@ describe("context manager: documents", () => {
             key: "decision:postgres-drizzle", category: "decision", title: "Postgres with Drizzle",
             content: "The RFC uses Postgres with Drizzle for all data.", evidence_event_ids: data.event_ids, file_ids: [fileId],
           })],
-          proposals: [{
-            field: "decision", text: "Use Postgres with Drizzle for all persistent data.", rationale: "rfc.md says so.",
+          context_changes: [{
+            field: "decision", text: "Use Postgres with Drizzle for all persistent data.", owner_user_id: "",
             confidence: 0.8, evidence_event_ids: data.event_ids, supersedes: "",
           }],
         }),
@@ -788,23 +870,23 @@ describe("context manager: documents", () => {
     expect(keys).not.toContain("decision:postgres-drizzle");
     const decisions = (await s.entries()).filter((e) => e.category === "decision");
     expect(decisions).toHaveLength(1);
-    expect(decisions[0]!.proposalId).toBeDefined();
+    expect(decisions[0]!.contextEntryId).toBeDefined();
   });
 
   it("a digest finding that cites no event ids is backed by the document's own events", async () => {
     const s = await setup();
     const fileId = await addDoc(s, "rfc.md", "# RFC\nWe will use Postgres for all data.\n");
     const e1 = await saved(s, fileId);
-    stubModel(noActivity, undefined, {
+    stubModel(noActivity, {
       digest: () => ({
         digest: "RFC: Postgres for all data.",
         entries: [entryJson({ key: "task:pick-migration-owner", category: "task", title: "Pick a migration owner", evidence_event_ids: [] })],
-        proposals: [{ field: "decision", text: "Use Postgres for all persistent data.", rationale: "rfc.md.", confidence: 0.8, evidence_event_ids: [], supersedes: "" }],
+        context_changes: [{ field: "decision", text: "Use Postgres for all persistent data.", owner_user_id: "", confidence: 0.8, evidence_event_ids: [], supersedes: "" }],
       }),
     });
     await s.process();
     expect(await s.entry("task:pick-migration-owner")).toMatchObject({ evidenceEventIds: [e1] });
-    expect((await s.runs()).at(-1)).toMatchObject({ proposals: 1 });
+    expect((await s.runs()).at(-1)).toMatchObject({ contextChanges: 1 });
   });
 
   it("retracts a deleted document's digest", async () => {
@@ -830,16 +912,16 @@ describe("context manager: documents", () => {
         key: "knowledge:token-lifetime", category: "knowledge", title: "Token lifetime", content,
         evidence_event_ids: data.event_ids ?? [data.events.at(-1).id], file_ids: [fileId],
       })],
-      proposals: [],
+      context_changes: [],
     });
-    stubModel(finding("From the activity."), undefined, {
+    stubModel(finding("From the activity."), {
       digest: (data) => ({ ...finding("Access tokens live 15 minutes.")(data), digest: "Tokens: 15 minutes." }),
     });
     await s.process();
     expect(await s.entry("knowledge:token-lifetime")).toMatchObject({ content: "Access tokens live 15 minutes." });
   });
 
-  it("applies a supersede of an existing decision even when a proposal restates its replacement", async () => {
+  it("applies a supersede of an existing decision even when a context change restates its replacement", async () => {
     const s = await setup();
     const fileId = await addDoc(s, "sessions.md", "# Sessions\nUse Redis sessions instead of JWT session tokens.\n");
     await s.t.run((ctx) =>
@@ -859,14 +941,13 @@ describe("context manager: documents", () => {
           content: "Replaced by Redis sessions.", status: "superseded", superseded_by: "decision:redis-sessions",
           evidence_event_ids: [data.events.at(-1).id],
         })],
-        proposals: [],
+        context_changes: [],
       }),
-      undefined,
       {
         digest: (data) => ({
           digest: "Sessions: Redis instead of JWT.",
           entries: [],
-          proposals: [{ field: "decision", text: "Use Redis sessions instead of JWT session tokens.", rationale: "sessions.md", confidence: 0.8, evidence_event_ids: data.event_ids, supersedes: "" }],
+          context_changes: [{ field: "decision", text: "Use Redis sessions instead of JWT session tokens.", owner_user_id: "", confidence: 0.8, evidence_event_ids: data.event_ids, supersedes: "" }],
         }),
       },
     );
@@ -878,7 +959,7 @@ describe("context manager: documents", () => {
     const s = await setup();
     const bad = await addDoc(s, "bad.md", "# Bad\nSomething the model refuses.\n");
     const e1 = await saved(s, bad);
-    stubModel(noActivity, undefined, {
+    stubModel(noActivity, {
       digest: () =>
         new Response(JSON.stringify({ content: [], stop_reason: "refusal" }), { status: 200, headers: { "content-type": "application/json" } }),
     });
@@ -910,8 +991,8 @@ describe("context manager: documents", () => {
     const s = await setup();
     const fileId = await addDoc(s, "plan.md", "# Plan\nShip v1\n");
     await saved(s, fileId);
-    const { digestBodies } = stubModel(noActivity, undefined, {
-      digest: (data) => ({ digest: data.previous_digest ? `${data.previous_digest} Then v2.` : "Plan: ship v1.", entries: [], proposals: [] }),
+    const { digestBodies } = stubModel(noActivity, {
+      digest: (data) => ({ digest: data.previous_digest ? `${data.previous_digest} Then v2.` : "Plan: ship v1.", entries: [], context_changes: [] }),
     });
     await s.process();
     expect(digestBodies).toHaveLength(1);
@@ -937,7 +1018,7 @@ describe("context manager: documents", () => {
     const b = await addDoc(s, "b.md", "# B\n");
     const ea = await saved(s, a);
     const eb = await saved(s, b);
-    stubModel(noActivity, undefined, {
+    stubModel(noActivity, {
       digest: (data) => (data.document.name === "b.md" ? new Response("overloaded", { status: 529 }) : defaultDigest(data, 0)),
     });
     await s.process();
@@ -1068,8 +1149,7 @@ describe("context manager: section compaction", () => {
     ]);
     await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Updated", connection: s.claude });
     const { compactBodies } = stubModel(
-      (data) => ({ summary: "x", entries: [entryJson({ key: "task:t", category: "task", title: "T", evidence_event_ids: [data.events[0].id] })], proposals: [] }),
-      undefined,
+      (data) => ({ summary: "x", entries: [entryJson({ key: "task:t", category: "task", title: "T", evidence_event_ids: [data.events[0].id] })], context_changes: [] }),
       {
         compact: (data) => ({
           summary: "Merged duplicate decisions",
@@ -1077,7 +1157,7 @@ describe("context manager: section compaction", () => {
             { key: "decision:d0", title: "Auth decisions", content: "Merged auth.", status: "active", evidence: "verified", confidence: 0.9, evidence_event_ids: [], replaces: ["decision:d1", "decision:d2", "decision:d3", "decision:confirmed"] },
             { key: "decision:storage", title: "Storage decisions", content: "Merged storage.", status: "active", evidence: "observed", confidence: 0.9, evidence_event_ids: [], replaces: ["decision:d4", "decision:d5", "decision:d6", "decision:d7"] },
           ],
-          approved_supersede: { decision_id: "", text: "", rationale: "", confidence: 0 },
+          decision_supersede: { decision_id: "", text: "", confidence: 0 },
         }),
       },
     );
@@ -1116,54 +1196,62 @@ describe("context manager: section compaction", () => {
     const old = await s.addEvent({ type: "mcp.tool_call", tool: "publish_work", summary: "Earlier", connection: s.claude, intelStatus: "processed" });
     await seed(s, old, Array.from({ length: 6 }, (_, i) => ({ key: `decision:d${i}` })));
     await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Updated", connection: s.claude });
-    const { compactBodies } = stubModel((data) => ({ summary: "x", entries: [entryJson({ key: "task:t", category: "task", title: "T", evidence_event_ids: [data.events[0].id] })], proposals: [] }));
+    const { compactBodies } = stubModel((data) => ({ summary: "x", entries: [entryJson({ key: "task:t", category: "task", title: "T", evidence_event_ids: [data.events[0].id] })], context_changes: [] }));
     await s.process();
     expect(compactBodies).toHaveLength(0);
   });
 
-  it("raises one approved-decision supersede proposal through the existing conflict detection", async () => {
+  it.each([
+    ["its own decision", "Store sessions in Postgres", true],
+    ["a person's decision", "Use JWT for auth", false],
+  ] as const)("a compaction supersede of %s (%s)", async (_who, oldText, applies) => {
     const s = await setup();
-    for (const value of ["Store sessions in Postgres", "Use JWT for auth"]) {
-      const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
-      await s.alex.mutation(api.context.updateContextField, {
-        workspaceId: s.workspaceId, field: "decision", proposedValue: value, sourceFileIds: [], expectedVersion: before.revision,
-      });
-    }
+    // The context manager recorded the first; a person recorded the second.
+    await s.t.mutation(internal.intel.recordContextChange, {
+      workspaceId: s.workspaceId, field: "decision", text: "Store sessions in Postgres", sourceFileIds: [],
+    });
+    const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    await s.alex.mutation(api.context.updateContextField, {
+      workspaceId: s.workspaceId, field: "decision", proposedValue: "Use JWT for auth", sourceFileIds: [], expectedVersion: before.revision,
+    });
     const old = await s.addEvent({ type: "mcp.tool_call", tool: "publish_work", summary: "Earlier", connection: s.claude, intelStatus: "processed" });
     await seed(s, old, Array.from({ length: 7 }, (_, i) => ({ key: `decision:d${i}` })));
     await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Updated", connection: s.claude });
     let target = "";
     stubModel(
-      (data) => ({ summary: "x", entries: [entryJson({ key: "task:t", category: "task", title: "T", evidence_event_ids: [data.events[0].id] })], proposals: [] }),
-      { relation: "contradicts", confidence: 0.9 },
+      (data) => ({ summary: "x", entries: [entryJson({ key: "task:t", category: "task", title: "T", evidence_event_ids: [data.events[0].id] })], context_changes: [] }),
       {
         compact: (data) => {
-          target = data.approved_decisions.find((d: any) => d.text === "Store sessions in Postgres").id;
+          target = data.context_decisions.find((d: any) => d.text === oldText).id;
           return {
             summary: "", merged: [],
-            approved_supersede: { decision_id: target, text: "Store sessions in Redis", rationale: "The design moved sessions to Redis.", confidence: 0.85 },
+            decision_supersede: { decision_id: target, text: "Store sessions in Redis", confidence: 0.85 },
           };
         },
       },
     );
     await s.process();
-    // The seeded observed decisions are promoted to proposals too (promoteFindings);
-    // this test is about the one that supersedes an approved decision.
-    const pending = (await s.t.run((ctx) =>
-      ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect()))
-      .filter((p) => p.supersedes !== undefined);
-    expect(pending).toHaveLength(1);
-    expect(pending[0]).toMatchObject({
-      field: "decision", proposedValue: "Store sessions in Redis", supersedes: target,
-      createdBy: { type: "system", label: "Tandem context manager" },
-    });
-    expect(pending[0]!.conflict!.items).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "replaces", targetId: target })]));
-    expect((await s.runs())[0]!.proposals).toBeGreaterThanOrEqual(1);
+    const { decisions } = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    const redis = decisions.find((d) => d.text === "Store sessions in Redis");
+    const other = oldText === "Use JWT for auth" ? "Store sessions in Postgres" : "Use JWT for auth";
+    expect(decisions.find((d) => d.text === other)).toMatchObject({ status: "active" });
+    if (applies) {
+      expect(redis).toMatchObject({ status: "active", updatedBy: { type: "system", label: "Tandem context manager" } });
+      expect(decisions.find((d) => d.id === target)).toMatchObject({ status: "superseded", supersededBy: redis!.id });
+    } else {
+      expect(redis).toBeUndefined();
+      expect(decisions.find((d) => d.id === target)).toMatchObject({ status: "active" });
+      expect((await s.runs())[0]!.error).toContain("kept the decision a person or assistant recorded");
+    }
   });
 });
 
-describe("context manager: promoting findings to proposals", () => {
-  it("raises a goal the model recorded only as an entry, once, and links it", async () => {
+describe("context manager: promoting findings to project context", () => {
+  const goalText = async (s: Setup) => (await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId })).goal?.text ?? null;
+  const decisionTexts = async (s: Setup) =>
+    (await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId })).decisions.map((d) => d.text);
+
+  it("records a goal the model recorded only as an entry, once, and links it", async () => {
     const s = await setup();
     await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Updated plan", connection: s.claude });
     stubModel((data) => ({
@@ -1173,23 +1261,20 @@ describe("context manager: promoting findings to proposals", () => {
         content: "Within a one-month sprint, validate willingness to pay for one niche.",
         confidence: 0.6, evidence_event_ids: [data.events.at(-1).id],
       })],
-      proposals: [],
+      context_changes: [],
     }));
     await s.process();
-    const entry = await s.entry("goal:validate-ideas");
-    expect(entry!.proposalId).toBeDefined();
-    const proposal = await s.t.run((ctx) => ctx.db.get(entry!.proposalId!));
-    expect(proposal).toMatchObject({
-      field: "goal", status: "pending", proposedValue: "Within a one-month sprint, validate willingness to pay for one niche.",
-      createdBy: { type: "system", label: "Tandem context manager" },
+    expect(await s.entry("goal:validate-ideas")).toMatchObject({ contextEntryId: "goal" });
+    const context = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    expect(context.goal).toMatchObject({
+      text: "Within a one-month sprint, validate willingness to pay for one niche.",
+      updatedBy: { type: "system", label: "Tandem context manager" },
     });
-    // Never raised twice.
+    // Never recorded twice.
     await s.addEvent({ type: "mcp.tool_call", tool: "publish_work", summary: "More", connection: s.claude });
     stubModel(noActivity);
     await s.process();
-    const pending = await s.t.run((ctx) =>
-      ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect());
-    expect(pending.filter((p) => p.field === "goal")).toHaveLength(1);
+    expect((await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId })).revision).toBe(context.revision);
   });
 
   it("Run now with nothing pending still promotes findings recorded earlier", async () => {
@@ -1204,10 +1289,10 @@ describe("context manager: promoting findings to proposals", () => {
     );
     stubModel(noActivity);
     await s.process();
-    const entry = await s.entry("decision:use-convex");
-    const proposal = await s.t.run((ctx) => ctx.db.get(entry!.proposalId!));
     // Content that narrates the observation falls back to the title.
-    expect(proposal).toMatchObject({ field: "decision", proposedValue: "Use Convex for the backend", status: "pending" });
+    expect(await decisionTexts(s)).toEqual(["Use Convex for the backend"]);
+    expect((await s.entry("decision:use-convex"))!.contextEntryId).toBeDefined();
+    expect((await s.runs())[0]).toMatchObject({ status: "skipped", contextChanges: 1 });
   });
 
   const observedEntry = (s: Setup, key: string, category: "goal" | "decision", title: string, extra: Record<string, unknown> = {}) =>
@@ -1219,11 +1304,8 @@ describe("context manager: promoting findings to proposals", () => {
         ...extra,
       }),
     );
-  const pendingProposals = (s: Setup) =>
-    s.t.run((ctx) =>
-      ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect());
 
-  it("marks a refused raise and moves on to older findings instead of retrying it every run", async () => {
+  it("marks a refused recording and moves on to older findings instead of retrying it every run", async () => {
     const s = await setup();
     const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
     await s.alex.mutation(api.context.updateContextField, {
@@ -1236,14 +1318,15 @@ describe("context manager: promoting findings to proposals", () => {
     await observedEntry(s, "decision:refused", "decision", "Deploy with Fly.io", { fileIds: [refusedFileId] });
     stubModel(noActivity);
     await s.process();
-    expect((await s.entry("decision:refused"))!.proposalSkipped).toBeDefined();
-    expect((await s.entry("decision:use-convex"))!.proposalId).toBeDefined();
-    const runsBefore = (await pendingProposals(s)).length;
+    expect((await s.entry("decision:refused"))!.contextSkipped).toBeDefined();
+    expect((await s.entry("decision:use-convex"))!.contextEntryId).toBeDefined();
+    const recorded = await decisionTexts(s);
+    expect(recorded).toEqual(["Ship on Fridays", "Use Convex for the backend"]);
     await s.process();
-    expect((await pendingProposals(s)).length).toBe(runsBefore);
+    expect(await decisionTexts(s)).toEqual(recorded);
   });
 
-  it("doesn't re-propose what is approved or pending, and raises at most one goal", async () => {
+  it("doesn't record what project context already says, and records at most one goal", async () => {
     const s = await setup();
     const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
     await s.alex.mutation(api.context.updateContextField, {
@@ -1254,13 +1337,14 @@ describe("context manager: promoting findings to proposals", () => {
     await observedEntry(s, "goal:b", "goal", "Win the Convex track");
     stubModel(noActivity);
     await s.process();
-    const pending = await pendingProposals(s);
-    expect(pending.filter((p) => p.field === "decision")).toHaveLength(0);
-    expect(pending.filter((p) => p.field === "goal")).toHaveLength(1);
-    expect((await s.entry("decision:postgres"))!.proposalSkipped).toBe("DUPLICATE");
+    expect(await decisionTexts(s)).toEqual(["Use Postgres for all data"]);
+    // The newest goal entry wins; the other stays an observed entry.
+    expect(await goalText(s)).toBe("Win the Convex track");
+    expect((await s.entry("goal:a"))!.contextEntryId).toBeUndefined();
+    expect((await s.entry("decision:postgres"))!.contextSkipped).toBe("DUPLICATE");
   });
 
-  it("an unrelated decision or a reversal isn't mistaken for an approved one", async () => {
+  it("an unrelated decision or a reversal isn't mistaken for a recorded one", async () => {
     const s = await setup();
     const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
     await s.alex.mutation(api.context.updateContextField, {
@@ -1270,8 +1354,7 @@ describe("context manager: promoting findings to proposals", () => {
     await observedEntry(s, "decision:no-stripe", "decision", "We will not use Stripe for payments");
     stubModel(noActivity);
     await s.process();
-    const decisions = (await pendingProposals(s)).filter((p) => p.field === "decision").map((p) => p.proposedValue);
-    expect(decisions).toEqual(expect.arrayContaining(["We will use Vercel for hosting", "We will not use Stripe for payments"]));
+    expect(await decisionTexts(s)).toEqual(expect.arrayContaining(["We will use Vercel for hosting", "We will not use Stripe for payments"]));
   });
 
   it("promotes a goal a person confirmed on the dashboard", async () => {
@@ -1281,27 +1364,24 @@ describe("context manager: promoting findings to proposals", () => {
     });
     stubModel(noActivity);
     await s.process();
-    expect((await pendingProposals(s)).map((p) => [p.field, p.proposedValue])).toEqual([["goal", "Ship the demo by Sunday"]]);
+    expect(await goalText(s)).toBe("Ship the demo by Sunday");
   });
 
-  it("after a person rejects the context manager's goal, waits a day before raising another", async () => {
+  it("never replaces a goal project context already has", async () => {
     const s = await setup();
-    await observedEntry(s, "goal:a", "goal", "Ship the demo by Sunday");
+    const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    await s.alex.mutation(api.context.updateContextField, {
+      workspaceId: s.workspaceId, field: "goal", proposedValue: "Ship the demo by Sunday", sourceFileIds: [], expectedVersion: before.revision,
+    });
+    await observedEntry(s, "goal:b", "goal", "Win the Convex track");
     stubModel(noActivity);
     await s.process();
-    const [goal] = await pendingProposals(s);
-    await s.t.run((ctx) => ctx.db.patch(goal!._id, { status: "rejected", decidedAt: Date.now(), decidedBy: s.human }));
-    await observedEntry(s, "goal:b", "goal", "Win the Convex track");
-    await s.process();
-    expect((await pendingProposals(s)).filter((p) => p.field === "goal")).toHaveLength(0);
-    vi.setSystemTime(Date.now() + 25 * 60 * 60 * 1000);
-    await s.process();
-    expect((await pendingProposals(s)).map((p) => p.proposedValue)).toEqual(["Win the Convex track"]);
+    expect(await goalText(s)).toBe("Ship the demo by Sunday");
   });
 });
 
 describe("context manager: heuristic path (no ANTHROPIC_API_KEY)", () => {
-  it("records observed agent summaries, blockers and tasks, and never proposes", async () => {
+  it("records observed agent summaries, blockers and tasks, and never changes project context", async () => {
     delete process.env.ANTHROPIC_API_KEY;
     const s = await setup();
     const fetch = vi.fn();
@@ -1328,11 +1408,10 @@ describe("context manager: heuristic path (no ANTHROPIC_API_KEY)", () => {
     expect(entries.find((e) => e.category === "task")).toMatchObject({ title: "Write the login page", evidence: "requested", status: "active" });
     expect(entries.some((e) => e.category === "goal" || e.category === "decision")).toBe(false);
     const [run] = await s.runs();
-    expect(run).toMatchObject({ status: "succeeded", method: "heuristic", proposals: 0 });
+    expect(run).toMatchObject({ status: "succeeded", method: "heuristic", contextChanges: 0 });
     expect(run!.model).toBeUndefined();
-    const proposals = await s.t.run((ctx) =>
-      ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect());
-    expect(proposals).toHaveLength(0);
+    const context = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    expect([context.goal, ...context.decisions, ...context.ownership]).toEqual([null]);
   });
 
   it("digests documents deterministically and never compacts", async () => {
@@ -1379,15 +1458,15 @@ describe("lib/intel", () => {
       summary: "Updated", actorType: "agent", actorLabel: "Claude", fileIds: [],
     }],
     entries: [],
-    approved: { goal: null, scope: null, decisions: [], constraints: [] },
-    pendingProposals: [],
+    context: { goal: null, scope: null, decisions: [], constraints: [], ownership: [] },
+    members: [],
     connections: [],
     files: [],
     ...overrides,
   });
 
   it("parses JSON wrapped in prose or fences and derives keys", () => {
-    const text = 'Here you go:\n```json\n{"summary":"s","entries":[{"op":"upsert","key":"Task: JWT Auth!","category":"task","title":"JWT","content":"c","status":"active","evidence":"observed","confidence":2,"evidence_event_ids":["ev1"]}],"proposals":[]}\n```';
+    const text = 'Here you go:\n```json\n{"summary":"s","entries":[{"op":"upsert","key":"Task: JWT Auth!","category":"task","title":"JWT","content":"c","status":"active","evidence":"observed","confidence":2,"evidence_event_ids":["ev1"]}],"context_changes":[]}\n```';
     const result = parseIntelResponse(text, batch());
     expect(result.entries).toMatchObject([{ key: "task:jwt-auth", confidence: 1 }]);
     expect(() => parseIntelResponse("{not json", batch())).toThrow("unparseable response");
@@ -1442,7 +1521,7 @@ describe("lib/intel", () => {
     const section: CompactSection = {
       category: "task",
       entries: [entry("task:a", "completed", "verified"), entry("task:b", "active", "observed"), entry("task:c", "completed", "verified"), entry("task:d", "completed", "verified")],
-      approvedDecisions: [],
+      contextDecisions: [],
     };
     const result = validateCompaction({
       summary: "s",
@@ -1539,7 +1618,7 @@ describe("end to end: real ingestion → context manager → sync", () => {
           content: "Claude implemented JWT sessions in auth.md.", evidence: "verified", confidence: 0.9,
           evidence_event_ids: cited.map((e) => e.id), file_ids: data.files.map((f: { id: string }) => f.id),
         })],
-        proposals: [],
+        context_changes: [],
       };
     });
   }

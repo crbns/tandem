@@ -7,9 +7,9 @@ import type { AgentClient } from "./agent";
 export const MCP_PATH = "/mcp";
 
 export const MCP_SCOPES = {
-  "tandem:read": "Read this workspace's files, project context and proposals",
+  "tandem:read": "Read this workspace's files and project context",
   "tandem:write":
-    "Create and update documents, publish work and propose context changes (never approve them)",
+    "Create and update documents, publish work and update project context",
 } as const;
 export type McpScope = keyof typeof MCP_SCOPES;
 export const ALL_MCP_SCOPES = Object.keys(MCP_SCOPES) as McpScope[];

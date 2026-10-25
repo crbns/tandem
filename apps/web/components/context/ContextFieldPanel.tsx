@@ -10,7 +10,7 @@ import type {
   FileSummary,
   WorkspaceMember,
 } from "@/lib/api/types";
-import { FIELD_LABELS, replacesValue } from "@/lib/proposals";
+import { FIELD_LABELS, replacesValue } from "@/lib/context";
 import { ERROR_COPY } from "@/lib/api/errorCopy";
 import { formatAbsolute } from "@/lib/time";
 import { displayId } from "@/lib/files";
@@ -55,10 +55,8 @@ interface Props {
   label: string;
   entries: ContextEntry[];
   version: number;
+  /** Any member may change project context; every change applies at once. */
   canEdit: boolean;
-  canPropose: boolean;
-  /** The workspace applies proposals at once instead of holding them for approval. */
-  autoApply?: boolean;
   files: FileSummary[];
   members: WorkspaceMember[];
   onSaved: () => void;
@@ -68,7 +66,6 @@ interface Draft {
   text: string;
   sourceFileIds: string[];
   ownerUserId: string;
-  rationale: string;
   expectedVersion: number;
   entryId?: string;
   supersedes?: string;
@@ -81,8 +78,6 @@ export function ContextFieldPanel({
   entries,
   version,
   canEdit,
-  canPropose,
-  autoApply = false,
   files,
   members,
   onSaved,
@@ -98,7 +93,6 @@ export function ContextFieldPanel({
         field === "ownership" ? (entry?.ownerArea ?? "") : (entry?.text ?? ""),
       sourceFileIds: [...(entry?.sourceFileIds ?? [])],
       ownerUserId: entry?.ownerUserId ?? "",
-      rationale: "",
       expectedVersion: version,
       ...(entry && !supersedes && !replacesValue(field) ? { entryId: entry.id } : {}),
       ...(supersedes ? { supersedes } : {}),
@@ -109,28 +103,29 @@ export function ContextFieldPanel({
     if (!draft) return;
     setBusy(true);
     setError(null);
-    const input = {
-      field,
-      proposedValue: draft.text,
-      sourceFileIds: draft.sourceFileIds,
-      ...(field === "ownership" ? { ownerUserId: draft.ownerUserId } : {}),
-    };
+    const owner = field === "ownership" ? { ownerUserId: draft.ownerUserId } : {};
     try {
       let message = `${FIELD_LABELS[field]} saved.`;
-      if (canEdit && !draft.supersedes)
+      // Editing a value in place; a new entry (or a superseding decision) is an addition.
+      if (draft.entryId || replacesValue(field))
         await api.updateContextField(workspaceId, {
-          ...input,
+          field,
+          proposedValue: draft.text,
+          sourceFileIds: draft.sourceFileIds,
+          ...owner,
           expectedVersion: draft.expectedVersion,
           ...(draft.entryId ? { entryId: draft.entryId } : {}),
         });
       else {
-        const result = await api.proposeContextChange(workspaceId, {
-          ...input,
-          rationale: draft.rationale,
+        const result = await api.changeContext(workspaceId, {
+          field,
+          value: draft.text,
+          sourceFileIds: draft.sourceFileIds,
+          ...owner,
           expectedVersion: draft.expectedVersion,
           ...(draft.supersedes ? { supersedes: draft.supersedes } : {}),
         });
-        message = result.status === "applied" ? `${FIELD_LABELS[field]} recorded.` : "Proposal sent to Approvals.";
+        if (result.deduplicated) message = "Already in project context.";
       }
       toast.success(message);
       setDraft(null);
@@ -151,14 +146,10 @@ export function ContextFieldPanel({
     setBusy(true);
     setError(null);
     try {
-      const result = await api.proposeContextChange(workspaceId, {
-        field, operation, entryId: entry.id, expectedVersion: version,
-        sourceFileIds: entry.sourceFileIds,
-        rationale: operation === "resolve" ? "Resolved from project context." : "Removed from project context.",
+      await api.changeContext(workspaceId, {
+        field, operation, entryId: entry.id, expectedVersion: version, sourceFileIds: [],
       });
-      toast.success(result.status === "pending"
-        ? "Proposal sent to Approvals."
-        : operation === "resolve" ? "Question resolved." : `${FIELD_LABELS[field]} removed.`);
+      toast.success(operation === "resolve" ? "Question resolved." : `${FIELD_LABELS[field]} removed.`);
       setDraft(null);
     } catch (err) {
       const failure = normalizeError(err);
@@ -179,18 +170,14 @@ export function ContextFieldPanel({
         <h2 id={`context-${field}`} className="text-base font-bold">
           {label}
         </h2>
-        {(canEdit || canPropose) && (
+        {canEdit && (
           <Button
             size="sm"
             variant="ghost"
             disabled={busy}
             onClick={() => open(replacesValue(field) ? entries[0] : undefined)}
           >
-            {canEdit
-              ? replacesValue(field)
-                ? "Edit"
-                : "Add"
-              : field === "constraint" || field === "open_question" ? "Add" : "Propose change"}
+            {replacesValue(field) ? "Edit" : "Add"}
           </Button>
         )}
       </div>
@@ -218,13 +205,13 @@ export function ContextFieldPanel({
                       Edit
                     </Button>
                   )}
-                  {(canEdit || canPropose) && entry.status === "active" && field === "decision" && (
+                  {canEdit && entry.status === "active" && field === "decision" && (
                     <Button size="sm" variant="ghost" disabled={busy} onClick={() => open(entry, entry.id)} aria-label={`Supersede decision ${index + 1}`}>Supersede</Button>
                   )}
-                  {(canEdit || canPropose) && entry.status === "active" && field === "open_question" && (
+                  {canEdit && entry.status === "active" && field === "open_question" && (
                     <Button size="sm" variant="ghost" disabled={busy} onClick={() => void changeStatus(entry, "resolve")} aria-label={`Resolve open question ${index + 1}`}>Resolve</Button>
                   )}
-                  {(canEdit || canPropose) && (field === "constraint" || field === "open_question") && (
+                  {canEdit && (field === "constraint" || field === "open_question") && (
                     <Button size="sm" variant="ghost" disabled={busy} onClick={() => void changeStatus(entry, "remove")} aria-label={`Remove ${FIELD_LABELS[field]} ${index + 1}`}>Remove</Button>
                   )}
                 </div>
@@ -261,7 +248,7 @@ export function ContextFieldPanel({
           onSubmit={(event) => void save(event)}
           className="mt-4 flex flex-col gap-3 border-t pt-4"
         >
-          {draft.supersedes && <p className="text-xs text-muted-foreground">{autoApply ? "Record a replacement decision. The existing decision is marked superseded." : "Propose a replacement decision. The existing decision stays active until approval."}</p>}
+          {draft.supersedes && <p className="text-xs text-muted-foreground">Record a replacement decision. The existing decision is marked superseded.</p>}
           <Label htmlFor={`value-${field}`}>
             {field === "ownership"
               ? "Area of responsibility"
@@ -316,20 +303,6 @@ export function ContextFieldPanel({
               </select>
             </>
           )}
-          {(!canEdit || draft.supersedes) && (
-            <>
-              <Label htmlFor={`reason-${field}`}>Reason for change</Label>
-              <Input
-                id={`reason-${field}`}
-                value={draft.rationale}
-                onChange={(event) =>
-                  setDraft({ ...draft, rationale: event.target.value })
-                }
-                required
-                disabled={busy}
-              />
-            </>
-          )}
           {files.length > 0 && (
             <fieldset
               disabled={busy}
@@ -364,7 +337,7 @@ export function ContextFieldPanel({
           )}
           <div className="flex gap-2">
             <Button size="sm" disabled={busy}>
-              {busy ? "Saving…" : canEdit && !draft.supersedes ? "Save" : autoApply ? "Record" : "Send proposal"}
+              {busy ? "Saving…" : "Save"}
             </Button>
             <Button
               type="button"

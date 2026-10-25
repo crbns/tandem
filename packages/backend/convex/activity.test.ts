@@ -180,7 +180,7 @@ describe("agent activity recording", () => {
     expect(await eventCount(t, workspaceId)).toBe(eventsBefore);
   });
 
-  it("shows another agent behind by one approved version until its next sync", async () => {
+  it("shows another agent behind by one context version until its next sync", async () => {
     const { t, alex, sam, workspaceId } = await setup();
     const claude = await connect(sam, { workspaceId, client: "claude" });
     const chatgpt = await connect(alex, { workspaceId, client: "chatgpt", displayName: "Alex's ChatGPT" });
@@ -190,19 +190,11 @@ describe("agent activity recording", () => {
     const r0 = start.contextRevision;
     expect(start.agents.map((a) => a.contextVersionsBehind)).toEqual([0, 0]);
 
-    const proposed = await callTool(t, claude.apiKey, "propose_context_change", {
+    const updated = await callTool(t, claude.apiKey, "update_context", {
       field: "goal",
-      proposed_value: "Ship the Live view",
-      rationale: "Secret reasoning that must stay out of the feed",
+      value: "Ship the Live view",
     });
-    expect(proposed.structuredContent.proposal.status).toBe("pending");
-    // Pending proposals don't change the approved context.
-    expect((await alex.query(api.activity.getAgentNetwork, { workspaceId })).contextRevision).toBe(r0);
-
-    await alex.mutation(api.context.decideContextProposal, {
-      proposalId: proposed.structuredContent.proposal.id,
-      decision: "approved",
-    });
+    expect(updated.structuredContent).toMatchObject({ context_version: r0 + 1, deduplicated: false });
     let network = await alex.query(api.activity.getAgentNetwork, { workspaceId });
     expect(network.contextRevision).toBe(r0 + 1);
     const gpt = () => network.agents.find((a) => a.connectionId === chatgpt.connectionId)!;
@@ -227,25 +219,16 @@ describe("agent activity recording", () => {
     const { items } = await sam.query(api.activity.listTimeline, { workspaceId });
     expect(items.map((i) => [i.source, i.kind])).toEqual([
       ["agent", "sync"],
-      ["workspace", "approve"],
-      ["agent", "propose"],
+      ["agent", "write"],
       ["agent", "sync"],
       ["agent", "sync"],
     ]);
-    const approve = items[1]!;
-    expect(approve).toMatchObject({
-      actor: { type: "human", label: "Alex", agentConnectionId: null },
-      resource: { type: "proposal", id: proposed.structuredContent.proposal.id },
-      tool: null,
-      outcome: "ok",
-    });
-    expect(items[2]).toMatchObject({
-      tool: "propose_context_change",
-      summary: "Proposed a goal change (pending approval)",
+    expect(items[1]).toMatchObject({
+      tool: "update_context",
+      summary: "Updated goal",
       actor: { type: "agent", agentConnectionId: claude.connectionId, client: "claude" },
     });
     expect(items[0]!.previousSyncedContextRevision).toBe(r0);
-    expect(JSON.stringify(items)).not.toContain("Secret reasoning");
     expect(JSON.stringify(items)).not.toContain("Ship the Live view");
   });
 
@@ -384,21 +367,19 @@ describe("agent activity recording", () => {
     expect(rows[1]!.resolvesActivityId).toBeUndefined();
   });
 
-  it("keeps an agent up to date when its own proposal applies immediately", async () => {
+  it("keeps an agent up to date when its own context change applies", async () => {
     const { t, alex, sam, workspaceId } = await setup();
-    await alex.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "automatic" });
     const claude = await connect(sam, { workspaceId, client: "claude" });
     const chatgpt = await connect(alex, { workspaceId, client: "chatgpt" });
     await callTool(t, claude.apiKey, "sync_workspace");
     await callTool(t, chatgpt.apiKey, "sync_workspace");
     const r0 = (await alex.query(api.activity.getAgentNetwork, { workspaceId })).contextRevision;
 
-    const applied = await callTool(t, claude.apiKey, "propose_context_change", {
+    const applied = await callTool(t, claude.apiKey, "update_context", {
       field: "decisions",
-      proposed_value: "Use Convex for realtime",
-      rationale: "Already in the stack",
+      value: "Use Convex for realtime",
     });
-    expect(applied.structuredContent.proposal.status).toBe("applied");
+    expect(applied.structuredContent.context_version).toBe(r0 + 1);
     const network = await alex.query(api.activity.getAgentNetwork, { workspaceId });
     expect(network.contextRevision).toBe(r0 + 1);
     const byId = (id: Id<"agent_connections">) => network.agents.find((a) => a.connectionId === id)!;
@@ -425,25 +406,23 @@ describe("activity queries", () => {
     expect(all.items.every((i) => i.actor.agentConnectionId === null)).toBe(true);
   });
 
-  it("merges human approvals and pages by before without gaps or duplicates", async () => {
+  it("merges human context edits and pages by before without gaps or duplicates", async () => {
     const { t, alex, sam, workspaceId } = await setup();
     const claude = await connect(sam, { workspaceId, client: "claude" });
     const gemini = await connect(alex, { workspaceId, client: "gemini" });
     for (let i = 0; i < 3; i++) {
-      const proposed = await callTool(t, claude.apiKey, "propose_context_change", {
-        field: "decisions",
-        proposed_value: `Decision ${i}`,
-        rationale: "Because",
-      });
-      await alex.mutation(api.context.decideContextProposal, {
-        proposalId: proposed.structuredContent.proposal.id,
-        decision: i === 1 ? "rejected" : "approved",
+      await callTool(t, claude.apiKey, "update_context", { field: "decisions", value: `Decision ${i}` });
+      await alex.mutation(api.context.changeContext, {
+        workspaceId,
+        field: "open_question",
+        value: `Question ${i}`,
+        sourceFileIds: [],
       });
       await callTool(t, gemini.apiKey, "sync_workspace");
     }
     const full = await alex.query(api.activity.listTimeline, { workspaceId, limit: 100 });
     expect(full.nextBefore).toBeNull();
-    expect(full.items.filter((i) => i.source === "workspace").map((i) => i.kind)).toEqual(["approve", "reject", "approve"]);
+    expect(full.items.filter((i) => i.source === "workspace").map((i) => i.kind)).toEqual(["context", "context", "context"]);
     for (let i = 1; i < full.items.length; i++)
       expect(full.items[i]!.createdAt).toBeLessThanOrEqual(full.items[i - 1]!.createdAt);
 
@@ -460,8 +439,8 @@ describe("activity queries", () => {
 
     const geminiOnly = await alex.query(api.activity.listTimeline, { workspaceId, connectionId: gemini.connectionId });
     expect(geminiOnly.items.map((i) => i.kind)).toEqual(["sync", "sync", "sync"]);
-    const decisions = await alex.query(api.activity.listTimeline, { workspaceId, kinds: ["approve", "reject"] });
-    expect(decisions.items).toHaveLength(3);
+    const edits = await alex.query(api.activity.listTimeline, { workspaceId, kinds: ["context"] });
+    expect(edits.items).toHaveLength(3);
   });
 
   it("pages past the per-source scan budget", async () => {

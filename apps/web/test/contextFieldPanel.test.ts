@@ -94,7 +94,6 @@ describe("context field editing", () => {
           ...section,
           version: context.version,
           canEdit: true,
-          canPropose: false,
           files: [],
           members: [],
           onSaved,

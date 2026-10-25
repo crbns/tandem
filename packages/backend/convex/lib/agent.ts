@@ -149,7 +149,7 @@ export function activityLabel(text: string): string {
   return trimmed.length > LABEL_MAX ? `${trimmed.slice(0, LABEL_MAX - 1)}…` : trimmed;
 }
 
-/** The approved-context version right now (0 before any context exists). */
+/** The project context version right now (0 before any context exists). */
 export async function currentContextRevision(
   ctx: ReadCtx,
   workspaceId: Id<"workspaces">,

@@ -11,25 +11,25 @@ import { ActorBadge } from "@/components/common/ActorBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 
 /**
- * The approved project context, read-only. Changes are proposed by people or
- * assistants and only appear here once a teammate approves them.
+ * The project goal and a compact view of the rest of the context, read-only
+ * here; members edit it on the Project context page.
  */
-export function ApprovedGoal({ workspaceId }: { workspaceId: string }) {
+export function ProjectGoal({ workspaceId }: { workspaceId: string }) {
   const api = useTandemApi();
   const now = useNow();
   const load = useCallback(() => api.getContext(workspaceId), [api, workspaceId]);
   const { resource, reload } = useResource(load);
-  // An approval elsewhere (another tab, a teammate) updates the goal here.
+  // A context change elsewhere (another tab, a teammate, an assistant) updates the goal here.
   useWorkspaceRefresh(workspaceId, reload);
 
   if (resource.status === "loading") {
-    return <Skeleton className="h-[5.5rem] w-full" aria-label="Loading the approved goal" />;
+    return <Skeleton className="h-[5.5rem] w-full" aria-label="Loading the goal" />;
   }
 
   if (resource.status === "error") {
     return (
       <p className="rounded-md border bg-card px-5 py-4 text-sm text-muted-foreground">
-        Couldn&apos;t load the approved goal.{" "}
+        Couldn&apos;t load the goal.{" "}
         <button type="button" onClick={reload} className="font-medium text-foreground underline">
           Try again
         </button>
@@ -42,10 +42,10 @@ export function ApprovedGoal({ workspaceId }: { workspaceId: string }) {
     return (
       <section aria-labelledby="goal-heading" className="rounded-md border border-dashed bg-card px-5 py-4">
         <h2 id="goal-heading" className="text-sm font-semibold">
-          No approved goal yet
+          No goal yet
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Teammates or their assistants can propose one; it appears here once a teammate approves it.
+          Set one on the Project context page, or let an assistant or Tandem&apos;s context manager record it.
         </p>
       </section>
     );
@@ -58,11 +58,11 @@ export function ApprovedGoal({ workspaceId }: { workspaceId: string }) {
         {ctx.goal}
       </h2>
       <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground">Approved goal</span>
+        <span className="font-medium text-foreground">Goal</span>
         <span className="label-caps rounded-sm bg-archive-tint px-1.5 py-0.5 text-archive">v{ctx.version}</span>
-        <span>approved by</span>
-        <ActorBadge actor={ctx.approvedBy} />
-        <span title={formatAbsolute(ctx.approvedAt)}>{formatRelative(ctx.approvedAt, now)}</span>
+        <span>set by</span>
+        <ActorBadge actor={ctx.updatedBy} />
+        <span title={formatAbsolute(ctx.updatedAt)}>{formatRelative(ctx.updatedAt, now)}</span>
       </p>
       <details className="group mt-3 text-sm">
         <summary className="flex w-fit cursor-pointer list-none items-center gap-1 text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">

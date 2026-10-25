@@ -1,12 +1,13 @@
 /// <reference types="vite/client" />
 import mcpTest from "@convex-dev/mcp/test";
 import { convexTest } from "convex-test";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { randomSecret } from "./lib/mcpConfig";
 import {
+  DEMO_AGENT_DECISION,
   DEMO_CONSTRAINT,
   DEMO_HELP_CENTER_CONSTRAINT,
   DEMO_DECISION,
@@ -73,7 +74,7 @@ async function setup() {
 }
 
 describe("seed:rebuildDemoWorkspace", () => {
-  it("builds the demo: members, brief.md v1 by Alex, approved goal and scope, live API keys", async () => {
+  it("builds the demo: members, brief.md v1 by Alex, goal and scope, live API keys", async () => {
     const { t, rebuild, as } = await setup();
     const demo = await rebuild();
     expect(demo.workspaceName).toBe(DEMO_WORKSPACE_NAME);
@@ -96,19 +97,6 @@ describe("seed:rebuildDemoWorkspace", () => {
       updatedBy: { type: "human", label: "Alex" },
     });
     expect(context?.scope?.text).toBe(DEMO_SCOPE);
-    const approvals = await as("alex").query(api.context.getApprovals, {
-      workspaceId: demo.workspaceId,
-    });
-    expect(
-      approvals
-        .filter((p) => p.field === "goal" || p.field === "scope")
-        .map((p) => [p.field, p.status])
-        .sort(),
-    ).toEqual([
-      ["goal", "approved"],
-      ["scope", "approved"],
-    ]);
-
     const files = await as("alex").query(api.files.listFiles, {
       workspaceId: demo.workspaceId,
       paginationOpts: { numItems: 10, cursor: null },
@@ -129,7 +117,7 @@ describe("seed:rebuildDemoWorkspace", () => {
     }
   });
 
-  it("seeds the story: folders, history, context, tasks and one pending agent proposal", async () => {
+  it("seeds the story: folders, history, context, tasks and one decision from an agent", async () => {
     const { t, rebuild, as } = await setup();
     const demo = await rebuild();
 
@@ -174,7 +162,10 @@ describe("seed:rebuildDemoWorkspace", () => {
     const context = await as("alex").query(api.workspaces.getWorkspaceContext, {
       workspaceId: demo.workspaceId,
     });
-    expect(context?.decisions.map((d) => d.text)).toEqual([DEMO_DECISION]);
+    expect(context?.decisions.map((d) => d.text)).toEqual([DEMO_DECISION, DEMO_AGENT_DECISION]);
+    expect(context?.decisions[1]).toMatchObject({
+      updatedBy: { type: "agent", label: "Casey's Gemini", userName: "Casey" },
+    });
     expect(context?.constraints.map((c) => c.text)).toEqual([DEMO_CONSTRAINT, DEMO_HELP_CENTER_CONSTRAINT]);
     expect(context?.openQuestions.map((q) => q.text)).toEqual([DEMO_OPEN_QUESTION]);
     expect(context?.ownership).toHaveLength(1);
@@ -182,39 +173,6 @@ describe("seed:rebuildDemoWorkspace", () => {
     const tasks = await as("blake").query(api.tasks.listTasks, { workspaceId: demo.workspaceId });
     expect(tasks.map((task) => task.status).sort()).toEqual(["done", "in_progress", "open"]);
 
-    const approvals = await as("alex").query(api.context.getApprovals, {
-      workspaceId: demo.workspaceId,
-    });
-    const pending = approvals.filter((p) => p.status === "pending");
-    expect(pending).toHaveLength(1);
-    expect(pending[0]).toMatchObject({
-      field: "decision",
-      createdBy: { type: "agent", label: "Casey's Gemini", userName: "Casey" },
-    });
-  });
-
-  it("flags Casey's proposal against the help-center constraint it contradicts, and nothing else", async () => {
-    // Pins #61's no-key word-overlap fallback (an empty key counts as unset,
-    // even when the shell exports a real one): the seed's wording must point
-    // it at the real contradiction (the help-center constraint), not at an
-    // incidental shared word like "launch".
-    vi.useFakeTimers();
-    vi.stubEnv("ANTHROPIC_API_KEY", "");
-    try {
-      const { t, rebuild } = await setup();
-      const demo = await rebuild();
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
-      const proposals = await t.run((ctx) =>
-        ctx.db.query("context_proposals")
-          .withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", demo.workspaceId)).collect());
-      const pending = proposals.filter((p) => p.status === "pending");
-      expect(pending).toHaveLength(1);
-      expect(pending[0]!.conflict).toMatchObject({ status: "uncertain", method: "heuristic" });
-      expect(pending[0]!.conflict?.items.map((item) => item.targetText)).toEqual([DEMO_HELP_CENTER_CONSTRAINT]);
-    } finally {
-      vi.unstubAllEnvs();
-      vi.useRealTimers();
-    }
   });
 
   it("a rebuild replaces only the demo workspace and revokes its old tokens", async () => {
@@ -253,7 +211,7 @@ describe("seed:rebuildDemoWorkspace", () => {
         attempt: 1,
         created: 1,
         updated: 0,
-        proposals: 0,
+        contextChanges: 0,
         startedAt: 0,
       });
       const entry = {

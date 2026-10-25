@@ -2,9 +2,10 @@
 // from the internal camelCase shapes of convex/mcpTools.ts. Ported from the
 // Node server's ConvexBackend (apps/mcp) so assistants see the same results
 // and error codes as before. Pure functions: no ctx, no database.
-import { ConvexError, type Value } from "convex/values";
+import { ConvexError, type Infer, type Value } from "convex/values";
 import type { Doc } from "../_generated/dataModel";
 import { briefObserved, OBSERVED_NOTE, type Observed } from "./observed";
+import type { contextFieldValidator } from "./validators";
 
 type Actor = Doc<"workspace_events">["actor"];
 
@@ -29,42 +30,7 @@ interface FolderRow {
   updatedAt: number;
 }
 
-type Field = Doc<"context_proposals">["field"];
-type ConflictRow = NonNullable<Doc<"context_proposals">["conflict"]>;
-type Resolution = NonNullable<Doc<"context_proposals">["resolution"]>;
-
-interface ProposalRow {
-  id: string;
-  workspaceId: string;
-  field: Field;
-  operation?: "add" | "resolve" | "remove";
-  proposedValue: string;
-  rationale: string;
-  sourceFileIds: string[];
-  status: "pending" | "applied" | "approved" | "rejected" | "stale";
-  supersedes: string | null;
-  createdBy: Actor;
-  createdAt: number;
-  decidedBy: Actor | null;
-  decidedAt: number | null;
-  ownerUserId: string | null;
-  ownerArea: string | null;
-  conflict?: ConflictRow | null;
-  resolution?: Resolution | null;
-  decisionNote?: string | null;
-}
-
-interface ResolvedConflictRow {
-  proposalId: string;
-  field: Field;
-  proposedValue: string;
-  outcome: Resolution;
-  note: string | null;
-  resolvedBy: Actor;
-  resolvedAt: number;
-  inEffect: { id: string; text: string }[];
-  notInEffect: string[];
-}
+type Field = Infer<typeof contextFieldValidator>;
 
 interface ContextEntry {
   id: string;
@@ -180,7 +146,7 @@ function invalidCursor() {
 export function approvalRequired(field: string) {
   return new ToolError(
     "APPROVAL_REQUIRED",
-    "Changes to goal, scope, decisions or ownership need human approval. Use propose_context_change.",
+    "This action needs a person signed in to the Tandem dashboard.",
     { field },
   );
 }
@@ -417,10 +383,7 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
         { limit: num("limit") ?? 500 },
       );
     case "INVALID_INPUT":
-    case "PROPOSAL_NOT_FOUND":
-    case "PROPOSAL_ALREADY_DECIDED":
     case "CONTEXT_NOT_INITIALIZED":
-    case "ALREADY_IN_CONTEXT":
       return invalidInput(str("message") ?? `Invalid request (${code}).`, data);
     default:
       return err;
@@ -506,9 +469,9 @@ export function toFolder(f: FolderRow) {
   };
 }
 
-type ProposalField = "goal" | "scope" | "constraints" | "decisions" | "ownership" | "open_questions";
+type ToolField = "goal" | "scope" | "constraints" | "decisions" | "ownership" | "open_questions";
 
-function toProposalField(field: Field): ProposalField {
+export function toToolField(field: Field): ToolField {
   switch (field) {
     case "constraint":
       return "constraints";
@@ -519,57 +482,6 @@ function toProposalField(field: Field): ProposalField {
     default:
       return field;
   }
-}
-
-/** context_proposals.conflict in the snake_case contract (docs/conflict-resolution.md). */
-export function toConflict(c: ConflictRow) {
-  return {
-    status: c.status,
-    method: c.method,
-    reason: c.reason ?? null,
-    checked_at: c.checkedAt === undefined ? null : iso(c.checkedAt),
-    items: c.items.map((i) => ({
-      kind: i.kind,
-      uncertain: i.uncertain ?? false,
-      target_type: i.targetType,
-      target_id: i.targetId,
-      target_text: i.targetText,
-      target_by: toAttribution(i.targetBy),
-      target_at: iso(i.targetAt),
-      context_version: i.contextVersion,
-      explanation: i.explanation,
-      confidence: i.confidence ?? null,
-    })),
-  };
-}
-
-export function toProposal(p: ProposalRow, contextRevision: number) {
-  return {
-    base_context_version: contextRevision,
-    id: p.id,
-    workspace_id: p.workspaceId,
-    field: toProposalField(p.field),
-    operation: p.operation ?? "add",
-    proposed_value:
-      p.field === "ownership" && p.ownerUserId !== null && p.ownerArea !== null
-        ? { area: p.ownerArea, owner_user_id: p.ownerUserId }
-        : p.proposedValue,
-    rationale: p.rationale,
-    source_ids: p.sourceFileIds,
-    status: p.status,
-    supersedes: p.supersedes,
-    proposed_by: toAttribution(p.createdBy),
-    created_at: iso(p.createdAt),
-    conflict: p.conflict ? toConflict(p.conflict) : null,
-    resolution: p.resolution ?? null,
-    decision_note: p.decisionNote ?? null,
-    ...(p.decidedBy && p.decidedAt !== null
-      ? {
-          decided_by: { user_id: p.decidedBy.userId ?? "", actor_type: "human" as const },
-          decided_at: iso(p.decidedAt),
-        }
-      : {}),
-  };
 }
 
 function toContextEntry(e: ContextEntry) {
@@ -626,10 +538,6 @@ function toContext(c: ContextRow) {
 type SyncRow = {
   workspace: { id: string; name: string };
   context: ContextRow;
-  pendingProposals: (Pick<ProposalRow, "id" | "field" | "operation" | "proposedValue" | "supersedes" | "rationale" | "createdBy" | "createdAt"> & {
-    conflict: ConflictRow | null;
-  })[];
-  resolvedConflicts: ResolvedConflictRow[];
   changedFiles: FileRow[];
   filesTruncated: boolean;
   folders: FolderRow[];
@@ -690,48 +598,16 @@ function toPublishedTitle(w: Parameters<typeof toPublished>[0]) {
 /** Cap on each list in the sync brief. */
 export const BRIEF_LIMIT = 10;
 
-const UNRESOLVED = new Set(["checking", "conflict", "uncertain"]);
-
-/** Pending proposals a conflict check holds for a person (or is still checking). */
-function toBlockingConflicts(r: SyncRow) {
-  return r.pendingProposals
-    .filter((p) => p.conflict && UNRESOLVED.has(p.conflict.status))
-    .map((p) => ({
-      proposal_id: p.id,
-      field: toProposalField(p.field),
-      proposed_value: p.proposedValue,
-      proposed_by: toAttribution(p.createdBy),
-      status: p.conflict!.status,
-      conflicts_with: p.conflict!.items.map((i) => ({ type: i.targetType, id: i.targetId, text: i.targetText })),
-      context_version: Math.max(r.context.revision, ...p.conflict!.items.map((i) => i.contextVersion)),
-    }));
-}
-
-function toResolvedConflict(c: ResolvedConflictRow) {
-  return {
-    proposal_id: c.proposalId,
-    field: toProposalField(c.field),
-    proposed_value: c.proposedValue,
-    outcome: c.outcome,
-    note: c.note,
-    resolved_by: toAttribution(c.resolvedBy),
-    resolved_at: iso(c.resolvedAt),
-    in_effect: c.inEffect,
-    not_in_effect: c.notInEffect,
-  };
-}
-
 /**
  * What an assistant should read first: the goal, what's decided, what's
  * blocking, and what just changed. Built only from the sync result; `truncated`
- * says a list was capped at BRIEF_LIMIT (the full lists are in context,
- * pending_proposals and events).
+ * says a list was capped at BRIEF_LIMIT (the full lists are in context and
+ * events).
  */
 function toSyncBrief(r: SyncRow, detail: "brief" | "full") {
   const active = (entries: ContextEntry[]) => entries.filter((e) => e.status === "active");
   const decisions = active(r.context.decisions);
   const questions = active(r.context.openQuestions);
-  const conflicts = toBlockingConflicts(r);
   return {
     goal: r.context.goal?.text ?? "",
     scope: r.context.scope?.text ?? "",
@@ -739,13 +615,6 @@ function toSyncBrief(r: SyncRow, detail: "brief" | "full") {
     active_decisions: decisions.slice(-BRIEF_LIMIT).map((e) => ({ id: e.id, text: e.text })),
     blockers: {
       open_questions: questions.slice(-BRIEF_LIMIT).map((e) => ({ id: e.id, text: e.text })),
-      pending_approvals: r.pendingProposals.slice(0, BRIEF_LIMIT).map((p) => ({
-        id: p.id,
-        field: toProposalField(p.field),
-        proposed_value: p.proposedValue,
-      })),
-      // Not in effect: each waits for a person to resolve it.
-      conflicts: conflicts.slice(0, BRIEF_LIMIT),
     },
     // Events arrive oldest first; the brief lists the newest first.
     recent_changes: r.events.slice(-BRIEF_LIMIT).reverse().map((e) => ({
@@ -756,7 +625,7 @@ function toSyncBrief(r: SyncRow, detail: "brief" | "full") {
       at: iso(e.createdAt),
     })),
     changed_file_count: r.changedFiles.length,
-    // Derived, not approved; capped on its own, so `truncated` below ignores
+    // Derived, not project context; capped on its own, so `truncated` below ignores
     // it. A full sync carries it once, at top level.
     ...(detail === "brief" && {
       // False only with since, when the event page held no observed change:
@@ -767,15 +636,13 @@ function toSyncBrief(r: SyncRow, detail: "brief" | "full") {
     truncated:
       decisions.length > BRIEF_LIMIT ||
       questions.length > BRIEF_LIMIT ||
-      r.pendingProposals.length > BRIEF_LIMIT ||
-      conflicts.length > BRIEF_LIMIT ||
       r.events.length > BRIEF_LIMIT,
   };
 }
 
 /**
  * `detail: "full"` keeps the whole contract with `brief` first; `"brief"`
- * drops context, proposals and events, trims files to id/name/version and,
+ * drops context and events, trims files to id/name/version and,
  * once observed exists, recent_work to titles.
  */
 export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
@@ -799,8 +666,6 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
       // Full tasks too: they are small and the cursor acknowledges their changes.
       tasks: r.tasks.map(toTask),
       tasks_truncated: r.tasksTruncated,
-      // The cursor acknowledges these too: a snapshot's newest 5, or this page's.
-      resolved_conflicts: r.resolvedConflicts.map(toResolvedConflict),
       events_truncated: r.eventsTruncated,
       cursor,
     };
@@ -809,19 +674,6 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
     workspace: r.workspace,
     context: toContext(r.context),
     context_version: r.context.revision,
-    pending_proposals: r.pendingProposals.map((p) => ({
-      proposed_value: p.proposedValue,
-      supersedes: p.supersedes,
-      status: "pending" as const,
-      id: p.id,
-      field: toProposalField(p.field),
-      operation: p.operation ?? "add",
-      rationale: p.rationale,
-      proposed_by: toAttribution(p.createdBy),
-      created_at: iso(p.createdAt),
-      conflict: p.conflict ? toConflict(p.conflict) : null,
-    })),
-    resolved_conflicts: r.resolvedConflicts.map(toResolvedConflict),
     changed_files: r.changedFiles.map(toFile),
     files_truncated: r.filesTruncated,
     folders: r.folders.map(toFolder),
@@ -886,68 +738,38 @@ export function toPublished(w: {
   };
 }
 
-type ContextField = "goal" | "scope" | "constraints" | "decisions" | "ownership" | "open_questions";
-type ProposedValue = string | { area: string; owner_user_id: string };
+type ContextValue = string | { area: string; owner_user_id: string };
 
-/** Convex's context model is canonical: one text value per proposal (plus the owner for ownership). */
-export function toBackendProposal(
-  field: ContextField,
-  value: ProposedValue | undefined,
+/** Convex's context model is canonical: one text value per change (plus the owner for ownership). */
+export function toBackendContextChange(
+  field: ToolField,
+  value: ContextValue | undefined,
   operation: "add" | "resolve" | "remove" = "add",
-): { field: Field; proposedValue?: string; ownerUserId?: string } {
+): { field: Field; value?: string; ownerUserId?: string } {
   if (operation !== "add") {
     const fieldMap = { constraints: "constraint", decisions: "decision", open_questions: "open_question" } as const;
     return { field: field === "constraints" || field === "decisions" || field === "open_questions" ? fieldMap[field] : field };
   }
   const invalid = (expected: string) =>
-    invalidInput(`proposed_value for ${field} must be ${expected}.`, { field });
+    invalidInput(`value for ${field} must be ${expected}.`, { field });
   switch (field) {
     case "goal":
     case "scope":
       if (typeof value !== "string") throw invalid("the full new text, as a string");
-      return { field, proposedValue: value };
+      return { field, value };
     case "open_questions":
       if (typeof value !== "string") throw invalid("question text, as a string");
-      return { field: "open_question", proposedValue: value };
+      return { field: "open_question", value };
     case "decisions":
       if (typeof value !== "string") throw invalid("the decision text, as a string");
-      return { field: "decision", proposedValue: value };
+      return { field: "decision", value };
     case "constraints":
-      // Approval appends one constraint; lists can't be replaced.
-      if (typeof value === "string") return { field: "constraint", proposedValue: value };
-      throw invalid(
-        "one new constraint, as a string: approval appends it, and existing constraints can't be removed through a proposal",
-      );
+      // Adds one constraint; remove an old one with operation remove.
+      if (typeof value === "string") return { field: "constraint", value };
+      throw invalid("one new constraint, as a string");
     case "ownership":
-      // Convex checks that the owner is a current member, now and on approval.
-      if (value && typeof value === "object") return { field: "ownership", proposedValue: value.area, ownerUserId: value.owner_user_id };
+      // Convex checks that the owner is a current member.
+      if (value && typeof value === "object") return { field: "ownership", value: value.area, ownerUserId: value.owner_user_id };
       throw invalid("{ area, owner_user_id }, where owner_user_id is a workspace member");
   }
-}
-
-/**
- * next_steps for a proposal a conflict check holds, or null when none does.
- * Entry text is untrusted workspace data, so it is quoted, never spliced.
- */
-export function conflictNextSteps(proposal: ReturnType<typeof toProposal>): string[] | null {
-  const conflict = proposal.conflict;
-  if (!conflict || proposal.status !== "pending") return null;
-  if (conflict.status === "checking")
-    return [
-      "A conflict check is still running: this proposal is pending and NOT in effect. Keep following the approved context.",
-      "Call get_approvals shortly to see its conflict status, and tell the user it awaits review.",
-    ];
-  if (conflict.status !== "conflict" && conflict.status !== "uncertain") return null;
-  const lines = conflict.items.slice(0, 5).map((i) =>
-    i.target_type === "proposal"
-      ? `It competes with pending proposal ${i.target_id} (${JSON.stringify(i.target_text)}), which is not in effect either.`
-      : `It ${i.kind === "replaces" ? "would replace" : i.uncertain ? "may contradict" : "contradicts"} the approved ${i.target_type} ${i.target_id} ` +
-        `(${JSON.stringify(i.target_text)}) at context_version ${i.context_version}.`,
-  );
-  return [
-    `${conflict.status === "conflict" ? "Conflict" : "Possible conflict"}: this proposal is pending human resolution in the Tandem dashboard and is NOT in effect.`,
-    ...lines,
-    "Keep following the approved value until a person resolves it, and tell the user about the conflict. " +
-      "sync_workspace (resolved_conflicts) or get_approvals shows the outcome.",
-  ];
 }

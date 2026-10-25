@@ -63,7 +63,7 @@ export default function OverviewPage() {
     reloadContext();
     reloadMembers();
   }, [reloadAgents, reloadFiles, reloadContext, reloadMembers]);
-  // MCP writes, connects, approvals and invite joins record workspace events.
+  // MCP writes, connects, context changes and invite joins record workspace events.
   // Read-only MCP calls only bump connection times, which show on focus or Refresh.
   useWorkspaceRefresh(workspaceId, reloadAll);
   const refreshing = agents.refreshing || files.refreshing || context.refreshing || members.refreshing;

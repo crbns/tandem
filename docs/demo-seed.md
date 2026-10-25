@@ -13,10 +13,10 @@ pnpm demo:reset
 | Users | Alex `alex@demo.tandem.test` (owner), Blake `blake@demo.tandem.test` (member), Casey `casey@demo.tandem.test` (member). All three are Password users and share one password. |
 | Workspace | "Onboarding refresh" |
 | Files | `brief.md` v1 (Alex); `research/support-tickets.md` v1 (Casey); `research/interview-notes.md` v2 (Blake: v1 had five interviews, v2 adds a sixth and a quotes section, so there is a real diff to ask about); `requirements/setup-checklist.md` v1 (Blake) |
-| Approved context | Goal: "Cut new-customer time-to-first-value from 9 days to 3 by the end of Q1." Scope: welcome emails, setup checklist and three how-to guides are in; pricing, a new help center and localization are out. Both are sourced from `brief.md` and approved by Alex. They go through the normal propose-and-approve path, so the Approvals page and event log show them. |
-| Working context | Decision: first value means "first project created". Ownership: Blake owns the welcome email sequence. Constraints: launch before the January 15 billing cycle; no new help-center platform (the guides live in the existing help center or the app). Open question: do the guides live in the app or the existing help center? All approved by Alex. |
+| Project context | Goal: "Cut new-customer time-to-first-value from 9 days to 3 by the end of Q1." Scope: welcome emails, setup checklist and three how-to guides are in; pricing, a new help center and localization are out. Both are sourced from `brief.md` and set by Alex through the same path as a dashboard edit, so the Context page and event log show them. |
+| Working context | Decision: first value means "first project created". Ownership: Blake owns the welcome email sequence. Constraints: launch before the January 15 billing cycle; no new help-center platform (the guides live in the existing help center or the app). Open question: do the guides live in the app or the existing help center? All recorded by Alex. |
 | Tasks | "Draft the welcome email sequence" (in progress, Blake), "Write the three how-to guides" (open), "Pull the top setup questions from support" (done, Casey) |
-| Pending proposal | Casey's Gemini proposes moving the guides to a new help-center platform. It contradicts the approved scope and the help-center constraint on purpose, so the Approvals page has something to reject live. Conflict detection checks it against that constraint: with `ANTHROPIC_API_KEY` set on the deployment, the card shows it as a conflict with an explanation; without a key, the word-overlap fallback marks it "uncertain" against the same constraint. |
+| Assistant decision | Casey's Gemini recorded a decision to move the guides to a new help-center platform, sourced from `research/support-tickets.md`. It contradicts the scope and the help-center constraint on purpose, so the team has a disagreement to see and settle live on the Context page (edit or replace it). It is attributed to Casey's Gemini, like any change an assistant makes with `update_context`. |
 | Agent connections | Alex's Claude, Blake's Claude, Casey's Gemini (one token each) |
 
 `proposal.md` is deliberately missing. In the demo, Alex's Claude creates it live.
@@ -27,7 +27,7 @@ The content lives in `packages/backend/convex/seed.ts` (`DEMO_BRIEF`, `DEMO_GOAL
 
 1. It checks the inputs (password length, token format, tokens that are duplicated or used outside the demo). If any check fails, it stops before changing anything.
 2. It creates the three users. For users that already exist, it sets their password and deletes their sessions and refresh tokens. A dashboard sign-in token issued before the reset keeps working until it expires (at most an hour).
-3. It deletes the seeded demo workspace and everything in it (folders, files, revisions, proposals, approvals, tasks, events, connections, invites, stored blobs). The seeded workspace carries a `demoSeed` marker, so a workspace Alex creates with the same name is not touched.
+3. It deletes the seeded demo workspace and everything in it (folders, files, revisions, project context, tasks, events, connections, invites, stored blobs). The seeded workspace carries a `demoSeed` marker, so a workspace Alex creates with the same name is not touched.
 4. It builds the workspace again as described above, in one transaction. Everything it creates carries the reset's timestamp, so the activity feed reads "just now", except `research/interview-notes.md` v1, which is dated a day earlier so its history shows a real gap between versions.
 
 Nothing else is touched. Other workspaces, including any the demo users created themselves, survive a reset. Running it repeatedly always ends in the same state.
@@ -119,7 +119,7 @@ pnpm test:demo
 This command does the following:
 
 1. Resets the demo.
-2. Checks the seed (brief.md v1 alone at the root, approved goal and scope, exactly one pending proposal from Casey's Gemini), then runs the P0 slice on it: Alex's Claude creates `proposal.md` v1, Blake signs in with the seeded password and saves v2, the agent reads v2, a stale v1 update gets `VERSION_CONFLICT`, and history names both editors.
+2. Checks the seed (brief.md v1 alone at the root, the goal and scope, and Casey's Gemini's decision in project context), then runs the P0 slice on it: Alex's Claude creates `proposal.md` v1, Blake signs in with the seeded password and saves v2, the agent reads v2, a stale v1 update gets `VERSION_CONFLICT`, and history names both editors.
 3. Resets again and prints the new credentials.
 
 It follows `DEMO_PASSWORD` and `DEMO_TOKEN_*`, so pin them first if you don't want them to change. It talks to `CONVEX_URL` (default `http://127.0.0.1:3210`) and that deployment's own `/mcp` (`MCP_URL` overrides it). Against the cloud demo deployment, run it like this:
@@ -137,7 +137,7 @@ It doesn't run as part of `pnpm test:e2e`, where the suite shows as skipped.
 3. Configure Claude Code with Alex's token. Sign in to the dashboard as Blake in a second browser profile.
 4. Rehearse.
 5. Run `pnpm demo:reset` (the final reset). The output should match your pinned values. Sign out and back in as Alex and Blake: the reset ends sessions, though an open tab can keep working for up to an hour on its current token. Open the printed `/w/<id>/overview` link.
-6. Check the Overview against the seed: 4 files (`brief.md` v1, `research/interview-notes.md` v2, `research/support-tickets.md` v1, `requirements/setup-checklist.md` v1) in 2 folders, no `proposal.md`, the approved goal, exactly one pending proposal (Casey's Gemini: move the guides to a new help-center platform), and 3 tasks.
+6. Check the Overview against the seed: 4 files (`brief.md` v1, `research/interview-notes.md` v2, `research/support-tickets.md` v1, `requirements/setup-checklist.md` v1) in 2 folders, no `proposal.md`, the goal, Casey's Gemini's decision (move the guides to a new help-center platform) on the Context page, and 3 tasks.
 7. Only now connect claude.ai, if you're demoing it (see "Connecting the assistants"). Have each assistant sync once off stage so the Assistants page shows when it was last heard from.
 
 ## Troubleshooting

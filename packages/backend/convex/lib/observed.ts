@@ -1,6 +1,6 @@
 // The context manager's derived state (context_entries), as sync_workspace
 // hands it to assistants (docs/context-intelligence.md "Consumption"). It is
-// observed, not approved: only structured_context is authoritative, so every
+// observed, not project context: only structured_context is authoritative, so every
 // result carries OBSERVED_NOTE. It is the compacted summary assistants read
 // instead of skimming recent work and events, so it stays small: no
 // superseded history (the dashboard shows that), labels instead of agent
@@ -14,7 +14,7 @@ import { agentActor } from "./agent";
 type ReadCtx = QueryCtx | MutationCtx;
 
 export const OBSERVED_NOTE =
-  "Context manager's compacted summary of team activity and documents; not approved (only context is authoritative); claimed ≠ done.";
+  "Context manager's compacted summary of team activity and documents; not project context (only context is authoritative); claimed ≠ done.";
 
 /** Entries in a full sync. */
 export const OBSERVED_LIMIT = 30;

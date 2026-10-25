@@ -32,7 +32,7 @@ export function useWorkspaceRole(workspaceId: string): Workspace["role"] | null 
 
 /**
  * Refetch when something lands in the workspace (an assistant's save through
- * MCP, a proposal, a decision) and when the window regains focus, so lists
+ * MCP, a context change) and when the window regains focus, so lists
  * stay current without a manual reload.
  */
 export function useWorkspaceRefresh(workspaceId: string, reload: () => void) {

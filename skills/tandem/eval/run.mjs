@@ -28,10 +28,10 @@
 // path or id) and its marker phrase is in the answer.
 //
 // Prompts with "loop" get a loop grader: every step in loop.require (sync,
-// read, save, propose, ...) needs a successful call, and no step in
+// read, save, context, ...) needs a successful call, and no step in
 // loop.forbid may be attempted. An ordinary edit or draft requires sync + save
-// and forbids publish_work and propose_context_change: Tandem's context
-// manager records the work from the saved files.
+// and forbids publish_work and update_context: Tandem's context manager
+// records the work from the saved files.
 //
 // On SIGINT/SIGTERM (or any exit) the harness kills the live MCP servers and
 // claude processes (each runs in its own process group) and removes in-flight
@@ -88,7 +88,7 @@ const WRITE_TOOLS = new Set([
   "move_file",
   "move_folder",
   "publish_work",
-  "propose_context_change",
+  "update_context",
 ]);
 // Loop grader steps: the Tandem tools that count for each.
 const LOOP_STEPS = {
@@ -96,7 +96,7 @@ const LOOP_STEPS = {
   read: ["read_file", "search_files"],
   save: ["create_document", "update_document"],
   publish: ["publish_work"],
-  propose: ["propose_context_change"],
+  context: ["update_context"],
 };
 const CONDITIONS = ["WITH_SKILL", "NO_SKILL"];
 // Built-ins from the CLI's init tool list that the eval never needs. Names
@@ -800,7 +800,7 @@ export function analyzeLoop(calls, spec) {
     passed: missing.length === 0 && unwanted.length === 0,
     write_calls: calls.filter((c) => WRITE_TOOLS.has(tool(c))).length,
     publish_calls: of("publish").length,
-    propose_calls: of("propose").length,
+    context_calls: of("context").length,
   };
 }
 
@@ -1195,7 +1195,7 @@ export function summarizeLoop(trials, prompts, conditions) {
         unwanted: tally("unwanted"),
         write_calls: sum("write_calls"),
         publish_calls: sum("publish_calls"),
-        propose_calls: sum("propose_calls"),
+        context_calls: sum("context_calls"),
       });
     }
   }
@@ -1502,11 +1502,11 @@ export function renderLoopTable(rows) {
       .map(([k, v]) => `${k} ${v}`)
       .join(", ") || "-";
   return (
-    "| Prompt | Condition | n | Passed | Missing required | Unwanted writes | Write calls | publish_work | propose_context_change |\n|---|---|---|---|---|---|---|---|---|\n" +
+    "| Prompt | Condition | n | Passed | Missing required | Unwanted writes | Write calls | publish_work | update_context |\n|---|---|---|---|---|---|---|---|---|\n" +
     rows
       .map(
         (r) =>
-          `| \`${r.prompt_id}\` | ${r.condition} | ${r.n} | ${r.passed}/${r.n} | ${steps(r.missing)} | ${steps(r.unwanted)} | ${r.write_calls} | ${r.publish_calls} | ${r.propose_calls} |`,
+          `| \`${r.prompt_id}\` | ${r.condition} | ${r.n} | ${r.passed}/${r.n} | ${steps(r.missing)} | ${steps(r.unwanted)} | ${r.write_calls} | ${r.publish_calls} | ${r.context_calls ?? r.propose_calls} |`,
       )
       .join("\n") +
     "\n"
@@ -1524,7 +1524,7 @@ function renderLoopSection(r) {
     .join("; ");
   return `## Loop
 
-Prompts with \`loop\`. A trial passes when every required step had a successful call (sync: \`sync_workspace\`; read: \`read_file\`/\`search_files\`; save: \`create_document\`/\`update_document\`; propose: \`propose_context_change\`) and no forbidden step was attempted. Missing and unwanted columns count trials per step; call columns sum calls. Specs: ${specs}.
+Prompts with \`loop\`. A trial passes when every required step had a successful call (sync: \`sync_workspace\`; read: \`read_file\`/\`search_files\`; save: \`create_document\`/\`update_document\`; context: \`update_context\`) and no forbidden step was attempted. Missing and unwanted columns count trials per step; call columns sum calls. Specs: ${specs}.
 
 ${renderLoopTable(r.loop_summary)}
 `;
@@ -1586,7 +1586,7 @@ ${envLine}
 
 ## Summary
 
-Counts are k/n trials. Sync/write attempted count trials with matching tool calls; Sync/write OK require at least one matching non-error tool result. Write tools are create_document, update_document, create_folder, move_file, move_folder, publish_work, propose_context_change. First Tandem call = sync measures attempted order. Tool errors counts trials with at least one Tandem tool error, even if the final answer succeeds. Errors/timeouts includes tool errors, CLI failures (including nonzero exit or a missing final result), and timeouts; these trials still count in n. Tool calls made inside subagents are excluded. Columns shown as n/a were not recorded by that run.${staleNote}
+Counts are k/n trials. Sync/write attempted count trials with matching tool calls; Sync/write OK require at least one matching non-error tool result. Write tools are create_document, update_document, create_folder, move_file, move_folder, publish_work, update_context. First Tandem call = sync measures attempted order. Tool errors counts trials with at least one Tandem tool error, even if the final answer succeeds. Errors/timeouts includes tool errors, CLI failures (including nonzero exit or a missing final result), and timeouts; these trials still count in n. Tool calls made inside subagents are excluded. Columns shown as n/a were not recorded by that run.${staleNote}
 
 ${renderSummaryTable(r.summary, r.settings.env, r.trials)}
 ${renderConflictSection(r)}${renderFolderSection(r)}${renderLoopSection(r)}## Isolation

@@ -103,7 +103,8 @@ describe("Live helpers", () => {
 
   it("links resources to their dashboard pages", () => {
     expect(resourceHref("ws", { type: "file", id: "f1", label: "a.md" })).toBe("/w/ws/files/f1");
-    expect(resourceHref("ws", { type: "proposal", id: "p", label: null })).toBe("/w/ws/approvals");
+    // Older history links proposals; they now open the project context.
+    expect(resourceHref("ws", { type: "proposal", id: "p", label: null })).toBe("/w/ws/context");
     expect(resourceHref("ws", { type: "context", id: "ws", label: null })).toBe("/w/ws/context");
     expect(resourceHref("ws", { type: "task", id: "t", label: null })).toBeNull();
   });
@@ -143,11 +144,13 @@ describe("mock Live queries", () => {
     expect(contextRevision).toBe(2);
     const page: TimelinePage = await timeline();
     expect(page.items.some((i) => i.kind === "sync")).toBe(true);
-    expect(page.items.some((i) => i.kind === "approve" && i.actor.type === "human")).toBe(true);
+    expect(page.items.some((i) => i.kind === "write" && i.tool === "update_context")).toBe(true);
   });
 
-  it("puts an assistant behind after an approval, and back after its sync", async () => {
-    await api.decideProposal({ id: "proposal_decision", workspaceId: MOCK_WORKSPACE_ID }, "approved");
+  it("puts an assistant behind after a context change, and back after its sync", async () => {
+    await api.listWorkspaces();
+    await api.changeContext(MOCK_WORKSPACE_ID, { field: "decision", value: "Demo ChatGPT as the second client, read-only", sourceFileIds: [] });
+    expect((await timeline()).items[0]).toMatchObject({ kind: "context", summary: "Updated decision", actor: { type: "human" } });
     let agents = (await network()).agents;
     expect(agents[0]!.contextVersionsBehind).toBe(1);
     api.__simulateAgentCall("conn_alex_claude", "sync");

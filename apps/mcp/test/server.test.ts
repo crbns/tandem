@@ -15,7 +15,7 @@ import type { Actor, StructuredContext } from "../src/backend/types.js";
 import { TandemError } from "../src/errors.js";
 import {
   MCP_INSTRUCTIONS,
-  proposedNextSteps,
+  contextNextSteps,
   publishedNextSteps,
   savedNextSteps,
   syncNextSteps,
@@ -171,23 +171,22 @@ describe("Tandem MCP server", () => {
     await client.close();
   });
 
-  it("lists exactly the fourteen tools", async () => {
+  it("lists exactly the thirteen tools", async () => {
     const client = await connect("alex-token");
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "create_document",
       "create_folder",
-      "get_approvals",
       "get_file_versions",
       "get_workspace_info",
       "list_files",
       "move_file",
       "move_folder",
-      "propose_context_change",
       "publish_work",
       "read_file",
       "search_files",
       "sync_workspace",
+      "update_context",
       "update_document",
     ]);
     await client.close();
@@ -213,14 +212,13 @@ describe("Tandem MCP server", () => {
       search_files: readOnly,
       read_file: readOnly,
       get_file_versions: readOnly,
-      get_approvals: readOnly,
       sync_workspace: idempotentWrite,
       create_document: write,
       update_document: idempotentWrite,
       create_folder: idempotentWrite,
       move_file: idempotentWrite,
       move_folder: idempotentWrite,
-      propose_context_change: write,
+      update_context: idempotentWrite,
       publish_work: write,
     });
     await client.close();
@@ -499,7 +497,7 @@ describe("Tandem MCP server", () => {
           is_default: true,
         },
       ],
-      // Members of the default workspace, for ownership proposals.
+      // Members of the default workspace, for ownership changes.
       members: [
         { user_id: "user_alex", name: "Alex", role: "owner" },
         { user_id: "user_sam", name: "Sam", role: "member" },
@@ -795,7 +793,7 @@ describe("sync-and-read / save-files loop", () => {
       "update_document",
       "expected_version",
       "publish_work",
-      "propose_context_change",
+      "update_context",
       "without waiting to be asked",
       "best effort",
       "private conversation history",
@@ -803,10 +801,10 @@ describe("sync-and-read / save-files loop", () => {
       "create_document",
       "read brief first",
       "observed",
-      "don't publish or propose on your own",
+      "don't publish or change context on your own",
       "the user wants announced",
       "the user directs",
-      "pending until a human approves",
+      "it applies at once",
       "manage_task",
       "Reply in chat",
       "show docs you write",
@@ -820,7 +818,7 @@ describe("sync-and-read / save-files loop", () => {
     await client.close();
   });
 
-  it("restates the loop in next_steps on sync, save, publish and propose results", async () => {
+  it("restates the loop in next_steps on sync, save, publish and context results", async () => {
     const client = await connect("alex-token");
     const ok = async (name: string, args: Record<string, unknown>) => {
       const result = await call(client, name, args);
@@ -844,7 +842,7 @@ describe("sync-and-read / save-files loop", () => {
     const { next_steps } = JSON.parse(text(updated));
     expect(next_steps[0]).toContain("expected_version=2");
     // Saving is the whole write-back: the context manager reads the file.
-    expect(next_steps.join(" ")).not.toMatch(/publish_work|propose_context_change/);
+    expect(next_steps.join(" ")).not.toMatch(/publish_work|update_context/);
 
     const published = await ok("publish_work", {
       kind: "deliverable",
@@ -854,13 +852,12 @@ describe("sync-and-read / save-files loop", () => {
     });
     expect(published.next_steps).toEqual(publishedNextSteps());
 
-    const proposed = await ok("propose_context_change", {
+    const changed = await ok("update_context", {
       field: "goal",
-      proposed_value: "Ship the loop",
-      rationale: "Kickoff",
+      value: "Ship the loop",
     });
-    expect(proposed.proposal.status).toBe("pending");
-    expect(proposed.next_steps).toEqual(proposedNextSteps("pending"));
+    expect(changed.deduplicated).toBe(false);
+    expect(changed.next_steps).toEqual(contextNextSteps(false));
     await client.close();
   });
 
@@ -889,7 +886,6 @@ describe("context tools", () => {
     client: "dashboard",
     actor_type: "human",
   };
-  const alexAgent: Actor = { ...alexHuman, actor_type: "agent" };
 
   beforeEach(async () => {
     backend = new MockBackend();
@@ -906,7 +902,6 @@ describe("context tools", () => {
     workspace: { id: string; name: string };
     context: StructuredContext;
     context_version: number;
-    pending_proposals: Record<string, unknown>[];
     changed_files: { id: string; name: string; workspace_id: string }[];
     files_truncated: boolean;
     recent_work: { id: string; summary: string; file_ids: string[] }[];
@@ -932,13 +927,14 @@ describe("context tools", () => {
     return result.structuredContent as unknown as Synced;
   }
 
-  async function propose(client: Client, args: Record<string, unknown>) {
-    const result = await call(client, "propose_context_change", {
-      rationale: "The brief says so.",
-      ...args,
-    });
+  async function update(client: Client, args: Record<string, unknown>) {
+    const result = await call(client, "update_context", args);
     expect(result.isError).toBeFalsy();
-    return (result.structuredContent as { proposal: { id: string } }).proposal;
+    return result.structuredContent as {
+      entry_id: string;
+      context_version: number;
+      deduplicated: boolean;
+    };
   }
 
   function messageOf(result: CallToolResult): string {
@@ -962,7 +958,6 @@ describe("context tools", () => {
       ownership: [{ area: "MCP server", owner_user_id: "user_alex" }],
     });
     expect(first.context_version).toBe(1);
-    expect(first.pending_proposals).toEqual([]);
     expect(first.changed_files.map((f) => f.id)).toEqual(["file_brief"]);
     expect(first.files_truncated).toBe(false);
     expect(first.events).toEqual([
@@ -1117,322 +1112,258 @@ describe("context tools", () => {
     await sam.close();
   });
 
-  it("propose_context_change creates a pending proposal and leaves context unchanged", async () => {
+  it("update_context applies a change at once with attribution", async () => {
     const alex = await connect("alex-token", url);
     const before = await sync(alex);
-    const proposal = await propose(alex, {
+    const result = await call(alex, "update_context", {
       field: "goal",
-      proposed_value: "Win the Cal Hacks grand prize.",
-      rationale: "Judges reward ambition.",
+      value: "Win the Cal Hacks grand prize.",
       source_ids: ["file_brief", "file_brief"],
     });
-    expect(proposal).toEqual({
-      base_context_version: before.context_version,
-      id: expect.stringMatching(/^prop_/),
-      workspace_id: "ws_demo",
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
       field: "goal",
-      proposed_value: "Win the Cal Hacks grand prize.",
-      rationale: "Judges reward ambition.",
-      source_ids: ["file_brief"],
-      status: "pending",
-      supersedes: null,
-      proposed_by: {
-        actor_type: "agent",
-        user_id: "user_alex",
-        client: "dev-token",
-        agent_connection_id: "conn_user_alex_dev-token",
-        label: "user_alex's dev-token assistant",
-      },
-      created_at: expect.any(String),
+      operation: "add",
+      entry_id: "goal",
+      context_version: before.context_version + 1,
+      deduplicated: false,
+      next_steps: contextNextSteps(false),
     });
 
+    const agent = {
+      actor_type: "agent",
+      user_id: "user_alex",
+      client: "dev-token",
+      agent_connection_id: "conn_user_alex_dev-token",
+      label: "user_alex's dev-token assistant",
+    };
     const after = await sync(alex, { since: before.cursor });
-    expect(after.context).toEqual(before.context);
-    expect(after.context_version).toBe(before.context_version);
-    expect(after.pending_proposals).toContainEqual({
-      proposed_value: "Win the Cal Hacks grand prize.",
-      status: "pending",
-      supersedes: null,
-      id: proposal.id,
-      field: "goal",
-      rationale: "Judges reward ambition.",
-      proposed_by: {
-        actor_type: "agent",
-        user_id: "user_alex",
-        client: "dev-token",
-        agent_connection_id: "conn_user_alex_dev-token",
-        label: "user_alex's dev-token assistant",
-      },
-      created_at: expect.any(String),
-    });
+    expect(after.context.goal).toBe("Win the Cal Hacks grand prize.");
+    expect(after.context.updated_by).toEqual(agent);
+    expect(after.context_version).toBe(before.context_version + 1);
+    expect(after).not.toHaveProperty("pending_proposals");
     expect(after.events).toEqual([
       expect.objectContaining({
-        type: "context.proposed",
-        subject_id: proposal.id,
-        summary: "goal change proposed",
+        type: "context.updated",
+        subject_id: "ws_demo",
+        actor: agent,
+        summary: "Updated goal",
       }),
     ]);
 
-    const pending = await call(alex, "get_approvals", {});
-    const { proposals } = pending.structuredContent as {
-      proposals: { id: string; status: string }[];
-    };
-    expect(proposals[0]).toMatchObject({ id: proposal.id, status: "pending" });
-    const approved = await call(alex, "get_approvals", { status: "approved" });
-    expect(
-      (approved.structuredContent as { proposals: { id: string }[] }).proposals,
-    ).not.toContainEqual(expect.objectContaining({ id: proposal.id }));
-    const stale = await call(alex, "get_approvals", { status: "stale" });
-    expect(stale.isError).toBeFalsy();
-    expect(
-      (stale.structuredContent as { proposals: { id: string }[] }).proposals,
-    ).not.toContainEqual(expect.objectContaining({ id: proposal.id }));
+    const decision = await update(alex, {
+      field: "decisions",
+      value: "Demo on Claude first, ChatGPT second.",
+      source_ids: ["file_brief", "file_brief"],
+    });
+    const latest = await sync(alex);
+    expect(latest.context.decisions.at(-1)).toMatchObject({
+      id: decision.entry_id,
+      text: "Demo on Claude first, ChatGPT second.",
+      status: "active",
+      source_ids: ["file_brief"],
+      updated_by: agent,
+    });
+    expect(latest.context_version).toBe(before.context_version + 2);
     await alex.close();
   });
 
-  it("propose_context_change validates values, sources and rationale", async () => {
+  it("update_context writes nothing when the context already says it", async () => {
     const alex = await connect("alex-token", url);
+    const before = await sync(alex);
+    const goal = await update(alex, { field: "goal", value: "Ship the loop." });
+    const added = await sync(alex);
+    const constraint = added.context.constraints[0]!;
+    const owner = added.context.ownership[0]!;
+    const cases: [Record<string, unknown>, string][] = [
+      [{ field: "goal", value: "  ship THE   loop. " }, "goal"],
+      [
+        {
+          field: "decisions",
+          value: "use convex for the database, auth, and file storage.",
+        },
+        "dec_convex",
+      ],
+      [{ field: "constraints", value: constraint.text.toUpperCase() }, constraint.id],
+      [
+        { field: "ownership", value: { area: "mcp SERVER ", owner_user_id: "user_alex" } },
+        owner.id,
+      ],
+    ];
+    for (const [args, entryId] of cases) {
+      const result = await call(alex, "update_context", args);
+      expect(result.structuredContent).toEqual({
+        field: args.field,
+        operation: "add",
+        entry_id: entryId,
+        context_version: goal.context_version,
+        deduplicated: true,
+        next_steps: contextNextSteps(true),
+      });
+    }
+    const after = await sync(alex, { since: added.cursor });
+    expect(after.context).toEqual(added.context);
+    expect(after.context_version).toBe(before.context_version + 1);
+    expect(after.events).toEqual([]);
+    await alex.close();
+  });
+
+  it("update_context validates values, entries and sources", async () => {
+    const alex = await connect("alex-token", url);
+    const before = await sync(alex);
     // Lists are not part of the contract (constraints take one string each).
     for (const args of [
-      { field: "goal", proposed_value: ["not", "text"] },
-      { field: "constraints", proposed_value: ["Ship by Friday", "No PII"] },
-      { field: "constraints", proposed_value: "   " },
+      { field: "goal" },
+      { field: "goal", value: ["not", "text"] },
+      { field: "constraints", value: ["Ship by Friday", "No PII"] },
+      { field: "constraints", value: "   " },
+      { field: "ownership", value: { area: "", owner_user_id: "user_sam" } },
     ]) {
-      const result = await call(alex, "propose_context_change", {
-        rationale: "because",
-        ...args,
-      });
+      const result = await call(alex, "update_context", args);
       expect(result.isError).toBe(true);
       expect(messageOf(result)).toMatch(/Input validation error/);
     }
     const cases: [Record<string, unknown>, string][] = [
       [
-        {
-          field: "ownership",
-          proposed_value: { area: "Venue", owner_user_id: "user_jordan" },
-        },
+        { field: "ownership", value: { area: "Venue", owner_user_id: "user_jordan" } },
         "INVALID_INPUT",
       ],
-      [
-        { field: "scope", proposed_value: "x", source_ids: ["file_missing"] },
-        "FILE_NOT_FOUND",
-      ],
+      [{ field: "ownership", value: "Alex owns it" }, "INVALID_INPUT"],
+      [{ field: "scope", value: "x", source_ids: ["file_missing"] }, "FILE_NOT_FOUND"],
+      [{ field: "goal", value: "x", entry_id: "goal" }, "INVALID_INPUT"],
+      [{ field: "goal", value: "x", supersedes: "dec_convex" }, "INVALID_INPUT"],
+      [{ field: "decisions", value: "x", supersedes: "dec_missing" }, "INVALID_INPUT"],
+      [{ field: "open_questions", operation: "resolve" }, "INVALID_INPUT"],
+      [{ field: "constraints", operation: "resolve", entry_id: before.context.constraints[0]!.id }, "INVALID_INPUT"],
+      [{ field: "decisions", operation: "remove", entry_id: "dec_convex" }, "INVALID_INPUT"],
+      [{ field: "constraints", operation: "remove", entry_id: "entry_missing" }, "INVALID_INPUT"],
     ];
     for (const [args, code] of cases) {
-      const result = await call(alex, "propose_context_change", {
-        rationale: "because",
-        ...args,
-      });
+      const result = await call(alex, "update_context", args);
       expect(result.isError).toBe(true);
       expect(errorCode(result)).toBe(code);
     }
-    for (const rationale of ["", "   ", "x".repeat(2001)]) {
-      const result = await call(alex, "propose_context_change", {
-        field: "goal",
-        proposed_value: "x",
-        rationale,
-      });
-      expect(result.isError).toBe(true);
-      expect(messageOf(result)).toMatch(/Input validation error/);
-    }
+    const after = await sync(alex, { since: before.cursor });
+    expect(after.context).toEqual(before.context);
+    expect(after.context_version).toBe(before.context_version);
+    expect(after.events).toEqual([]);
     await alex.close();
   });
 
-  it("decideProposal by the human owner applies the change", async () => {
+  it("assigns ownership to a member and replaces the owner of an equal area", async () => {
     const alex = await connect("alex-token", url);
-    const proposal = await propose(alex, {
-      field: "goal",
-      proposed_value: "Ship Tandem to three pilot teams.",
-    });
-    const before = await sync(alex);
-
-    const decided = await backend.decideProposal(
-      alexHuman,
-      proposal.id,
-      "approve",
-      "Agreed in standup.",
-    );
-    expect(decided).toMatchObject({
-      status: "approved",
-      decided_by: { user_id: "user_alex", actor_type: "human" },
-      decided_at: expect.any(String),
-      decision_note: "Agreed in standup.",
-    });
-
-    const after = await sync(alex, { since: before.cursor });
-    expect(after.context.goal).toBe("Ship Tandem to three pilot teams.");
-    expect(after.context_version).toBe(before.context_version + 1);
-    expect(after.events).toEqual([
-      expect.objectContaining({
-        type: "context.approved",
-        subject_id: proposal.id,
-        actor: {
-          actor_type: "human",
-          user_id: "user_alex",
-          client: "dashboard",
-        },
-      }),
-    ]);
-    expect(after.pending_proposals).not.toContainEqual(
-      expect.objectContaining({ id: proposal.id }),
-    );
-
-    await expect(
-      backend.decideProposal(alexHuman, proposal.id, "reject"),
-    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
-
-    const decision = await propose(alex, {
-      field: "decisions",
-      proposed_value: "Demo on Claude first, ChatGPT second.",
-      source_ids: ["file_brief"],
-    });
-    await backend.decideProposal(alexHuman, decision.id, "approve");
-    // Working constraints apply immediately.
-    const constraint = await propose(alex, {
-      field: "constraints",
-      proposed_value: " Keep the demo under three minutes. ",
-    });
-    expect(constraint).toMatchObject({ status: "applied" });
-    const owner = await propose(alex, {
+    const result = await update(alex, {
       field: "ownership",
-      proposed_value: { area: "mcp SERVER ", owner_user_id: "user_sam" },
+      value: { area: "mcp SERVER ", owner_user_id: "user_sam" },
     });
-    const rejected = await propose(alex, {
-      field: "scope",
-      proposed_value: "Everything.",
-    });
-    await backend.decideProposal(alexHuman, owner.id, "approve");
-    await backend.decideProposal(
-      alexHuman,
-      rejected.id,
-      "reject",
-      "Too broad.",
-    );
-
-    const latest = await sync(alex);
-    expect(latest.context.decisions.at(-1)).toMatchObject({
-      text: "Demo on Claude first, ChatGPT second.",
-      status: "active",
-      source_ids: ["file_brief"],
-    });
-    expect(latest.context.ownership).toEqual([
+    const { context } = await sync(alex);
+    expect(context.ownership).toEqual([
       expect.objectContaining({
+        id: result.entry_id,
         area: "mcp SERVER",
         owner_user_id: "user_sam",
         status: "active",
       }),
     ]);
-    expect(latest.context.constraints).toEqual([
-      ...after.context.constraints,
-      expect.objectContaining({
-        text: "Keep the demo under three minutes.",
-        status: "active",
-      }),
+    await update(alex, {
+      field: "ownership",
+      value: { area: "Dashboard", owner_user_id: "user_taylor" },
+    });
+    expect((await sync(alex)).context.ownership.map((o) => o.area)).toEqual([
+      "mcp SERVER",
+      "Dashboard",
     ]);
-    expect(latest.context_version).toBe(after.context_version + 3);
-    expect(latest.events.at(-1)).toMatchObject({
-      type: "context.rejected",
-      subject_id: rejected.id,
-    });
-    const listed = await call(alex, "get_approvals", { status: "rejected" });
-    expect(listed.structuredContent).toMatchObject({
-      proposals: [{ id: rejected.id, decision_note: "Too broad." }],
-    });
     await alex.close();
   });
 
-  it("applies working questions immediately, resolves with version checks, and permits only human removal", async () => {
+  it("resolves and removes entries by entry_id", async () => {
     const alex = await connect("alex-token", url);
-    const before = await backend.syncWorkspace(alexAgent, {});
-    const added = await propose(alex, {
+    const added = await update(alex, {
       field: "open_questions",
-      proposed_value: "Which client first?",
+      value: "Which client first?",
     });
-    expect(added).toMatchObject({ status: "applied", supersedes: null });
-    const active = await backend.syncWorkspace(alexAgent, {});
+    const active = await sync(alex);
     const question = active.context.open_questions.at(-1)!;
     expect(question).toMatchObject({
-      id: expect.any(String),
+      id: added.entry_id,
       status: "active",
       resolved_by: null,
       resolved_at: null,
     });
-    expect(active.context_version).toBe(before.context_version + 1);
-    expect(active.pending_proposals).not.toContainEqual(
-      expect.objectContaining({ id: added.id }),
-    );
     const resolve = {
-      field: "open_questions" as const,
-      rationale: "Answered",
-      operation: "resolve" as const,
+      field: "open_questions",
+      operation: "resolve",
       entry_id: question.id,
     };
-    await expect(
-      backend.proposeContextChange(alexAgent, resolve),
-    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
-    await expect(
-      backend.proposeContextChange(alexAgent, {
-        ...resolve,
-        expected_version: before.context_version,
-      }),
-    ).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
-    const resolved = await propose(alex, {
-      ...resolve,
-      expected_version: active.context_version,
+    expect(await update(alex, resolve)).toMatchObject({
+      operation: "resolve",
+      entry_id: question.id,
+      context_version: active.context_version + 1,
+      deduplicated: false,
     });
-    expect(resolved).toMatchObject({ status: "applied" });
-    const after = await backend.syncWorkspace(alexAgent, {});
-    expect(after.context.open_questions.at(-1)).toMatchObject({
+    const resolved = await sync(alex, { since: active.cursor });
+    expect(resolved.context.open_questions.at(-1)).toMatchObject({
       id: question.id,
       status: "resolved",
       resolved_by: { actor_type: "agent" },
       resolved_at: expect.any(Number),
     });
-    const constraint = after.context.constraints[0]!;
-    const remove = {
-      field: "constraints" as const,
-      proposed_value: constraint.text,
-      rationale: "Outdated",
-      operation: "remove" as const,
-      entry_id: constraint.id,
-      expected_version: after.context_version,
-    };
-    await expect(
-      backend.proposeContextChange(alexAgent, remove),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(
-      backend.proposeContextChange(alexHuman, remove),
-    ).resolves.toMatchObject({ status: "applied" });
+    expect(resolved.events).toEqual([
+      expect.objectContaining({
+        type: "context.updated",
+        summary: "Resolved open question",
+      }),
+    ]);
+    // A retried resolve changes nothing.
+    expect(await update(alex, resolve)).toMatchObject({
+      entry_id: question.id,
+      context_version: resolved.context_version,
+      deduplicated: true,
+    });
+
+    // Assistants may remove working entries too.
+    const constraint = resolved.context.constraints[0]!;
     expect(
-      (await backend.syncWorkspace(alexAgent, {})).context.constraints.map(
-        (e) => e.id,
-      ),
-    ).not.toContain(constraint.id);
+      await update(alex, {
+        field: "constraints",
+        operation: "remove",
+        entry_id: constraint.id,
+      }),
+    ).toMatchObject({ entry_id: constraint.id, deduplicated: false });
+    const after = await sync(alex, { since: resolved.cursor });
+    expect(after.context.constraints.map((e) => e.id)).not.toContain(constraint.id);
+    expect(after.events).toEqual([
+      expect.objectContaining({
+        type: "context.updated",
+        summary: "Removed constraint",
+      }),
+    ]);
     await alex.close();
   });
 
-  it("resolves long dashboard questions using their stored value and ignores supplied proposed_value", async () => {
+  it("resolves long dashboard questions using their stored value and ignores a supplied value", async () => {
     const alex = await connect("alex-token", url);
     try {
       for (const supplied of [undefined, null, { ignored: true }, "x".repeat(3000)]) {
         const questionText = `Dashboard question: ${"q".repeat(2100)}`;
-        await backend.applyContextChange(alexHuman, {
+        await backend.updateContext(alexHuman, {
           field: "open_questions",
           value: questionText,
         });
         const active = await sync(alex);
         const question = active.context.open_questions.at(-1)!;
-        const result = await call(alex, "propose_context_change", {
+        const result = await call(alex, "update_context", {
           field: "open_questions",
           operation: "resolve",
           entry_id: question.id,
           expected_version: active.context_version,
-          rationale: "Answered",
-          ...(supplied === undefined ? {} : { proposed_value: supplied }),
+          ...(supplied === undefined ? {} : { value: supplied }),
         });
         expect(result.isError).toBeFalsy();
         expect(result.structuredContent).toMatchObject({
-          proposal: { status: "applied", proposed_value: questionText },
+          operation: "resolve",
+          entry_id: question.id,
+          deduplicated: false,
         });
         expect((await sync(alex)).context.open_questions.at(-1)).toMatchObject({
           id: question.id,
@@ -1447,113 +1378,65 @@ describe("context tools", () => {
     }
   });
 
-  it("retains decision identity and history until a superseding proposal is approved", async () => {
+  it("supersedes an active decision at once and retains its history", async () => {
     const alex = await connect("alex-token", url);
-    const old = (await backend.syncWorkspace(alexAgent, {})).context
-      .decisions[0]!;
-    const replacement = await propose(alex, {
+    const old = (await sync(alex)).context.decisions[0]!;
+    const replacement = await update(alex, {
       field: "decisions",
-      proposed_value: "Use Convex with scoped MCP tokens.",
+      value: "Use Convex with scoped MCP tokens.",
       supersedes: old.id,
     });
-    expect(replacement).toMatchObject({
-      status: "pending",
-      supersedes: old.id,
-    });
-    expect(
-      (await backend.syncWorkspace(alexAgent, {})).context.decisions[0],
-    ).toEqual(old);
-    await backend.decideProposal(alexHuman, replacement.id, "approve");
-    const history = (await backend.syncWorkspace(alexAgent, {})).context
-      .decisions;
+    const history = (await sync(alex)).context.decisions;
     expect(history[0]).toMatchObject({
       id: old.id,
       status: "superseded",
-      superseded_by: history.at(-1)!.id,
+      superseded_by: replacement.entry_id,
     });
     expect(history.at(-1)).toMatchObject({
+      id: replacement.entry_id,
       status: "active",
       text: "Use Convex with scoped MCP tokens.",
     });
+    // The old decision is no longer active, so it can't be superseded again.
+    const again = await call(alex, "update_context", {
+      field: "decisions",
+      value: "Something else.",
+      supersedes: old.id,
+    });
+    expect(errorCode(again)).toBe("INVALID_INPUT");
     await alex.close();
   });
 
-  it("rejects stale approvals without changing context and allows stale rejection", async () => {
+  it("fails with VERSION_CONFLICT when expected_version is stale", async () => {
     const alex = await connect("alex-token", url);
-    const first = await propose(alex, {
-      field: "goal",
-      proposed_value: "First approved goal.",
+    const sam = await connect("sam-token", url);
+    const read = await sync(alex);
+    await update(sam, { field: "scope", value: "Only the dashboard." });
+    const stale = await call(alex, "update_context", {
+      field: "scope",
+      value: "Only MCP.",
+      expected_version: read.context_version,
     });
-    const second = await propose(alex, {
-      field: "goal",
-      proposed_value: "Stale goal.",
-    });
-    expect(first).toMatchObject({ base_context_version: 1 });
-    expect(second).toMatchObject({ base_context_version: 1 });
-    await backend.decideProposal(alexHuman, first.id, "approve");
-    const before = await sync(alex);
-    expect(before.context_version).toBe(2);
-    expect(before.context.goal).toBe("First approved goal.");
-    await expect(
-      backend.decideProposal(alexHuman, second.id, "approve"),
-    ).rejects.toMatchObject({
-      code: "VERSION_CONFLICT",
-      details: {
-        proposal_id: second.id,
-        base_context_version: 1,
-        context_version: 2,
+    expect(stale.isError).toBe(true);
+    expect(stale.structuredContent).toMatchObject({
+      error: {
+        code: "VERSION_CONFLICT",
+        current_version: read.context_version + 1,
+        expected_version: read.context_version,
       },
     });
-    const after = await sync(alex, { since: before.cursor });
-    expect(after.context).toEqual(before.context);
-    expect(after.context_version).toBe(2);
-    expect(after.events).toEqual([]);
-    const pending = await call(alex, "get_approvals", {});
-    expect(pending.structuredContent).toMatchObject({
-      proposals: [
-        { id: second.id, status: "pending", base_context_version: 1 },
-      ],
-    });
+    expect(stale.structuredContent).not.toHaveProperty("next_steps");
+    const current = await sync(alex);
+    expect(current.context.scope).toBe("Only the dashboard.");
     expect(
-      await backend.decideProposal(alexHuman, second.id, "reject"),
-    ).toMatchObject({ status: "rejected" });
-    const rejected = await sync(alex, { since: after.cursor });
-    expect(rejected.context).toEqual(before.context);
-    expect(rejected.context_version).toBe(2);
-    expect(rejected.events).toEqual([
-      expect.objectContaining({
-        type: "context.rejected",
-        subject_id: second.id,
+      await update(alex, {
+        field: "scope",
+        value: "Only MCP.",
+        expected_version: current.context_version,
       }),
-    ]);
-    await alex.close();
+    ).toMatchObject({ context_version: current.context_version + 1 });
+    await Promise.all([alex.close(), sam.close()]);
   });
-
-  it.each(["user_alex", "user_taylor"])(
-    "direct context changes by %s invalidate pending proposals",
-    async (user_id) => {
-      const alex = await connect("alex-token", url);
-      const proposal = await propose(alex, {
-        field: "goal",
-        proposed_value: "Old proposal.",
-      });
-      const human = { ...alexHuman, user_id };
-      const direct = await backend.applyContextChange(human, {
-        field: "goal",
-        value: "Direct human goal.",
-      });
-      expect(direct.context_version).toBe(2);
-      await expect(
-        backend.decideProposal(human, proposal.id, "approve"),
-      ).rejects.toMatchObject({
-        code: "VERSION_CONFLICT",
-        details: { base_context_version: 1, context_version: 2 },
-      });
-      expect((await sync(alex)).context.goal).toBe("Direct human goal.");
-      await backend.decideProposal(human, proposal.id, "reject");
-      await alex.close();
-    },
-  );
 
   it("get_workspace_info reports the admin role", async () => {
     const admin = await connect("taylor-token", url);
@@ -1562,96 +1445,42 @@ describe("context tools", () => {
       user: { id: "user_taylor" },
       workspaces: [{ id: "ws_demo", role: "admin", member_count: 3 }],
     });
+    expect(JSON.stringify(result.structuredContent)).not.toContain("context_approval");
     await admin.close();
   });
 
-  it("human admins can approve, reject, and apply context changes", async () => {
+  it("lets any member change context, human or agent, and no one else", async () => {
+    const samHuman: Actor = { user_id: "user_sam", client: "dashboard", actor_type: "human" };
+    const changed = await backend.updateContext(samHuman, {
+      field: "goal",
+      value: "Set by a member in the dashboard.",
+    });
+    expect(changed).toEqual({
+      field: "goal",
+      operation: "add",
+      entry_id: "goal",
+      context_version: 2,
+      deduplicated: false,
+    });
     const alex = await connect("alex-token", url);
-    const admin: Actor = { ...alexHuman, user_id: "user_taylor" };
-    const proposal = await propose(alex, {
-      field: "goal",
-      proposed_value: "Ship with admin approval.",
-    });
-    await expect(
-      backend.decideProposal(
-        { ...admin, actor_type: "agent" },
-        proposal.id,
-        "approve",
-      ),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    const approved = await backend.decideProposal(
-      admin,
-      proposal.id,
-      "approve",
-    );
-    expect(approved).toMatchObject({
-      status: "approved",
-      decided_by: { user_id: "user_taylor", actor_type: "human" },
-    });
-    expect((await sync(alex)).context.goal).toBe("Ship with admin approval.");
-    const rejected = await propose(alex, {
-      field: "goal",
-      proposed_value: "Rejected.",
-    });
-    expect(
-      await backend.decideProposal(admin, rejected.id, "reject"),
-    ).toMatchObject({ status: "rejected" });
-    const direct = await backend.applyContextChange(admin, {
-      field: "goal",
-      value: "Applied by admin.",
-    });
-    expect(direct.context.goal).toBe("Applied by admin.");
-    await alex.close();
-  });
-
-  it("only human owners and admins decide, and agents can't change context directly", async () => {
-    const alex = await connect("alex-token", url);
-    const proposal = await propose(alex, {
-      field: "scope",
-      proposed_value: "Only the dashboard.",
-    });
-    const forbiddenActors: Actor[] = [
-      alexAgent,
-      { user_id: "user_sam", client: "dashboard", actor_type: "human" },
-    ];
-    for (const actor of forbiddenActors) {
-      await expect(
-        backend.decideProposal(actor, proposal.id, "approve"),
-      ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    }
-    await expect(
-      backend.decideProposal(
-        { user_id: "user_jordan", client: "dashboard", actor_type: "human" },
-        proposal.id,
-        "approve",
-      ),
-    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
-
     const before = await sync(alex);
-    await expect(
-      backend.applyContextChange(alexAgent, { field: "goal", value: "Hijack" }),
-    ).rejects.toMatchObject({
-      code: "APPROVAL_REQUIRED",
-      message:
-        "Changes to goal, scope, decisions or ownership need human approval. Use propose_context_change.",
+    expect(before.context).toMatchObject({
+      goal: "Set by a member in the dashboard.",
+      updated_by: { actor_type: "human", user_id: "user_sam", client: "dashboard" },
     });
     await expect(
-      backend.applyContextChange(
-        { user_id: "user_sam", client: "dashboard", actor_type: "human" },
-        { field: "goal", value: "Hijack" },
+      backend.updateContext(
+        { user_id: "user_jordan", client: "dashboard", actor_type: "human" },
+        { field: "goal", value: "Hijack", workspace_id: "ws_demo" },
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     const after = await sync(alex, { since: before.cursor });
     expect(after.context).toEqual(before.context);
-    expect(after.context_version).toBe(before.context_version);
     expect(after.events).toEqual([]);
-
-    const { tools } = await alex.listTools();
-    expect(tools.map((t) => t.name)).not.toContain("apply_context_change");
     await alex.close();
   });
 
-  it("applyContextChange rejects null and empty values as INVALID_INPUT", async () => {
+  it("updateContext rejects null and empty values as INVALID_INPUT", async () => {
     const alex = await connect("alex-token", url);
     const before = await sync(alex);
     const invalid = [
@@ -1659,6 +1488,7 @@ describe("context tools", () => {
       { field: "goal", value: "" },
       { field: "scope", value: "   " },
       { field: "decisions", value: "" },
+      { field: "open_questions", value: undefined },
       { field: "constraints", value: null },
       { field: "constraints", value: ["ok", ""] },
       { field: "constraints", value: [1, 2] },
@@ -1668,9 +1498,9 @@ describe("context tools", () => {
     ];
     for (const change of invalid) {
       await expect(
-        backend.applyContextChange(
+        backend.updateContext(
           alexHuman,
-          change as unknown as Parameters<typeof backend.applyContextChange>[1],
+          change as unknown as Parameters<typeof backend.updateContext>[1],
         ),
       ).rejects.toMatchObject({ code: "INVALID_INPUT" });
     }
@@ -1753,7 +1583,7 @@ describe("context tools", () => {
     await Promise.all([alex.close(), jordan.close()]);
   });
 
-  it("never shows ws_demo context, proposals, events or files to jordan", async () => {
+  it("never shows ws_demo context, events or files to jordan", async () => {
     const jordan = await connect("jordan-token", url);
     const theirs = await sync(jordan);
     expect(theirs.workspace.id).toBe("ws_other");
@@ -1763,20 +1593,11 @@ describe("context tools", () => {
     expect(leaked).not.toContain("file_brief");
     expect(leaked).not.toContain("Tandem");
 
-    const approvals = await call(jordan, "get_approvals", { status: "all" });
-    expect(approvals.structuredContent).toEqual({ proposals: [] });
-
     for (const [name, args] of [
       ["sync_workspace", { workspace_id: "ws_demo" }],
-      ["get_approvals", { workspace_id: "ws_demo" }],
       [
-        "propose_context_change",
-        {
-          workspace_id: "ws_demo",
-          field: "goal",
-          proposed_value: "x",
-          rationale: "x",
-        },
+        "update_context",
+        { workspace_id: "ws_demo", field: "goal", value: "x" },
       ],
       [
         "publish_work",
@@ -1809,7 +1630,7 @@ describe("context tools", () => {
       last_synced_at: expect.any(String),
       last_action_at: null,
     });
-    await propose(sam, { field: "scope", proposed_value: "Smaller." });
+    await update(sam, { field: "scope", value: "Smaller." });
     expect(await info()).toEqual({
       client: "dev-token",
       last_synced_at: expect.any(String),
@@ -2504,7 +2325,7 @@ describe("Origin allowlist", () => {
         }),
       );
       const { tools } = await client.listTools();
-      expect(tools.length).toBe(14);
+      expect(tools.length).toBe(13);
       await client.close();
     }
   });
@@ -2542,7 +2363,7 @@ describe("Origin allowlist", () => {
         }),
       );
       const { tools } = await client.listTools();
-      expect(tools.length).toBe(14);
+      expect(tools.length).toBe(13);
       await client.close();
     } finally {
       await stop(slashServer);

@@ -10,7 +10,7 @@ import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/s
 import { agentActor } from "./lib/agent";
 import { humanActor, recordWorkspaceEvent, requireMembership } from "./lib/auth";
 import { enqueueBackfillPage, intelDisabled } from "./lib/intelQueue";
-import { actorValidator, proposalStatusValidator } from "./lib/validators";
+import { actorValidator } from "./lib/validators";
 
 type ReadCtx = QueryCtx | MutationCtx;
 
@@ -98,10 +98,8 @@ const entryValidator = v.object({
   evidenceEventIds: v.array(v.id("activity_events")),
   agents: v.array(agentRefValidator),
   files: v.array(v.object({ id: v.id("files"), name: v.string(), deleted: v.boolean() })),
-  proposal: v.union(
-    v.object({ id: v.id("context_proposals"), status: proposalStatusValidator }),
-    v.null(),
-  ),
+  /** The project context entry this finding was recorded as ("goal" for the goal), if any. */
+  contextEntryId: v.union(v.string(), v.null()),
   model: v.union(v.string(), v.null()),
   createdBy: actorValidator,
   updatedBy: actorValidator,
@@ -172,7 +170,8 @@ const runValidator = v.object({
   summary: v.union(v.string(), v.null()),
   error: v.union(v.string(), v.null()),
   eventCount: v.number(),
-  proposals: v.number(),
+  /** Project context changes the run recorded. */
+  contextChanges: v.number(),
   startedAt: v.number(),
   finishedAt: v.union(v.number(), v.null()),
 });
@@ -217,7 +216,6 @@ async function toEntry(
     if (file?.workspaceId === entry.workspaceId)
       files.push({ id, name: file.name, deleted: file.deletedAt !== undefined });
   }
-  const proposal = entry.proposalId ? await ctx.db.get(entry.proposalId) : null;
   return {
     id: entry._id,
     key: entry.key,
@@ -233,10 +231,7 @@ async function toEntry(
     evidenceEventIds: entry.evidenceEventIds,
     agents,
     files,
-    proposal:
-      proposal && proposal.workspaceId === entry.workspaceId
-        ? { id: proposal._id, status: proposal.status }
-        : null,
+    contextEntryId: entry.contextEntryId ?? null,
     model: entry.model ?? null,
     createdBy: entry.createdBy,
     updatedBy: entry.updatedBy,
@@ -281,7 +276,7 @@ async function intelState(ctx: ReadCtx, workspaceId: Id<"workspaces">) {
 
 /**
  * The observed context state, newest entries first, with the context
- * manager's status. Observed, not approved: only structured_context is.
+ * manager's status. Observed, not project context: only structured_context is.
  */
 export const getObservedContext = query({
   args: { workspaceId: v.id("workspaces") },
@@ -503,7 +498,7 @@ export const listContextChanges = query({
         summary: run.summary ?? null,
         error: run.error ?? null,
         eventCount: run.eventIds.length,
-        proposals: run.proposals,
+        contextChanges: run.contextChanges ?? run.proposals ?? 0,
         startedAt: run.startedAt,
         finishedAt: run.finishedAt ?? null,
       })),

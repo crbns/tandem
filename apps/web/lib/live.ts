@@ -36,7 +36,7 @@ export type Propagation =
   | { state: "behind"; label: string; behind: number }
   | { state: "never"; label: string };
 
-/** Whether the assistant has received the latest approved context through sync_workspace. */
+/** Whether the assistant has received the latest project context through sync_workspace. */
 export function propagation(
   agent: Pick<NetworkAgent, "syncedContextRevision" | "syncedContextBrief" | "contextVersionsBehind">,
 ): Propagation {
@@ -57,7 +57,7 @@ export function networkHeadline(network: AgentNetwork): string {
   const { agents, contextRevision } = network;
   if (agents.length === 0) return "No assistants have connected to this workspace yet.";
   const assistants = agents.length === 1 ? "assistant" : "assistants";
-  if (contextRevision === 0) return `${agents.length} ${assistants} connected. No project context has been approved yet.`;
+  if (contextRevision === 0) return `${agents.length} ${assistants} connected. No project context yet.`;
   const lagging = agents.filter((agent) => propagation(agent).state !== "current");
   if (lagging.length === 0)
     return agents.length === 1
@@ -79,7 +79,8 @@ export const KIND_META: Record<ActivityKind, KindMeta> = {
   sync: { label: "Sync", flow: "in" },
   read: { label: "Read", flow: "in" },
   write: { label: "Write", flow: "out" },
-  propose: { label: "Proposal", flow: "out" },
+  // propose, approve and reject only appear in history from before context changes applied at once.
+  propose: { label: "Proposed", flow: "out" },
   publish: { label: "Published", flow: "out" },
   task: { label: "Task", flow: "out" },
   resolved: { label: "Resolved", flow: "out" },
@@ -87,11 +88,11 @@ export const KIND_META: Record<ActivityKind, KindMeta> = {
   error: { label: "Error", flow: "error" },
   approve: { label: "Approved", flow: "human" },
   reject: { label: "Rejected", flow: "human" },
-  context: { label: "Context edit", flow: "human" },
+  context: { label: "Context change", flow: "human" },
   human_edit: { label: "Edit", flow: "human" },
 };
 
-export type FilterGroup = "all" | "sync" | "reads" | "writes" | "decisions" | "conflicts";
+export type FilterGroup = "all" | "sync" | "reads" | "writes" | "context" | "conflicts";
 
 /** Timeline type filters; the kinds go to the backend, which filters server-side. */
 export const FILTER_GROUPS: ReadonlyArray<{ value: FilterGroup; label: string; title: string; kinds: ActivityKind[] }> = [
@@ -105,10 +106,10 @@ export const FILTER_GROUPS: ReadonlyArray<{ value: FilterGroup; label: string; t
     kinds: ["write", "resolved", "publish", "task", "human_edit"],
   },
   {
-    value: "decisions",
-    label: "Proposals",
-    title: "Proposals and approvals",
-    kinds: ["propose", "approve", "reject", "context"],
+    value: "context",
+    label: "Context",
+    title: "People's project context changes",
+    kinds: ["context", "propose", "approve", "reject"],
   },
   { value: "conflicts", label: "Conflicts", title: "Conflicts, errors and their fixes", kinds: ["conflict", "error", "resolved"] },
 ];
@@ -126,8 +127,7 @@ export function resourceHref(workspaceId: string, resource: TimelineItem["resour
       return `${base}/files/${resource.id}`;
     case "folder":
       return folderHref(workspaceId, resource.id);
-    case "proposal":
-      return `${base}/approvals`;
+    case "proposal": // older history
     case "context":
     case "published_work": // listed on the context page
       return `${base}/context`;

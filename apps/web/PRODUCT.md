@@ -19,7 +19,7 @@ Small teams in any field (software development is one example, not the target) w
 
 ## Product Purpose
 
-Tandem gives a team one shared, versioned set of files, plus compact project context (goal, scope, constraints, approved decisions, ownership, open questions). Humans and their AI assistants both work from it. People use the dashboard; assistants connect through a remote MCP server and a companion Agent Skill.
+Tandem gives a team one shared, versioned set of files, plus compact project context (goal, scope, constraints, decisions, ownership, open questions). Humans and their AI assistants both work from it. People use the dashboard; assistants connect through a remote MCP server and a companion Agent Skill.
 
 It exists because each person's assistant otherwise works from a private, drifting copy of the project. Success means a teammate can open the dashboard and do three things:
 
@@ -32,7 +32,7 @@ It exists because each person's assistant otherwise works from a private, drifti
 Tandem is not a chat app and not an agent platform. People keep their own assistants in the assistants' own apps. Tandem owns the shared ground truth:
 
 - canonical files with full revision history;
-- approved project context that references those files instead of copying them;
+- project context that references those files instead of copying them;
 - an attribution trail that separates human edits from agent edits.
 
 Assistants never message each other. They meet only through the files and the context.
@@ -41,7 +41,7 @@ Assistants never message each other. They meet only through the files and the co
 
 - **How assistants connect:** through Tandem's remote MCP server (Streamable HTTP + OAuth), guided by the Agent Skill. Claude remote connectors are the primary client. ChatGPT write access and Gemini custom apps have plan/eligibility limits (as of Oct 2026).
 - **How people work:** in the web dashboard. Binary uploads go through the dashboard first, because native chats can't be assumed to send binaries over MCP.
-- **Freshness:** native chats can't be woken by Tandem events. The dashboard watches the workspace's event log and refetches when an assistant saves or proposes something, and also on focus and on demand. Assistant connections show when Tandem last heard from them over MCP, never whether they are "online".
+- **Freshness:** native chats can't be woken by Tandem events. The dashboard watches the workspace's event log and refetches when an assistant saves a file or changes the context, and also on focus and on demand. Assistant connections show when Tandem last heard from them over MCP, never whether they are "online".
 - **Current setting:** built for Cal Hacks 13.0 (Oct 23–25, 2026). The P0 demo shows Claude creating `proposal.md` at v1, a human editing and saving v2, Claude rereading v2, a stale write rejected, and history attributing every version.
 
 ## Capabilities and Constraints
@@ -52,9 +52,9 @@ Assistants never message each other. They meet only through the files and the co
 - A commit atomically creates version N+1, its attribution, and a workspace event.
 - History is immutable. Restore (not in P0) creates a new head revision.
 
-**Approvals and attribution**
-- Changes to goal, scope, major decisions, and ownership need human approval: agents propose, a permitted human approves.
-- Every record carries actor attribution, person and agent.
+**Context and attribution**
+- Every context change applies at once, whoever makes it: any member on the dashboard, an assistant over MCP, or Tandem's context manager. There is no approval step.
+- Every record carries actor attribution, person and agent, so anyone can see who set what and change it back.
 
 **Presence and privacy**
 - Presence is honest. Show "last edited" or "last sync", never "online".
@@ -68,10 +68,10 @@ Assistants never message each other. They meet only through the files and the co
 - Agent-to-agent messaging, agent inboxes, and message-flow UI were cut on purpose.
 
 **Terminology**
-- workspace; file; version / revision; head; conflict; actor (human or agent); assistant; context; proposal; approval.
+- workspace; file; version / revision; head; conflict; actor (human or agent); assistant; project context; observed context.
 
 **Not decided yet**
-- The activity feed, folders, binary previews, and how the rest of the project context (ownership, open questions) appears in the dashboard. Invites, the approvals screen and assistant connections now exist.
+- The activity feed, folders, binary previews, and how the rest of the project context (ownership, open questions) appears in the dashboard. Invites, the Project context page, Live and assistant connections now exist.
 
 ## Brand Commitments
 
@@ -89,7 +89,7 @@ Assistants never message each other. They meet only through the files and the co
 1. The shared file is the source of truth. Assistants and people both read and write the canonical copy, never a private fork.
 2. Never lose work silently. Conflicts are shown, drafts are kept, and nothing retries or overwrites on its own.
 3. Always say who did it. Every change is attributed to a person or an agent, plainly and honestly.
-4. Humans hold the pen on direction. Agents propose changes to goals, scope, decisions, and ownership; people approve them.
+4. Direction stays visible. Anyone, person or assistant, can change goals, scope, decisions and ownership, and every change shows who made it.
 5. Bring your own assistant. Tandem meets people inside the tools they already use rather than replacing them.
 
 ## Accessibility & Inclusion

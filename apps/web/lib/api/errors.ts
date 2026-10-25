@@ -18,10 +18,6 @@ export const API_ERROR_CODES = [
   "VERSION_CONFLICT",
   "UNAUTHENTICATED",
   "APPROVAL_REQUIRED",
-  "PROPOSAL_DECIDED",
-  "PROPOSAL_CHANGED",
-  "CONFLICT_CHECK_PENDING",
-  "ALREADY_IN_CONTEXT",
   "REQUEST_EXPIRED",
   "INVALID_INPUT",
   "BINARY_FILE",
@@ -114,13 +110,9 @@ function fromConvexError(err: ConvexError<Value>): TandemApiError {
         ? "UNAUTHENTICATED"
         : backendCode === "WORKSPACE_NOT_FOUND"
           ? "FORBIDDEN"
-          : backendCode === "PROPOSAL_ALREADY_DECIDED" || backendCode === "PROPOSAL_NOT_FOUND"
-            ? "PROPOSAL_DECIDED"
-            : backendCode === "PROPOSAL_STALE"
-              ? "VERSION_CONFLICT"
-              : backendCode === "USER_EMAIL_NOT_VERIFIED"
-                ? "APPROVAL_REQUIRED"
-                : "UNKNOWN";
+          : backendCode === "USER_EMAIL_NOT_VERIFIED"
+            ? "APPROVAL_REQUIRED"
+            : "UNKNOWN";
   const details: ApiErrorDetails = {};
   if (record) {
     // Canonical keys are camelCase (CONTRACT_NOTES); snake_case is accepted so a

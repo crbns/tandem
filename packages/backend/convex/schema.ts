@@ -11,7 +11,7 @@ const actor = v.object({
   userName: v.optional(v.string()),
 });
 
-// docs/conflict-resolution.md: why a proposal is held for a person.
+// Legacy: the removed proposal flow's conflict record (context_proposals).
 const conflictItem = v.object({
   kind: v.union(v.literal("replaces"), v.literal("contradicts"), v.literal("competing")),
   // The model was unsure; human review required.
@@ -162,8 +162,8 @@ export default defineSchema({
     name: v.string(),
     // Set only on the workspace seed:resetDemo builds, which a reset deletes.
     demoSeed: v.optional(v.boolean()),
-    // Whether context proposals wait for approval ("manual", the default when
-    // unset) or apply as soon as they're proposed ("automatic").
+    // Legacy: the removed approval setting. Context changes always apply at
+    // once; contextMigrations.removeProposals clears it.
     contextApproval: v.optional(
       v.union(v.literal("manual"), v.literal("automatic")),
     ),
@@ -340,6 +340,8 @@ export default defineSchema({
     updatedBy: actor,
   }).index("by_workspace", ["workspaceId"]),
 
+  // Legacy: the removed proposal flow. Nothing reads or writes these tables;
+  // contextMigrations.removeProposals empties them so they can be dropped.
   context_proposals: defineTable({
     workspaceId: v.id("workspaces"),
     field: v.union(
@@ -377,7 +379,7 @@ export default defineSchema({
     createdAt: v.number(),
     decidedBy: v.optional(actor),
     decidedAt: v.optional(v.number()),
-    // Conflict detection and resolution (docs/conflict-resolution.md).
+    // Conflict detection and resolution (removed with the proposal flow).
     conflict: v.optional(conflict),
     // True once the conflict status was conflict or uncertain; indexed for history.
     hasConflict: v.optional(v.boolean()),
@@ -545,8 +547,8 @@ export default defineSchema({
     .index("by_connection_and_created", ["agentConnectionId", "createdAt"]),
 
   // Derived, model-maintained workspace state: what the team is observed to be
-  // doing. Separate from structured_context, which only people approve; goal
-  // and decision findings reach that through context_proposals.
+  // doing. Separate from structured_context (project context); goal, decision
+  // and ownership findings are also recorded there directly.
   context_entries: defineTable({
     workspaceId: v.id("workspaces"),
     // Stable per workspace, chosen by the context manager ("task:jwt-auth").
@@ -566,10 +568,14 @@ export default defineSchema({
     // Coordination entries only.
     severity: v.optional(v.union(v.literal("potential"), v.literal("actual"))),
     supersededBy: v.optional(v.string()),
-    // A goal or decision finding raised for human approval.
+    // A goal, decision or ownership finding recorded in project context: the
+    // structured_context entry id ("goal" for the goal).
+    contextEntryId: v.optional(v.string()),
+    // Why recording it in project context was refused (an error code); it
+    // isn't tried again.
+    contextSkipped: v.optional(v.string()),
+    // Legacy (the removed proposal flow); contextMigrations.removeProposals clears them.
     proposalId: v.optional(v.id("context_proposals")),
-    // Why raising it as a proposal was refused (an error code); it isn't
-    // raised again.
     proposalSkipped: v.optional(v.string()),
     // Document digests (knowledge:doc-*) only: hash of the content the digest
     // was made from; an unchanged hash skips the model call.
@@ -639,7 +645,10 @@ export default defineSchema({
     error: v.optional(v.string()),
     created: v.number(),
     updated: v.number(),
-    proposals: v.number(),
+    // Project context changes the run recorded (goal, decisions, ownership).
+    contextChanges: v.optional(v.number()),
+    // Legacy: proposals the removed proposal flow raised.
+    proposals: v.optional(v.number()),
     // Derived-context revision (context_intel_state.entriesRevision) after it.
     entriesRevision: v.optional(v.number()),
     inputTokens: v.optional(v.number()),

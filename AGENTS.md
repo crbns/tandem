@@ -16,14 +16,14 @@ Shared files for people. Shared understanding for their AI assistants. Built for
 ## Product
 
 - Team workspace (Drive/Notion-like) where humans collaborate on canonical files while each member keeps using their own assistant in native ChatGPT, Claude, or Gemini.
-- Assistants connect through a **remote MCP server** (Streamable HTTP + OAuth) plus a companion **Agent Skill** (`SKILL.md`) that tells them to sync workspace context, read canonical files, publish relevant work, and propose rather than approve major changes.
-- Tandem owns two layers: canonical **files** with revision history, and compact structured **project context** (goal, scope, constraints, approved decisions, ownership, open questions) that references files instead of duplicating them.
+- Assistants connect through a **remote MCP server** (Streamable HTTP + OAuth) plus a companion **Agent Skill** (`SKILL.md`) that tells them to sync workspace context, read canonical files, save their work as files, and change project context only when the user directs it.
+- Tandem owns two layers: canonical **files** with revision history, and compact structured **project context** (goal, scope, constraints, decisions, ownership, open questions) that references files instead of duplicating them. Tandem's context manager (Haiku) records findings, goals, decisions and owners from saved files and assistant activity.
 - Audience is any team; software dev is an example, not a restriction.
 
 ## Hard rules
 
 - **Optimistic versioning:** every write carries `expected_version`. Stale writes return `VERSION_CONFLICT`; the client rereads and reconciles. A commit atomically creates version N+1, attribution, and a workspace event. Restore makes a new head revision, never deletes history.
-- **Human approval** is required for changes to goal, scope, major decisions, and ownership. Agents call `propose_context_change`, and the change stays pending until a permitted human approves it. Ordinary findings may be recorded automatically.
+- **Context changes apply immediately.** A change to project context from a person (dashboard), their assistant (`update_context`), or the context manager takes effect at once, with actor attribution, a `context.updated` workspace event, and retained history (resolved and superseded entries are kept). There is no approval step, pending state, or conflict check; `expected_version` on `update_context` guards stale writes.
 - **No agent-to-agent messaging,** agent inbox, or message-flow UI. That was cut from scope on purpose.
 - **Presence is honest:** show "last MCP action / last sync" and "recently active", never "online". Native chats can't be woken by Tandem events, and a skill can't force tool calls.
 - **Privacy:** never auto-export private conversation history. Publish only relevant project work that the user has authorized.
@@ -32,7 +32,7 @@ Shared files for people. Shared understanding for their AI assistants. Built for
 
 ## MCP tool surface
 
-`sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`, `update_document` (needs `expected_version`), `create_folder`, `move_file` (needs `expected_version`), `move_folder` (needs `expected_revision`), `publish_work`, `propose_context_change`, `get_approvals`, `get_file_versions`, `get_workspace_info`, `manage_task` (list/create/claim/update/complete workspace tasks; writes need `expected_version`). Binary uploads go through the dashboard first. Don't assume a native chat can send binaries through MCP.
+`sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`, `update_document` (needs `expected_version`), `create_folder`, `move_file` (needs `expected_version`), `move_folder` (needs `expected_revision`), `publish_work`, `update_context`, `get_file_versions`, `get_workspace_info`, `manage_task` (list/create/claim/update/complete workspace tasks; writes need `expected_version`). Binary uploads go through the dashboard first. Don't assume a native chat can send binaries through MCP.
 
 ## Stack
 
@@ -43,12 +43,12 @@ Use the hosting stack below. Do not add another database or hosting provider.
 - **MCP server:** `@convex-dev/mcp` (pinned `0.1.0-alpha.7`) in Convex HTTP actions at `https://<deployment>.convex.site/mcp` (`convex/mcp.ts`). It is also the OAuth 2.1 authorization server; the consent page is `apps/web/app/oauth/consent`, where the person picks the workspace. Every grant and API key acts for one `agent_connections` row, and tools call `internal` functions in `convex/mcpTools.ts` that use the same core helpers as the dashboard (`convex/lib/ops.ts`). Tool handlers have no `ctx.auth`; identity comes only from the component-verified credential. `apps/mcp` is a mock-backed eval harness that never deploys.
 - **Hosting:** Vercel hosts the web dashboard. The MCP server needs no separate host: it ships with the Convex deployment (`siteUrl` unset, so its URL is `CONVEX_SITE_URL` + `/mcp`; see `docs/mcp-auth-design.md`). Convex Cloud hosts the backend (`pnpm --filter @repo/backend deploy` with `CONVEX_DEPLOY_KEY`). Set `SITE_URL` on the deployment to the Vercel production domain, which also places the consent page.
 
-Core tables: users, workspaces, workspace_members, agent_connections, files, folders, file_revisions, structured_context, context_proposals, approvals, workspace_events, outbox_events, sync_cursors, storage_objects.
+Core tables: users, workspaces, workspace_members, agent_connections, files, folders, file_revisions, structured_context, workspace_events, outbox_events, sync_cursors, storage_objects. `context_proposals` and `approvals` are legacy tables from the removed proposal flow: nothing reads or writes them, and the cleanup migration `contextMigrations.removeProposals` empties them so they can be dropped.
 
 ## Hackathon priorities
 
-- **P0:** one workspace with two members and authz; remote MCP working in at least two native clients; one shared text doc with CRUD and version conflict; dashboard with files, editor, revisions, and the approved goal; a skill-led sync demo with an honest fallback.
-- **P1:** decision approval screen, context extraction from published work, realtime file events and revision diffs, folders, PDF/image preview, invites.
+- **P0:** one workspace with two members and authz; remote MCP working in at least two native clients; one shared text doc with CRUD and version conflict; dashboard with files, editor, revisions, and the project goal; a skill-led sync demo with an honest fallback.
+- **P1:** context extraction from published work, realtime file events and revision diffs, folders, PDF/image preview, invites.
 - **P2:** don't build these now (broad binary previews, office editors, search ranking, CRDT co-editing, enterprise permissions).
 
 **Reviews:** review workers check functionality: tests and type checks pass, flows work end to end, and real clients can connect and use the tools. For the MVP, don't run auth/security audits or ask for security hardening.

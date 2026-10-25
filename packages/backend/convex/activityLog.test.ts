@@ -244,15 +244,14 @@ describe("MCP call capture", () => {
   it("redacts secrets in tool arguments", async () => {
     const { t, sam, workspaceId } = await setup();
     const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
-    await callTool(t, apiKey, "propose_context_change", {
+    await callTool(t, apiKey, "update_context", {
       field: "constraints",
-      proposed_value: `Deploy with ${ANTHROPIC_KEY}`,
-      rationale: `password=hunter2 and ${SECRET_KEY}`,
+      value: `Deploy with ${ANTHROPIC_KEY}, password=hunter2 and ${SECRET_KEY}`,
     });
-    const row = (await mcpEvents(t, workspaceId)).find((r) => r.tool === "propose_context_change")!;
+    const row = (await mcpEvents(t, workspaceId)).find((r) => r.tool === "update_context")!;
     expect(row.outcome).toBe("ok");
     for (const leaked of ["sk-ant-", "mcp_sk_", "hunter2"]) expect(row.payload).not.toContain(leaked);
-    expect(row.resources[0]?.type).toBe("proposal");
+    expect(row.resources[0]).toMatchObject({ type: "context", label: "constraints" });
   });
 
   it("never changes the tool result when telemetry fails", async () => {

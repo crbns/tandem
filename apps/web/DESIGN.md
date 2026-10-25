@@ -211,7 +211,7 @@ A cool, nearly achromatic archive palette with one slate structure colour, two i
 
 ### Hierarchy
 - **Headline** (700, 24px, 32px line, -0.01em): page titles ("Files", the file name, "History: brief.md") and the sign-in wordmark.
-- **Title** (600–700, 16px, 24px line): panel headings ("Custody record") and the approved goal statement. Dialog titles step to 18px/600.
+- **Title** (600–700, 16px, 24px line): panel headings ("Custody record") and the goal statement. Dialog titles step to 18px/600.
 - **Body** (400–600, 14px, 20px line, tabular): the working size for table cells, buttons, breadcrumbs and descriptions. File names in the register are 600.
 - **Body Small** (400–500, 12px, 16–18px line): timestamps under custody entries, the rail's Assistants note, the diff legend.
 - **Label** (Archivo Narrow 600, 12px, 16px line, 0.06em, uppercase): column heads, accession numbers (TDM-CB32), version tags (V2, EDITING FROM V1), CURRENT, and the AGENT / HUMAN plate.
@@ -264,11 +264,11 @@ Compact and quiet; the red one is the only loud object on screen.
 - **Corner Style:** 4px.
 - **Background:** Paper White on the Acid-free Board.
 - **Shadow Strategy:** none (see The Paper On Board Rule).
-- **Border:** a 1px Rule Grey line. An empty state uses a dashed rule (for example, no approved goal yet).
-- **Internal Padding:** 20px. The approved goal pads 20px × 16px, and the save bar pads 12px × 8px.
+- **Border:** a 1px Rule Grey line. An empty state uses a dashed rule (for example, no goal yet).
+- **Internal Padding:** 20px. The goal card pads 20px × 16px, and the save bar pads 12px × 8px.
 
 ### Navigation
-- **Rail:** a white 232px rail. The Tandem mark and workspace name (600) sit at the top, with "Tandem workspace" in graphite beneath. Three items follow: Files (with its count in catalogue caps), Approvals and Assistants. Below 768px the account menu carries Approvals and Assistants. The Assistants note at the foot explains the agent and human marks inline. Active item: slate tint with slate text. Inactive item: ink text with the slate tint on hover.
+- **Rail:** a white 232px rail. The Tandem mark and workspace name (600) sit at the top, with "Tandem workspace" in graphite beneath. Five items follow: Overview, Files (with its count in catalogue caps), Project context, Assistants and Live. Below 768px the account menu carries all but Files. The Assistants note at the foot explains the agent and human marks inline. Active item: slate tint with slate text. Inactive item: ink text with the slate tint on hover.
 - **Top bar:** a white 56px bar. Breadcrumb: workspace in graphite, a slash, the current section in 600. On the right are the account menu (an ink-blue initial disc plus the name) and, in mock mode, a dashed "MOCK DATA" caps badge.
 - **In-page breadcrumb:** graphite links separated by 14px chevrons, with the current item in ink, above each file headline. An accession-number and type line in catalogue caps sits under the headline.
 

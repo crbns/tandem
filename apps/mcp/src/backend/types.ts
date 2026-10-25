@@ -18,7 +18,7 @@ export interface Actor {
 export interface Attribution {
   /**
    * "agent" for writes made through MCP, "human" for edits made in the
-   * dashboard, "system" for Tandem's own (context manager, conflict check).
+   * dashboard, "system" for Tandem's own (the context manager).
    */
   actor_type: "agent" | "human" | "system";
   user_id: string;
@@ -275,41 +275,8 @@ export type ContextField =
   | "open_questions";
 
 /** Text for context fields, or a structured owner for ownership. */
-export type ProposedValue = string | Ownership;
+export type ContextValue = string | Ownership;
 export type ContextOperation = "add" | "resolve" | "remove";
-export type ProposalStatus = "pending" | "applied" | "approved" | "rejected";
-export type ProposalField = ContextField;
-
-export interface ContextProposal {
-  /** Context version this proposal was based on; stale proposals cannot be approved. */
-  base_context_version: number;
-  id: string;
-  workspace_id: string;
-  field: ProposalField;
-  supersedes: string | null;
-  proposed_value: ProposedValue;
-  rationale: string;
-  source_ids: string[];
-  status: ProposalStatus | "stale";
-  proposed_by: Attribution;
-  created_at: string;
-  /** Set once a human owner or admin decides; agents can never decide. */
-  decided_by?: { user_id: string; actor_type: "human" };
-  decided_at?: string;
-  decision_note?: string;
-}
-
-/** Pending changes stay explicitly proposed and retain replacement links. */
-export type ProposalSummary = Pick<
-  ContextProposal,
-  | "id"
-  | "field"
-  | "proposed_value"
-  | "supersedes"
-  | "rationale"
-  | "proposed_by"
-  | "created_at"
-> & { status: "pending" };
 
 export interface PublishedWork {
   id: string;
@@ -329,15 +296,9 @@ export type WorkspaceEventType =
   | "folder.created"
   | "folder.moved"
   | "context.migrated"
-  | "context.recorded"
-  | "context.resolved"
-  | "context.removed"
-  | "context.proposed"
-  | "context.approved"
-  | "context.rejected"
+  | "context.updated"
   | "work.published"
   // Recorded by the Convex backend only:
-  | "context.stale"
   | "workspace.created"
   | "workspace.member_added"
   | "workspace.invite_created"
@@ -351,14 +312,15 @@ export type WorkspaceEventType =
 
 /**
  * Appended in the same commit as the change it records. `seq` is monotonic per
- * workspace. `summary` is short metadata (e.g. "brief.md updated to v3"),
- * never document content or proposed values.
+ * workspace. `summary` is short metadata (e.g. "brief.md updated to v3", or
+ * a context change with its text clipped to 80 characters), never document
+ * content.
  */
 export interface WorkspaceEvent {
   seq: number;
   workspace_id: string;
   type: WorkspaceEventType;
-  /** The file, proposal, or published work the event is about (the workspace for a direct human change). */
+  /** The file, folder, or published work the event is about (the workspace for a context change). */
   subject_id: string;
   actor: Attribution;
   at: string;
@@ -367,7 +329,7 @@ export interface WorkspaceEvent {
 
 /**
  * A current member of the actor's default workspace, for naming an owner in
- * an ownership proposal. Never includes email addresses.
+ * an update_context ownership change. Never includes email addresses.
  */
 export interface WorkspaceMember {
   user_id: string;
@@ -385,7 +347,7 @@ export interface AgentConnection {
   client: string;
   /** Last successful sync_workspace, or null. */
   last_synced_at: string | null;
-  /** Last successful write (create, update, propose, publish), or null. */
+  /** Last successful write (create, update, context change, publish), or null. */
   last_action_at: string | null;
 }
 
@@ -399,8 +361,6 @@ export interface SyncResult {
   workspace: { id: string; name: string };
   context: StructuredContext;
   context_version: number;
-  /** Newest first. */
-  pending_proposals: ProposalSummary[];
   /** Newest updated_at first, at most 50. */
   changed_files: FileMetadata[];
   files_truncated: boolean;
@@ -422,24 +382,31 @@ export interface SyncResult {
   cursor: string;
 }
 
-export interface ProposeContextChangeInput {
-  operation?: ContextOperation;
-  entry_id?: string;
-  supersedes?: string;
-  expected_version?: number;
+export interface UpdateContextInput {
   field: ContextField;
-  proposed_value?: ProposedValue;
-  rationale: string;
+  /** Defaults to "add". resolve: open_questions only; remove: constraints or open_questions. */
+  operation?: ContextOperation;
+  /** Required for resolve/remove; rejected for add. */
+  entry_id?: string;
+  /** An active decision that a decisions addition replaces. */
+  supersedes?: string;
+  /** context_version as last read; any other value fails with VERSION_CONFLICT. */
+  expected_version?: number;
+  /** Required for add; ignored for resolve/remove. */
+  value?: ContextValue;
   /** Each must be a file in the same workspace, else FILE_NOT_FOUND. */
   source_ids?: string[];
   workspace_id?: string;
 }
 
-export interface GetApprovalsInput {
-  workspace_id?: string;
-  status: ProposalStatus | "stale" | "all";
-  /** 1–50. */
-  limit: number;
+export interface UpdateContextResult {
+  field: ContextField;
+  operation: ContextOperation;
+  /** The added, resolved, removed or matching entry ("goal"/"scope" for those). */
+  entry_id: string | null;
+  context_version: number;
+  /** The context already said this; nothing was written. */
+  deduplicated: boolean;
 }
 
 export interface PublishWorkInput {
@@ -451,20 +418,14 @@ export interface PublishWorkInput {
   workspace_id?: string;
 }
 
-export interface ApplyContextChangeInput {
-  field: ContextField;
-  value: ProposedValue;
-  workspace_id?: string;
-}
-
 /**
  * Storage operations the MCP tools need. Implementations must enforce workspace
  * membership on every call and throw TandemError for expected failures.
  * When `workspace_id` is omitted, use the actor's default workspace.
  *
  * Every successful write (createDocument, updateDocument, createFolder,
- * moveFile, moveFolder, proposeContextChange, publishWork, decideProposal,
- * applyContextChange) appends a WorkspaceEvent atomically with the change.
+ * moveFile, moveFolder, updateContext, publishWork) appends a WorkspaceEvent
+ * atomically with the change; a deduplicated updateContext writes nothing.
  * For agent actors, writes through the MCP tools also set the connection's
  * last_action_at.
  *
@@ -487,7 +448,7 @@ export interface TandemBackend {
   /** The actor's own (user, client) presence; nulls if it never synced or wrote. */
   getConnection(actor: Actor): Promise<AgentConnection>;
   /**
-   * Approved context, pending proposal summaries, changed files and events.
+   * Project context, changed files and events.
    * Without `since`: all files (newest first, capped at 50) and the latest 50
    * events, with the cursor at the newest event. With `since`: events after the
    * cursor (oldest first, at most 50), the files those events touched, and the
@@ -497,47 +458,22 @@ export interface TandemBackend {
    */
   syncWorkspace(actor: Actor, input: SyncInput): Promise<SyncResult>;
   /**
-   * Authoritative additions await approval; working additions and question
-   * resolution apply immediately. Only humans may remove working entries.
+   * Changes project context at once for any member, human or agent, with
+   * attribution: goal and scope replace the current value, ownership replaces
+   * the owner of an equal area (the owner must be a member), a decision may
+   * supersede an active one, and resolve/remove act on an entry by id.
+   * Adding what the context already holds (same text ignoring case and
+   * spacing; same owner for the area) returns deduplicated without a write.
    */
-  proposeContextChange(
+  updateContext(
     actor: Actor,
-    input: ProposeContextChangeInput,
-  ): Promise<ContextProposal>;
-  /** Proposals in one workspace, newest first, at most `limit`. */
-  getApprovals(
-    actor: Actor,
-    input: GetApprovalsInput,
-  ): Promise<ContextProposal[]>;
+    input: UpdateContextInput,
+  ): Promise<UpdateContextResult>;
   /**
    * Records authorized project work and a work.published event. It doesn't
    * change files or context.
    */
   publishWork(actor: Actor, input: PublishWorkInput): Promise<PublishedWork>;
-  /**
-   * Human decision on a proposal; not exposed over MCP. Agents get FORBIDDEN;
-   * an unknown or other-tenant proposal gets INVALID_INPUT; a member without owner/admin role gets
-   * FORBIDDEN; an already decided proposal gets INVALID_INPUT. Approving applies
-   * proposed_value (context_version + 1), or throws VERSION_CONFLICT with the
-   * current context_version if base_context_version is stale. Rejection is
-   * allowed even when stale. Either way it sets decided_by and
-   * decided_at and appends context.approved or context.rejected.
-   */
-  decideProposal(
-    actor: Actor,
-    proposalId: string,
-    decision: "approve" | "reject",
-    note?: string,
-  ): Promise<ContextProposal>;
-  /**
-   * Direct context change; not exposed over MCP. Agents ALWAYS get
-   * APPROVAL_REQUIRED (they must use proposeContextChange). Human owners and admins apply
-   * the value like an approved proposal; human members get FORBIDDEN.
-   */
-  applyContextChange(
-    actor: Actor,
-    input: ApplyContextChangeInput,
-  ): Promise<{ context: StructuredContext; context_version: number }>;
   listFiles(actor: Actor, input: ListFilesInput): Promise<ListFilesResult>;
   /**
    * Searches one workspace, with the same membership check as listFiles (FORBIDDEN

@@ -13,7 +13,6 @@ import type {
   ObservedContext,
   ObservedEntry,
   ObservedStatus,
-  ProposalStatus,
   Subscriber,
 } from "./types";
 
@@ -45,8 +44,6 @@ interface Deps {
   requireAdmin: (workspaceId: string) => void;
   /** The signed-in person, for corrections. */
   currentActor: () => IntelActor;
-  /** The mock's live proposal status, so the Approvals link stays truthful. */
-  proposalStatus: (proposalId: string) => ProposalStatus | null;
   /** A reactive mock query: computed after the latency, again on every Live ping. */
   watchLive: <T>(workspaceId: string, compute: () => T, subscriber: Subscriber<T>) => () => void;
   pingLive: (workspaceId: string) => void;
@@ -60,7 +57,7 @@ const agentActor = (a: typeof ALEX_CLAUDE, userName: string): IntelActor => ({ t
 const ALEX: IntelActor = { type: "human", label: "Alex", client: null, userName: "Alex" };
 
 type StoredEvent = ActivityEvent & { workspaceId: string };
-type StoredEntry = Omit<ObservedEntry, "proposal"> & { workspaceId: string; proposalId: string | null };
+type StoredEntry = ObservedEntry & { workspaceId: string };
 type StoredChange = ContextChange & { workspaceId: string; evidenceEventIds: string[] };
 type StoredRun = IntelRun & { workspaceId: string };
 
@@ -98,7 +95,7 @@ export function createMockIntelligence(deps: Deps): MockIntelligence {
   const addRun = (input: Partial<IntelRun> & Pick<IntelRun, "status" | "method">, at: number) => {
     const run: StoredRun = {
       id: `run_${nextId++}`, workspaceId: ws, model: input.method === "llm" ? MODEL : null, summary: null, error: null,
-      eventCount: 0, proposals: 0, startedAt: at, finishedAt: input.status === "running" ? null : at + 4_000, ...input,
+      eventCount: 0, contextChanges: 0, startedAt: at, finishedAt: input.status === "running" ? null : at + 4_000, ...input,
     };
     runs.push(run);
     state.lastRunAt = run.finishedAt ?? run.startedAt;
@@ -123,7 +120,7 @@ export function createMockIntelligence(deps: Deps): MockIntelligence {
       entry = {
         id: `entry_obs_${nextId++}`, workspaceId: ws, key, category: "knowledge", title: "", content: "", status: "active",
         evidence: "observed", confidence: 0.7, severity: null, supersededBy: null, revision: 0, evidenceEventIds: [], agents: [],
-        files: [], proposalId: null, model: run?.model ?? null, createdBy: actor, updatedBy: actor, createdAt: at, updatedAt: at,
+        files: [], contextEntryId: null, model: run?.model ?? null, createdBy: actor, updatedBy: actor, createdAt: at, updatedAt: at,
       };
       entries.push(entry);
     }
@@ -159,7 +156,7 @@ export function createMockIntelligence(deps: Deps): MockIntelligence {
   const e7 = addEvent({ source: "mcp", type: "mcp.tool_call", tool: "update_document", summary: "Saved brief.md v5", actor: alexClaude, agentConnectionId: ALEX_CLAUDE.connectionId, resources: [brief], payload: JSON.stringify({ args: { file_id: "file_brief", expected_version: 4 }, result: { version: 5 } }) }, t(31));
   const e8 = addEvent({ source: "claude_code", type: "claude_code.tool_use", tool: "Edit", summary: "Edited convex/lib/auth.ts", actor: sam, agentConnectionId: SAM_CODE.connectionId, sessionId: "cc-7f21", payload: JSON.stringify({ file_path: "convex/lib/auth.ts", lines_changed: 38 }) }, t(28));
   const e9 = addEvent({ source: "claude_code", type: "claude_code.tool_use", tool: "Bash", summary: "pnpm test passed: 207 tests", actor: sam, agentConnectionId: SAM_CODE.connectionId, sessionId: "cc-7f21", payload: JSON.stringify({ command: "pnpm test", exit_code: 0, passed: 207 }) }, t(24));
-  const e10 = addEvent({ source: "mcp", type: "mcp.tool_call", tool: "propose_context_change", summary: "Proposed a decision: demo ChatGPT as the second client, read-only", actor: chatgpt, agentConnectionId: DEMO_CHATGPT.connectionId, resources: [{ type: "proposal", id: "proposal_decision", label: null }], payload: JSON.stringify({ args: { field: "decision", text: "Demo ChatGPT as the second client, read-only" }, result: { status: "pending" } }) }, t(20));
+  const e10 = addEvent({ source: "mcp", type: "mcp.tool_call", tool: "publish_work", summary: "Published finding: demo ChatGPT as the second client, read-only", actor: chatgpt, agentConnectionId: DEMO_CHATGPT.connectionId, payload: JSON.stringify({ args: { kind: "finding", title: "Demo ChatGPT as the second client, read-only" }, result: { id: "work_chatgpt" } }) }, t(20));
   const e11 = addEvent({ source: "claude_code", type: "claude_code.stop", summary: "Session finished: \"Refresh rotation is in; tests green.\"", actor: sam, agentConnectionId: SAM_CODE.connectionId, sessionId: "cc-7f21", payload: JSON.stringify({ last_message: "Refresh rotation is in; tests green.", duration_s: 1080 }) }, t(18));
   const e12 = addEvent({ source: "mcp", type: "mcp.tool_call", tool: "read_file", summary: "Read brief.md v5", actor: chatgpt, agentConnectionId: DEMO_CHATGPT.connectionId, resources: [brief], significant: false, intelStatus: "skipped" }, t(12));
   const e13 = addEvent({ source: "mcp", type: "mcp.tool_call", tool: "update_document", summary: "Saved proposal.md v3", actor: chatgpt, agentConnectionId: DEMO_CHATGPT.connectionId, resources: [proposalFile], payload: JSON.stringify({ args: { file_id: "file_proposal", expected_version: 2 }, result: { version: 3 } }) }, t(9));
@@ -169,24 +166,22 @@ export function createMockIntelligence(deps: Deps): MockIntelligence {
 
   const run1 = addRun({ status: "succeeded", method: "llm", eventCount: 4, summary: "Sam started on refresh-token rotation; Alex's Claude hit a conflict on brief.md and recovered." }, t(30));
   for (const id of [e2, e4, e5, e7]) Object.assign(events.find((e) => e.id === id)!, { intelRunId: run1.id });
-  write("goal:p0-demo", { category: "goal", title: "Ship the Tandem P0 demo by Saturday night", content: "Matches the approved goal; every assistant is working toward the live demo.", evidence: "human_confirmed", confidence: 1, reason: "Seeded from the approved goal", evidenceEventIds: [] }, SYSTEM, run1, t(30));
+  write("goal:p0-demo", { category: "goal", title: "Ship the Tandem P0 demo by Saturday night", content: "Matches the project goal; every assistant is working toward the live demo.", evidence: "human_confirmed", confidence: 1, reason: "Seeded from the project goal", evidenceEventIds: [], contextEntryId: "goal" }, SYSTEM, run1, t(30));
   write("objective:fallback-video", { category: "objective", title: "Record a fallback demo video", content: "Mentioned in brief.md and the open task list.", evidence: "requested", confidence: 0.6, reason: "Requested in brief.md", evidenceEventIds: [e7], files: [{ id: "file_brief", name: "brief.md", deleted: false }] }, SYSTEM, run1, t(30));
   write("task:refresh-rotation", { category: "task", title: "Refresh-token rotation in the auth middleware", content: "Sam's Claude Code is implementing rotation in convex/lib/auth.ts.", evidence: "observed", confidence: 0.8, reason: "Sam's prompt and the failing auth tests", evidenceEventIds: [e4, e2], agents: [SAM_CODE] }, SYSTEM, run1, t(30));
   write("blocker:auth-tests", { category: "blocker", title: "Two auth tests failing", content: "auth.test.ts › rotates refresh tokens fails after the middleware change.", evidence: "observed", confidence: 0.85, reason: "pnpm test exited 1", evidenceEventIds: [e4], agents: [SAM_CODE] }, SYSTEM, run1, t(30));
   write("coordination:brief-overlap", { category: "coordination", title: "Alex and Alex's Claude both editing brief.md", content: "A human save landed while the assistant held v3; it re-read and saved v5. Worth watching if it repeats.", evidence: "observed", confidence: 0.7, severity: "potential", reason: "VERSION_CONFLICT on brief.md, then a clean save", evidenceEventIds: [e7, e5, e6], agents: [ALEX_CLAUDE], files: [{ id: "file_brief", name: "brief.md", deleted: false }] }, SYSTEM, run1, t(30));
 
-  const run2 = addRun({ status: "succeeded", method: "llm", eventCount: 5, proposals: 1, summary: "Tests went green after Sam's edit; ChatGPT proposed a demo decision." }, t(16));
+  const run2 = addRun({ status: "succeeded", method: "llm", eventCount: 5, summary: "Tests went green after Sam's edit; ChatGPT published a demo decision as a finding." }, t(16));
   for (const id of [e8, e9, e10, e11]) Object.assign(events.find((e) => e.id === id)!, { intelRunId: run2.id });
   write("task:refresh-rotation", { status: "completed", evidence: "verified", confidence: 0.95, content: "Implemented in convex/lib/auth.ts; the full suite passed (207 tests).", reason: "pnpm test passed after the edit", evidenceEventIds: [e9, e8, e4, e2] }, SYSTEM, run2, t(16));
   write("blocker:auth-tests", { status: "resolved", confidence: 0.95, reason: "The same suite passed", evidenceEventIds: [e9, e4] }, SYSTEM, run2, t(16));
-  const decision = write("decision:chatgpt-read-only", { category: "decision", title: "Demo ChatGPT as the second client, read-only", content: "ChatGPT proposed it; Pro accounts only get read-only MCP. Waiting for an owner's approval.", evidence: "claimed", confidence: 0.7, reason: "propose_context_change from ChatGPT", evidenceEventIds: [e10], agents: [DEMO_CHATGPT] }, SYSTEM, run2, t(16));
-  decision.proposalId = "proposal_decision";
+  write("decision:chatgpt-read-only", { category: "decision", title: "Demo ChatGPT as the second client, read-only", content: "ChatGPT published it as a finding; Pro accounts only get read-only MCP. Nobody has agreed to it yet.", evidence: "claimed", confidence: 0.7, reason: "publish_work from ChatGPT", evidenceEventIds: [e10], agents: [DEMO_CHATGPT] }, SYSTEM, run2, t(16));
   write("agent:sam-code", { category: "agent_summary", title: "Sam's Claude Code", content: "Finished refresh-token rotation; session ended with tests green.", evidence: "verified", confidence: 0.9, reason: "Session stop after a passing test run", evidenceEventIds: [e11, e9], agents: [SAM_CODE] }, SYSTEM, run2, t(16));
-  write("knowledge:pro-read-only", { category: "knowledge", title: "ChatGPT Pro connectors are read-only", content: "Full write MCP needs Business/Enterprise/Edu; plan the demo around reads from ChatGPT.", evidence: "observed", confidence: 0.75, reason: "Rationale on ChatGPT's proposal", evidenceEventIds: [e10], agents: [DEMO_CHATGPT] }, SYSTEM, run2, t(16));
-  const clash = write("coordination:last-save-wins", { category: "coordination", title: "Proposal conflicts with optimistic versioning", content: "\"Let the last save win\" contradicts the approved decision to reject stale writes. Held on Approvals.", evidence: "observed", confidence: 0.9, severity: "actual", reason: "Semantic conflict check flagged the pending proposal", evidenceEventIds: [e5] }, SYSTEM, run2, t(16));
-  clash.proposalId = "proposal_conflict";
+  write("knowledge:pro-read-only", { category: "knowledge", title: "ChatGPT Pro connectors are read-only", content: "Full write MCP needs Business/Enterprise/Edu; plan the demo around reads from ChatGPT.", evidence: "observed", confidence: 0.75, reason: "ChatGPT's published finding", evidenceEventIds: [e10], agents: [DEMO_CHATGPT] }, SYSTEM, run2, t(16));
+  write("coordination:auth-overlap", { category: "coordination", title: "Sam's Claude Code and Alex's Claude both changed the auth flow", content: "Sam's session rewrote token refresh in convex/lib/auth.ts while Alex's Claude saved brief.md describing the old flow; brief.md is now out of date.", evidence: "observed", confidence: 0.8, severity: "actual", reason: "Overlapping changes to the same feature", evidenceEventIds: [e8, e7], agents: [SAM_CODE, ALEX_CLAUDE] }, SYSTEM, run2, t(16));
 
-  const run3 = addRun({ status: "succeeded", method: "llm", eventCount: 1, summary: "ChatGPT started writing up the proposal." }, t(7));
+  const run3 = addRun({ status: "succeeded", method: "llm", eventCount: 1, summary: "ChatGPT started writing up proposal.md." }, t(7));
   Object.assign(events.find((e) => e.id === e13)!, { intelRunId: run3.id });
   write("task:proposal-writeup", { category: "task", title: "Write up the demo proposal", content: "ChatGPT saved proposal.md v3 and says it's nearly done; nothing has checked it yet.", evidence: "claimed", confidence: 0.6, reason: "update_document on proposal.md", evidenceEventIds: [e13], agents: [DEMO_CHATGPT], files: [{ id: "file_proposal", name: "proposal.md", deleted: false }] }, SYSTEM, run3, t(7));
   write("blocker:gemini-eligibility", { category: "blocker", title: "Gemini connector blocked on account eligibility", content: "ChatGPT's notes say the Gemini custom MCP app isn't available on this account; nobody has a workaround yet.", evidence: "claimed", confidence: 0.55, reason: "Mentioned in proposal.md v3", evidenceEventIds: [e13], agents: [DEMO_CHATGPT], files: [{ id: "file_proposal", name: "proposal.md", deleted: false }] }, SYSTEM, run3, t(7));
@@ -195,10 +190,7 @@ export function createMockIntelligence(deps: Deps): MockIntelligence {
   void failedRun; void e14; void e15;
 
   // ---- Reads ----
-  const toEntry = ({ workspaceId: _w, proposalId, ...entry }: StoredEntry): ObservedEntry => {
-    const status = proposalId ? deps.proposalStatus(proposalId) : null;
-    return structuredClone({ ...entry, proposal: proposalId && status ? { id: proposalId, status } : null });
-  };
+  const toEntry = ({ workspaceId: _w, ...entry }: StoredEntry): ObservedEntry => structuredClone(entry);
   const toChange = ({ workspaceId: _w, evidenceEventIds: _e, ...change }: StoredChange): ContextChange => structuredClone(change);
   const toEvent = ({ workspaceId: _w, ...event }: StoredEvent): ActivityEvent => structuredClone(event);
   const newestFirst = <T extends { createdAt: number }>(rows: T[]) => [...rows].reverse().sort((a, b) => b.createdAt - a.createdAt);

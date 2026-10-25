@@ -26,7 +26,6 @@ import type {
   ContextEntry,
   Actor,
   AgentConnection,
-  ContextProposal,
   FileDetail,
   FileSummary,
   FolderSummary,
@@ -65,35 +64,6 @@ export function toActor(actor: BackendActor): Actor {
   }
   // Humans and system writes: the label is the name ("Tandem" for system).
   return { actorType: "human", userId, userName: actor.userName ?? actor.label };
-}
-
-type BackendProposal = FunctionReturnType<typeof api.context.getApprovals>[number];
-
-function toProposal(proposal: BackendProposal): ContextProposal {
-  return {
-    id: proposal.id,
-    workspaceId: proposal.workspaceId,
-    field: proposal.field,
-    operation: proposal.operation,
-    proposedValue: proposal.proposedValue,
-    rationale: proposal.rationale,
-    sourceFileIds: proposal.sourceFileIds,
-    status: proposal.status,
-    supersedes: proposal.supersedes,
-    createdBy: toActor(proposal.createdBy),
-    createdAt: proposal.createdAt,
-    decidedBy: proposal.decidedBy ? toActor(proposal.decidedBy) : null,
-    decidedAt: proposal.decidedAt,
-    conflict: proposal.conflict
-      ? {
-          ...proposal.conflict,
-          items: proposal.conflict.items.map((item) => ({ ...item, targetBy: toActor(item.targetBy) })),
-        }
-      : null,
-    resolution: proposal.resolution,
-    decisionNote: proposal.decisionNote,
-    revision: proposal.revision,
-  };
 }
 
 type BackendAgentConnection = FunctionReturnType<typeof api.agentConnections.listAgentConnections>[number];
@@ -154,7 +124,7 @@ function toFileSummary(file: BackendFileMetadata & { path?: string }): FileSumma
   };
 }
 
-/** Keep this mapping separate from the compact approved-goal summary. */
+/** Keep this mapping separate from the compact goal summary. */
 export function toContextDetails(context: FunctionReturnType<typeof api.context.getDetails>): ContextDetails {
   const entry = (value: NonNullable<typeof context.goal>): ContextEntry => ({
     ...value, sourceFileIds: [...value.sourceFileIds], updatedBy: toActor(value.updatedBy),
@@ -272,7 +242,6 @@ function toObservedEntry(entry: BackendObserved["entries"][number]): ObservedEnt
     ...entry,
     agents: entry.agents.map((a) => ({ ...a })),
     files: entry.files.map((f) => ({ ...f })),
-    proposal: entry.proposal && { id: entry.proposal.id, status: entry.proposal.status },
     createdBy: toIntelActor(entry.createdBy),
     updatedBy: toIntelActor(entry.updatedBy),
   };
@@ -572,8 +541,8 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
           constraints: context.constraints.filter((entry) => entry.status === "active").map(({ text }) => text),
           decisions: context.decisions.filter((entry) => entry.status === "active").map(({ text }) => text),
           version: context.revision,
-          approvedBy: toActor(context.goal.updatedBy),
-          approvedAt: context.goal.updatedAt,
+          updatedBy: toActor(context.goal.updatedBy),
+          updatedAt: context.goal.updatedAt,
         } satisfies ProjectContext;
       }),
     getContextDetails: (workspaceId) => call(async () => toContextDetails(await convex.query(api.context.getDetails, {
@@ -590,7 +559,7 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
       sourceFileIds: input.sourceFileIds as Id<"files">[],
       ...(ownerUserId !== undefined ? { ownerUserId: ownerUserId as Id<"users"> } : {}),
     })),
-    proposeContextChange: (workspaceId, { ownerUserId, ...input }) => call(() => convex.mutation(api.context.proposeContextChange, {
+    changeContext: (workspaceId, { ownerUserId, ...input }) => call(() => convex.mutation(api.context.changeContext, {
       ...input, workspaceId: workspaceId as Id<"workspaces">,
       sourceFileIds: input.sourceFileIds as Id<"files">[],
       ...(ownerUserId !== undefined ? { ownerUserId: ownerUserId as Id<"users"> } : {}),
@@ -605,53 +574,6 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
       const tasks = await convex.query(api.tasks.listTasks, { workspaceId: workspaceId as Id<"workspaces"> });
       return tasks.map(toTask);
     }),
-    getContextApproval: (workspaceId) => call(async () => {
-      const info = await convex.query(api.workspaces.getWorkspaceInfo, { workspaceId: workspaceId as Id<"workspaces"> });
-      return info.contextApproval;
-    }),
-    setContextApproval: (workspaceId, mode) => call(async () => {
-      await convex.mutation(api.workspaces.setContextApproval, { workspaceId: workspaceId as Id<"workspaces">, mode });
-    }),
-    listProposals: (workspaceId, status) =>
-      call(async () => {
-        const proposals = await convex.query(api.context.getApprovals, {
-          workspaceId: workspaceId as Id<"workspaces">,
-          ...(status ? { status } : {}),
-        });
-        return proposals.map(toProposal);
-      }),
-    decideProposal: ({ id, workspaceId }, decision, { resolution, note, expectedRevision, supersede } = {}) =>
-      call(async () => {
-        const proposalId = id as Id<"context_proposals">;
-        // Only the keys that are set: Convex rejects `undefined` in some clients.
-        await convex.mutation(api.context.decideContextProposal, {
-          proposalId,
-          decision,
-          ...(resolution ? { resolution } : {}),
-          ...(note ? { note } : {}),
-          ...(expectedRevision !== undefined ? { expectedRevision } : {}),
-          ...(supersede ? { supersede } : {}),
-        });
-        if (decision !== "approved") return;
-        // A stale approval doesn't throw: the backend marks the proposal stale
-        // and returns null. Look where it landed so the UI can say so.
-        const stale = await convex.query(api.context.getApprovals, {
-          workspaceId: workspaceId as Id<"workspaces">,
-          status: "stale",
-        });
-        if (stale.some((p) => p.id === proposalId)) throw new TandemApiError("VERSION_CONFLICT");
-      }),
-    recheckConflict: ({ id }) =>
-      call(async () => {
-        await convex.mutation(api.context.recheckConflict, { proposalId: id as Id<"context_proposals"> });
-      }),
-    listConflicts: (workspaceId) =>
-      call(async () => {
-        const { pending, resolved } = await convex.query(api.context.listConflicts, {
-          workspaceId: workspaceId as Id<"workspaces">,
-        });
-        return { pending: pending.map(toProposal), resolved: resolved.map(toProposal) };
-      }),
     getMcpServerUrl: () => call(() => convex.query(api.agentConnections.getMcpServerUrl, {})),
     createAgentConnection: (workspaceId, { client, displayName }) =>
       call(() =>
@@ -712,8 +634,8 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         }),
       ),
     watchWorkspace: (workspaceId, onChange) => {
-      // getWorkspaceInfo carries the newest workspace events; every commit,
-      // proposal and decision records one. A bounded (20-row) subscription
+      // getWorkspaceInfo carries the newest workspace events; every commit
+      // and context change records one. A bounded (20-row) subscription
       // instead of watching every file page.
       const watch = convex.watchQuery(api.workspaces.getWorkspaceInfo, {
         workspaceId: workspaceId as Id<"workspaces">,

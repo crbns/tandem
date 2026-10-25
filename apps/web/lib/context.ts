@@ -1,6 +1,20 @@
 import type { ContextDetails, ContextEntry, ContextField } from "./api/types";
 import type { TandemApi } from "./api/tandemApi";
 
+export const FIELD_LABELS: Record<ContextField, string> = {
+  goal: "Goal",
+  scope: "Scope",
+  constraint: "Constraint",
+  decision: "Decision",
+  ownership: "Ownership",
+  open_question: "Open question",
+};
+
+/** Goal and scope replace the current value; the other fields add an entry. */
+export function replacesValue(field: ContextField): boolean {
+  return field === "goal" || field === "scope";
+}
+
 export function contextSections(
   context: ContextDetails,
 ): { field: ContextField; label: string; entries: ContextEntry[] }[] {
@@ -32,12 +46,11 @@ export async function loadContextPage(
   workspaceId: string,
   pageCount: number,
 ) {
-  const [context, files, members, first, contextApproval] = await Promise.all([
+  const [context, files, members, first] = await Promise.all([
     api.getContextDetails(workspaceId),
     api.listFiles(workspaceId),
     api.listWorkspaceMembers(workspaceId),
     api.listPublishedWork(workspaceId),
-    api.getContextApproval(workspaceId),
   ]);
   let result = first;
   const work = [...result.page];
@@ -53,7 +66,6 @@ export async function loadContextPage(
     context,
     files,
     members,
-    contextApproval,
     work,
     hasMore: !result.isDone,
     loadedPages: pageCount,

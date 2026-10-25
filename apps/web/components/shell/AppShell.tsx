@@ -11,7 +11,6 @@ import {
   FileTextIcon,
   LayoutDashboardIcon,
   LogOutIcon,
-  StampIcon,
   TicketIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -53,7 +52,6 @@ function crumbFor(pathname: string, filesHref: string): string {
   if (pathname.endsWith("/history")) return "History";
   if (pathname.startsWith(`${filesHref}/files/`)) return "File";
   if (pathname.startsWith(`${filesHref}/context`)) return "Project context";
-  if (pathname.startsWith(`${filesHref}/approvals`)) return "Approvals";
   if (pathname.startsWith(`${filesHref}/assistants`)) return "Assistants";
   if (pathname.startsWith(`${filesHref}/live`)) return "Live";
   if (pathname.startsWith(`${filesHref}/overview`)) return "Overview";
@@ -125,13 +123,6 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
             )}
           </NavItem>
           <NavItem href={`${filesHref}/context`} icon={BookOpenIcon} label="Project context" active={pathname.startsWith(`${filesHref}/context`)} current={pathname === `${filesHref}/context`} />
-          <NavItem
-            href={`${filesHref}/approvals`}
-            icon={StampIcon}
-            label="Approvals"
-            active={pathname.startsWith(`${filesHref}/approvals`)}
-            current={pathname === `${filesHref}/approvals`}
-          />
           <NavItem
             href={`${filesHref}/assistants`}
             icon={BotIcon}
@@ -211,10 +202,6 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
                 <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/context`)}>
                   <BookOpenIcon />
                   Project context
-                </DropdownMenuItem>
-                <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/approvals`)}>
-                  <StampIcon />
-                  Approvals
                 </DropdownMenuItem>
                 <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/assistants`)}>
                   <BotIcon />

@@ -1,27 +1,24 @@
 # Tandem MCP mock server (eval harness)
 
-> **Not the real MCP server.** Tandem's MCP server is `@convex-dev/mcp` in the Convex deployment, at `https://<deployment>.convex.site/mcp`, with OAuth and API keys (`packages/backend/convex/mcp.ts`, setup in [`docs/local-dev.md`](../../docs/local-dev.md)). This package is an in-memory mock with the same 14 tools, used by the skill eval (`skills/tandem/eval`) and for local tool experiments. It never talks to Convex and never deploys.
+> **Not the real MCP server.** Tandem's MCP server is `@convex-dev/mcp` in the Convex deployment, at `https://<deployment>.convex.site/mcp`, with OAuth and API keys (`packages/backend/convex/mcp.ts`, setup in [`docs/local-dev.md`](../../docs/local-dev.md)). This package is an in-memory mock with the same tools except `manage_task` (13), used by the skill eval (`skills/tandem/eval`) and for local tool experiments. It never talks to Convex and never deploys.
 
 Stateless Streamable HTTP server over `MockBackend`.
 
 Tools:
 
-- Read: `get_workspace_info` (caller identity, workspaces, roles, the default workspace's `members` as `{ user_id, name, role }` for ownership proposals, and this connection's `last_synced_at` / `last_action_at`), `list_files` (a folder's folders and files, or a flattened subtree with `recursive`; every entry has a `path`), `search_files` (name/content match with snippets), `read_file` (by `file_id` or `path`), `get_file_versions` (revision history with authors, no content), `get_approvals` (context proposals by status, newest first)
-- Sync: `sync_workspace` (approved context, pending proposal summaries, changed files, events, and an opaque `cursor`; pass it back as `since` for incremental syncs). It only records the last sync time.
-- Write: `create_document` (in a folder via `parent_id` or `folder_path`), `update_document` (optimistic versioning via `expected_version`), `create_folder` (idempotent `mkdir -p`), `move_file` (versioned like an edit), `move_folder` (checked by `expected_revision`), `propose_context_change` (creates a pending proposal, never changes context), `publish_work` (records an authorized deliverable or finding)
+- Read: `get_workspace_info` (caller identity, workspaces, roles, the default workspace's `members` as `{ user_id, name, role }` for `update_context` ownership changes, and this connection's `last_synced_at` / `last_action_at`), `list_files` (a folder's folders and files, or a flattened subtree with `recursive`; every entry has a `path`), `search_files` (name/content match with snippets), `read_file` (by `file_id` or `path`), and `get_file_versions` (revision history with authors, no content)
+- Sync: `sync_workspace` (project context, changed files, events, and an opaque `cursor`; pass it back as `since` for incremental syncs). It only records the last sync time.
+- Write: `create_document` (in a folder via `parent_id` or `folder_path`), `update_document` (optimistic versioning via `expected_version`), `create_folder` (idempotent `mkdir -p`), `move_file` (versioned like an edit), `move_folder` (checked by `expected_revision`), `update_context` (changes project context at once; optional `expected_version`), `publish_work` (records an authorized deliverable or finding)
 
-Loop guidance: the server sends `MCP_INSTRUCTIONS` at initialize, and successful `sync_workspace`, `create_document`, `update_document`, `publish_work` and `propose_context_change` results carry `next_steps` (fixed text plus server-generated ids and versions, never workspace content) restating "read before, write back after": `sync_workspace` adds a step to seed an empty approved context from the files the assistant reads or saves, and saves ask to propose what the file shows that the context lacks, citing its id in `source_ids`. Both say to skip anything a pending proposal already covers (a pending proposal leaves the context empty, and nothing dedupes proposals). `src/loop.ts` is a copy of the Convex server's `convex/lib/mcpLoop.ts`; `test/loopParity.test.ts` keeps them identical.
-
-Approving or rejecting proposals is not an MCP tool: humans do it in the dashboard (`TandemBackend.decideProposal`, owners and admins only). `TandemBackend.applyContextChange` always throws `APPROVAL_REQUIRED` for agents.
+Loop guidance: the server sends `MCP_INSTRUCTIONS` at initialize, and successful `sync_workspace`, `create_document`, `update_document`, `publish_work` and `update_context` results carry `next_steps` (fixed text plus server-generated ids and versions, never workspace content) restating "sync and read before, save files after". Tandem's context manager records findings, goals, decisions and owners from saved files, so the guidance keeps `publish_work` and `update_context` for what the user explicitly asks for. `src/loop.ts` is a copy of the Convex server's `convex/lib/mcpLoop.ts`; `test/loopParity.test.ts` keeps them identical.
 
 ## Data model
 
 Documented as the `TandemBackend` contract in `src/backend/types.ts`:
 
-- **StructuredContext** per workspace, versioned by `context_version`: goal, scope, constraints, approved decisions, ownership, open questions. Only a human owner or admin can change it.
-- **ContextProposal**: a pending change to one field (`goal`, `scope`, `constraints`, `decisions`, `ownership`) with rationale, source file ids, `base_context_version`, and who proposed and decided it. Approval requires that base version to match the current `context_version`, otherwise it fails with `VERSION_CONFLICT` without changing the context or proposal; stale proposals can still be rejected. Direct human context changes also increment `context_version` and invalidate pending approvals.
+- **StructuredContext** per workspace, versioned by `context_version`: goal, scope, constraints, decisions, ownership, open questions. Any member, human or agent, changes it through `TandemBackend.updateContext`, which applies at once with attribution and a `context.updated` event; adding what it already says is deduplicated without a write, and a stale `expected_version` fails with `VERSION_CONFLICT`. Resolved and superseded entries are retained.
 - **PublishedWork**: a deliverable or finding with title, summary, and file ids.
-- **WorkspaceEvent**: per-workspace monotonic `seq` for file, context, and publish changes. Summaries are short metadata, never document content. The sync cursor is base64url JSON of the workspace id and last seq.
+- **WorkspaceEvent**: per-workspace monotonic `seq` for file, context, and publish changes. Summaries are short metadata (context changes clip their text to 80 characters), never document content. The sync cursor is base64url JSON of the workspace id and last seq.
 - **AgentConnection**: per user and client, `last_synced_at` and `last_action_at`. Presence is these timestamps, never "online".
 
 ## Run locally

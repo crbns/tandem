@@ -64,7 +64,7 @@ OAuth clients (claude.ai custom connectors) need a public HTTPS URL, so they can
 pnpm demo:reset
 ```
 
-Deletes and rebuilds only the demo workspace (Alex, Blake and Casey, research and requirements files, approved context, three tasks, one pending proposal, and one agent connection each; the full list is in [demo-seed.md](demo-seed.md#what-it-creates)), then prints sign-in credentials and agent tokens. `pnpm test:demo` runs the P0 slice on the seeded workspace. See [demo-seed.md](demo-seed.md) for pinning the password and tokens, cloud deployments, and the rehearsal checklist.
+Deletes and rebuilds only the demo workspace (Alex, Blake and Casey, research and requirements files, project context including a decision recorded by Casey's Gemini, three tasks, and one agent connection each; the full list is in [demo-seed.md](demo-seed.md#what-it-creates)), then prints sign-in credentials and agent tokens. `pnpm test:demo` runs the P0 slice on the seeded workspace. See [demo-seed.md](demo-seed.md) for pinning the password and tokens, cloud deployments, and the rehearsal checklist.
 
 ## Existing deployments: context entry IDs
 
@@ -79,6 +79,22 @@ Repeat with the returned `continueCursor` as `cursor` until `isDone` is true.
 The migration is idempotent and preserves the IDs already exposed by legacy
 reads. Stored IDs remain optional so older snapshots/seeds can still load;
 new list writes include IDs and reads tolerate rows awaiting backfill.
+
+## Existing deployments: remove the proposal flow
+
+Context changes now apply at once, so the `context_proposals` and `approvals`
+tables, `workspaces.contextApproval` and the proposal links on
+`context_entries` are unused. After deploying, empty them one table at a time
+(`context_proposals`, `approvals`, `context_entries`, `workspaces`):
+
+```sh
+pnpm --filter @repo/backend exec convex run contextMigrations:removeProposals '{"table":"context_proposals","paginationOpts":{"cursor":null,"numItems":100}}'
+```
+
+Repeat each with the returned `continueCursor` until `isDone` is true. Pending
+proposals are applied to project context as their creator first (one that no
+longer fits, such as a removed entry, is dropped); `applied` counts them. Once every table is done, the legacy
+schema fields and tables can be dropped.
 
 ## Tests
 

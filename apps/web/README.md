@@ -54,11 +54,11 @@ pnpm --filter web build
 ## Layout
 
 ```
-app/                     routes: /, /sign-in, /invite/[token], /w/[workspaceId], …/approvals, …/assistants, …/files/[fileId], …/history
+app/                     routes: /, /sign-in, /invite/[token], /w/[workspaceId], …/context, …/live, …/assistants, …/files/[fileId], …/history
 proxy.ts                 Convex Auth route protection (Next 16's name for middleware; no-op in mock mode)
 lib/api/                 TandemApi interface, Convex + mock adapters, error normalization
 lib/editor/saveMachine   pure save/conflict reducer: never discards a draft, never auto-retries
-components/              shell, file table, editor, conflict panel, history, approvals, assistant connections
+components/              shell, file table, editor, conflict panel, history, project context, Live, assistant connections
 deploy/                  optional container self-hosting examples
 ```
 
