@@ -24,6 +24,8 @@ beforeEach(() => {
   vi.useFakeTimers();
   process.env.ANTHROPIC_API_KEY = "test-key";
   process.env.CONFLICT_WAIT_MS = "0";
+  // These tests count conflict-check LLM calls; keep the context manager out.
+  process.env.INTEL_DISABLED = "1";
 });
 
 afterEach(() => {
@@ -31,6 +33,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.CONFLICT_WAIT_MS;
+  delete process.env.INTEL_DISABLED;
 });
 
 async function errorData(promise: Promise<unknown>) {
