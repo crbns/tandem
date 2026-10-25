@@ -12,7 +12,6 @@ import { crumbItems, folderHref, folderTrail } from "@/lib/folders";
 import { Breadcrumbs } from "@/components/files/Breadcrumbs";
 import { FileTable, FileTableSkeleton } from "@/components/files/FileTable";
 import { CustodyPanel } from "@/components/files/CustodyPanel";
-import { InviteDialog } from "@/components/files/InviteDialog";
 import { UploadButton } from "@/components/files/UploadButton";
 import { NewFileDialog } from "@/components/files/NewFileDialog";
 import { NewFolderDialog } from "@/components/files/NewFolderDialog";
@@ -62,7 +61,6 @@ export default function FilesPage() {
             <RotateCwIcon className={cn(refreshing && "animate-spin")} />
             Refresh
           </Button>
-          <InviteDialog workspaceId={workspaceId} />
           <NewFolderDialog workspaceId={workspaceId} parentId={folderId} onCreated={reload} />
           <UploadButton workspaceId={workspaceId} parentId={folderId} />
           <NewFileDialog workspaceId={workspaceId} parentId={folderId} />
