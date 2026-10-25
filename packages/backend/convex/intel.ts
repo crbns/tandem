@@ -227,7 +227,8 @@ async function loadBatch(
       const file = await workspaceFile(r.id);
       if (file) fileIds.push(file._id);
     }
-    if (e.type === "file.updated" && fileIds.length > 0) {
+    // lib/activityLog.ts mirrors file changes as { kind, entityId, version }.
+    if ((e.type === "file.updated" || e.type === "file.created") && fileIds.length > 0) {
       let version: number | undefined;
       try {
         const parsed = JSON.parse(e.payload ?? "{}") as { version?: unknown };
@@ -254,7 +255,7 @@ async function loadBatch(
     });
   }
 
-  // Bounded diffs: the newest version each changed file reached in the batch.
+  // Bounded diffs: the newest version each changed or created file reached in the batch.
   const fileChanges: Batch["fileChanges"] = [];
   const seen = new Set<string>();
   for (const { file, version: given } of [...updated].reverse()) {
@@ -267,7 +268,8 @@ async function loadBatch(
         .withIndex("by_file_and_version", (q) => q.eq("fileId", file._id).eq("version", n))
         .first();
     const after = await revision(version);
-    const before = version > 1 ? await revision(version - 1) : null;
+    // A new file's first version is all additions.
+    const before = version > 1 ? await revision(version - 1) : { content: "" };
     if (!after || !before) continue;
     fileChanges.push({
       fileId: file._id,

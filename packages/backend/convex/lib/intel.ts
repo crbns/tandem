@@ -152,7 +152,7 @@ export const SYSTEM_PROMPT = [
   "Emit a coordination entry (severity potential or actual) when two different connections touch the same files or components with diverging objectives, when one changes a decision another depends on, or when work is claimed complete while a blocker is active. Parallel work that does not conflict is at most potential.",
   "proposals are for goal or decision findings that the approved context lacks, at most 2, each with a confidence; a person approves them. Do not repeat the approved context or pending proposals.",
   "Cite only event ids from events, connection ids from connections, and file ids from files.",
-  'Reply with JSON only: {"summary": one line, "entries": [{"op": "upsert"|"supersede"|"complete"|"reopen"|"resolve"|"retract", "key", "category", "title", "content", "status", "evidence", "confidence", "evidence_event_ids", "agent_connection_ids", "file_ids", "superseded_by"?, "severity"?, "reason"}], "proposals": [{"field": "goal"|"decision", "text", "rationale", "confidence", "evidence_event_ids", "supersedes"?}]}.',
+  'Reply with JSON only: {"summary": one line, "entries": [{"op": "upsert"|"supersede"|"complete"|"reopen"|"resolve"|"retract", "key", "category", "title", "content", "status", "evidence", "confidence", "evidence_event_ids", "agent_connection_ids", "file_ids", "superseded_by" (key, or ""), "severity" ("potential"|"actual"; read only for coordination), "reason"}], "proposals": [{"field": "goal"|"decision", "text", "rationale", "confidence", "evidence_event_ids", "supersedes" (an approved decision id, or "")}]}.',
 ].join("\n");
 
 const strings = { type: "array", items: { type: "string" } } as const;
@@ -182,9 +182,12 @@ export const RESPONSE_SCHEMA = {
           severity: { type: "string", enum: ["potential", "actual"] },
           reason: { type: "string" },
         },
+        // Every property is required (structured outputs handle that most
+        // reliably); "" means not applicable for superseded_by.
         required: [
           "op", "key", "category", "title", "content", "status", "evidence",
-          "confidence", "evidence_event_ids", "agent_connection_ids", "file_ids", "reason",
+          "confidence", "evidence_event_ids", "agent_connection_ids", "file_ids",
+          "superseded_by", "severity", "reason",
         ],
         additionalProperties: false,
       },
@@ -201,7 +204,7 @@ export const RESPONSE_SCHEMA = {
           evidence_event_ids: strings,
           supersedes: { type: "string" },
         },
-        required: ["field", "text", "rationale", "confidence", "evidence_event_ids"],
+        required: ["field", "text", "rationale", "confidence", "evidence_event_ids", "supersedes"],
         additionalProperties: false,
       },
     },
@@ -334,9 +337,12 @@ function parsePayload(payload?: string): Record<string, unknown> | null {
 const obj = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 
-/** The shell command of a Claude Code tool event, wherever the hook put it. */
+/**
+ * The shell command of a Claude Code tool event: top-level `command` as
+ * lib/activityLog.ts stores it, or a raw hook's tool_input.command.
+ */
 function commandOf(payload: Record<string, unknown>): string | undefined {
-  for (const holder of [obj(payload.tool_input), obj(payload.input), payload]) {
+  for (const holder of [payload, obj(payload.tool_input)]) {
     const command = holder?.command;
     if (typeof command === "string") return command;
   }
@@ -344,8 +350,8 @@ function commandOf(payload: Record<string, unknown>): string | undefined {
 }
 
 function exitCodeOf(payload: Record<string, unknown>): number | undefined {
-  for (const holder of [obj(payload.tool_response), obj(payload.response), payload]) {
-    for (const key of ["exit_code", "exitCode", "returncode"]) {
+  for (const holder of [payload, obj(payload.tool_response)]) {
+    for (const key of ["exit_code", "exitCode"]) {
       const code = holder?.[key];
       if (typeof code === "number") return code;
     }
@@ -353,24 +359,27 @@ function exitCodeOf(payload: Record<string, unknown>): number | undefined {
   return undefined;
 }
 
+// Without an exit code, an output tail that reports failures isn't a pass.
+const FAILED_OUTPUT = /\b[1-9]\d* (failed|failing|errors?)\b|\bFAIL(ED|URE)?\b|\bERR!|\bTests? failed\b/;
+
 /**
  * The strongest completion evidence one event can carry by itself: a person's
  * workspace action is human_confirmed; a successful test/build/deploy command
- * from a Claude Code hook is verified. Everything else (including an ok MCP
+ * from a Claude Code hook (lib/activityLog.ts payload: command, exit_code,
+ * success, output_tail) is verified. Everything else (including an ok MCP
  * write, which is only observed) is null.
  */
 export function verifiedSignal(event: BatchEvent): "verified" | "human_confirmed" | null {
   if (event.source === "workspace" && event.actorType === "human") return "human_confirmed";
   if (event.type !== "claude_code.tool_use" || event.outcome !== "ok") return null;
   const payload = parsePayload(event.payload);
-  if (!payload) return null;
+  if (!payload || payload.success === false) return null;
   const command = commandOf(payload);
   if (!command || !VERIFY_COMMAND.test(command)) return null;
   const code = exitCodeOf(payload);
-  if (code !== undefined && code !== 0) return null;
-  const response = obj(payload.tool_response);
-  if (response?.interrupted === true || response?.is_error === true) return null;
-  return "verified";
+  if (code !== undefined) return code === 0 ? "verified" : null;
+  const tail = typeof payload.output_tail === "string" ? payload.output_tail : "";
+  return FAILED_OUTPUT.test(tail) ? null : "verified";
 }
 
 // ---------------------------------------------------------------------------
@@ -779,12 +788,14 @@ export function heuristicOutput(batch: IntelBatch): unknown {
   for (const e of batch.events) {
     if (e.tool !== "manage_task" || e.outcome !== "ok") continue;
     const payload = parsePayload(e.payload) ?? {};
-    const args = obj(payload.args) ?? obj(payload.arguments) ?? payload;
-    const result = obj(payload.result) ?? {};
-    const action = str(args.action);
-    const title = str(args.title) || str(result.title) || e.summary;
-    const id = str(args.task_id) || str(result.task_id) || str(result.id);
-    const keyTail = slug(id ? id.slice(-12) : title);
+    // mcp.ts logs { args, result: digest }: the digest keeps result.task's scalars.
+    const args = obj(payload.args) ?? {};
+    const task = obj(obj(payload.result)?.task) ?? {};
+    const action = str(args.operation) || str(args.action);
+    if (action === "list") continue;
+    const title = str(args.title) || str(task.title) || e.summary;
+    const id = str(task.id) || str(args.task_id);
+    const keyTail = id ? shortId(id) : slug(title);
     if (!keyTail) continue;
     entries.push({
       op: "upsert",

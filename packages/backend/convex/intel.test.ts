@@ -2,8 +2,9 @@
 // The context manager (docs/context-intelligence.md, processing rules). The
 // Messages API is a stubbed global fetch; activity_events rows are inserted
 // directly, so these tests don't depend on ingestion.
+import mcpTest from "@convex-dev/mcp/test";
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -22,6 +23,11 @@ import schema from "./schema";
 declare const process: { env: Record<string, string | undefined> };
 
 const modules = import.meta.glob("./**/*.ts");
+
+beforeAll(() => {
+  process.env.CONVEX_SITE_URL = "https://tandem-test.convex.site";
+  process.env.SITE_URL = "https://tandem.example";
+});
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -511,7 +517,9 @@ describe("context manager: model path", () => {
     const proposals = await s.t.run((ctx) =>
       ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect());
     expect(proposals).toHaveLength(1);
-    expect((await s.runs())[1]).toMatchObject({ status: "succeeded", proposals: 0 });
+    // (A skipped run from the settle above may sit in between: ingestion scheduled it.)
+    expect((await s.runs()).filter((r) => r.status === "succeeded").at(-1)).toMatchObject({ proposals: 0 });
+    expect((await s.runs()).filter((r) => r.status === "succeeded")).toHaveLength(2);
   });
 
   it("dedupes repeated proposals from the context manager (system actors compare equal)", async () => {
@@ -701,6 +709,16 @@ describe("lib/intel", () => {
     expect(verifiedSignal(hook("ls -la"))).toBeNull();
     expect(verifiedSignal(batch().events[0]!)).toBeNull();
     expect(verifiedSignal({ ...batch().events[0]!, source: "workspace", actorType: "human" })).toBe("human_confirmed");
+    // lib/activityLog.ts stores hook payloads flat.
+    const stored = (payload: Record<string, unknown>, outcome: "ok" | "error" = "ok") => ({
+      ...batch().events[0]!, source: "claude_code", type: "claude_code.tool_use", outcome,
+      payload: JSON.stringify({ hook: "PostToolUse", tool: "Bash", ...payload }),
+    });
+    expect(verifiedSignal(stored({ command: "pnpm test", exit_code: 0, success: true }))).toBe("verified");
+    expect(verifiedSignal(stored({ command: "pnpm test", output_tail: "Tests 12 passed", success: true }))).toBe("verified");
+    expect(verifiedSignal(stored({ command: "pnpm test", output_tail: "Tests 2 failed | 10 passed", success: true }))).toBeNull();
+    expect(verifiedSignal(stored({ command: "pnpm test", exit_code: 1, success: false }, "error"))).toBeNull();
+    expect(verifiedSignal(stored({ command: "git push", exit_code: 0, success: true }))).toBeNull();
   });
 
   it("bounds diffs and the data payload", () => {
@@ -712,5 +730,143 @@ describe("lib/intel", () => {
       events: Array.from({ length: 40 }, (_, i) => ({ ...batch().events[0]!, id: `ev${i}`, payload: "x".repeat(4000) })),
     });
     expect(buildData(huge).length).toBeLessThanOrEqual(MAX_DATA_CHARS);
+  });
+});
+
+// The whole loop through the real ingestion paths: the Claude Code hook
+// endpoint, an MCP tool call through mcp.ts run(), and a dashboard edit
+// mirrored by recordWorkspaceEvent. Nothing is inserted by hand.
+describe("end to end: real ingestion → context manager → sync", () => {
+  async function e2e() {
+    const t = convexTest(schema, modules);
+    mcpTest.register(t);
+    const alexId = await t.run((ctx) => ctx.db.insert("users", { name: "Alex", email: "alex@example.com" }));
+    const alex = t.withIdentity({ subject: `${alexId}|session` });
+    const workspaceId = await alex.mutation(api.workspaces.createWorkspace, { name: "Demo" });
+    const created = await alex.action(api.agentConnections.createAgentConnection, { workspaceId, client: "claude" });
+    const apiKey = created.token as string;
+    const callTool = async (name: string, args: Record<string, unknown> = {}) => {
+      const res = await t.fetch("/mcp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2025-06-18",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+      });
+      expect(res.status).toBe(200);
+      const result = (await res.json()).result as { isError?: boolean; structuredContent: Record<string, any> };
+      expect(result.isError).toBeUndefined();
+      return result.structuredContent;
+    };
+    let hookSeq = 0;
+    const hook = async (body: Record<string, unknown>) => {
+      const res = await t.fetch("/activity/claude-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ session_id: "sess-1", event_id: `hook-${++hookSeq}`, ...body }),
+      });
+      expect(res.status).toBe(202);
+    };
+    const bash = (command: string, exitCode: number, stdout: string) =>
+      hook({
+        hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command },
+        tool_response: { exit_code: exitCode, stdout },
+      });
+    const file = await alex.mutation(api.files.createDocument, {
+      workspaceId, name: "auth.md", mimeType: "text/markdown", content: "# Auth\n",
+    });
+    const state = () =>
+      t.run((ctx) => ctx.db.query("context_intel_state").withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId)).unique());
+    const activity = () =>
+      t.run((ctx) => ctx.db.query("activity_events").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", workspaceId)).collect());
+    const entry = (key: string) =>
+      t.run((ctx) => ctx.db.query("context_entries").withIndex("by_workspace_and_key", (q) => q.eq("workspaceId", workspaceId).eq("key", key)).unique());
+    const settle = () => t.finishAllScheduledFunctions(vi.runAllTimers);
+    return { t, alex, workspaceId, connectionId: created.connectionId, fileId: file.id as Id<"files">, callTool, hook, bash, state, activity, entry, settle };
+  }
+
+  /** A model that completes task:jwt-auth citing whichever events `cite` picks. */
+  function completingModel(cite: (events: any[]) => any[]) {
+    return stubModel((data) => {
+      const cited = cite(data.events);
+      return {
+        summary: "JWT auth reported done",
+        entries: [entryJson({
+          op: "complete", key: "task:jwt-auth", category: "task", title: "Implement JWT auth",
+          content: "Claude implemented JWT sessions in auth.md.", evidence: "verified", confidence: 0.9,
+          evidence_event_ids: cited.map((e) => e.id), file_ids: data.files.map((f: { id: string }) => f.id),
+        })],
+        proposals: [],
+      };
+    });
+  }
+
+  it("tests failed, then passed, then the agent claims done: completed with verified evidence", async () => {
+    const s = await e2e();
+    await s.callTool("update_document", { file_id: s.fileId, content: "# Auth\nUse JWT sessions\n", expected_version: 1 });
+    await s.bash("pnpm vitest run", 1, "Tests  2 failed | 10 passed");
+    await s.bash("pnpm vitest run", 0, "Tests  12 passed");
+    await s.callTool("publish_work", { kind: "deliverable", title: "JWT auth done", summary: "Implemented JWT sessions; tests pass." });
+    await s.hook({ hook_event_name: "Stop" });
+
+    // Ingestion stored the events and asked for one debounced run.
+    expect(await s.state()).toMatchObject({ status: "scheduled" });
+    const pending = (await s.activity()).filter((e) => e.intelStatus === "pending");
+    expect(pending.map((e) => e.type)).toEqual(expect.arrayContaining([
+      "file.created", "mcp.tool_call", "file.updated", "claude_code.tool_use", "claude_code.stop",
+    ]));
+
+    const { fn, bodies } = completingModel((events) =>
+      events.filter((e) => e.type === "claude_code.tool_use" || e.tool === "publish_work"));
+    await s.settle();
+    expect(bodies).toHaveLength(1);
+    const request = bodies[0];
+    expect(request.output_config.format.type).toBe("json_schema");
+    expect(request).not.toHaveProperty("temperature");
+    const sent = JSON.parse(request.messages[0].content.slice("<data>".length, -"</data>".length));
+    const hooks = sent.events.filter((e: any) => e.type === "claude_code.tool_use");
+    expect(hooks.map((e: any) => JSON.parse(e.payload))).toMatchObject([
+      { hook: "PostToolUse", tool: "Bash", command: "pnpm vitest run", exit_code: 1, success: false },
+      { hook: "PostToolUse", tool: "Bash", command: "pnpm vitest run", exit_code: 0, success: true },
+    ]);
+    // The dashboard edit's diff reached the model, bounded.
+    expect(sent.file_changes).toMatchObject([{ name: "auth.md", version: 2, added: ["Use JWT sessions"] }]);
+    expect(fn.mock.calls.every(([url]) => String(url) === "https://api.anthropic.com/v1/messages")).toBe(true);
+
+    const task = await s.entry("task:jwt-auth");
+    expect(task).toMatchObject({ status: "completed", evidence: "verified", revision: 1, fileIds: [s.fileId] });
+    const revisions = await s.t.run((ctx) =>
+      ctx.db.query("context_entry_revisions").withIndex("by_entry_and_revision", (q) => q.eq("entryId", task!._id)).collect());
+    expect(revisions).toMatchObject([{ change: "created", status: "completed", evidence: "verified" }]);
+    expect((await s.activity()).filter((e) => e.intelStatus === "pending")).toHaveLength(0);
+    expect(await s.state()).toMatchObject({ status: "idle", entriesRevision: 1 });
+
+    // Assistants syncing with `since` see the change in the event feed.
+    const sync = await s.callTool("sync_workspace", { detail: "full" });
+    expect(JSON.stringify(sync)).toContain("context.observed");
+  });
+
+  it("a claim of done without any test run stays active and claimed", async () => {
+    const s = await e2e();
+    await s.callTool("update_document", { file_id: s.fileId, content: "# Auth\nUse JWT sessions\n", expected_version: 1 });
+    await s.callTool("publish_work", { kind: "deliverable", title: "JWT auth done", summary: "Implemented JWT sessions." });
+    await s.hook({ hook_event_name: "Stop" });
+    expect(await s.state()).toMatchObject({ status: "scheduled" });
+    completingModel((events) => events.filter((e) => e.source === "mcp" || e.type === "file.updated"));
+    await s.settle();
+    expect(await s.entry("task:jwt-auth")).toMatchObject({ status: "active", evidence: "claimed" });
+    expect((await s.activity()).filter((e) => e.intelStatus === "pending")).toHaveLength(0);
+  });
+
+  it("a failing test run alone never verifies completion", async () => {
+    const s = await e2e();
+    await s.bash("pnpm vitest run", 1, "Tests  2 failed | 10 passed");
+    await s.hook({ hook_event_name: "PostToolUseFailure", tool_name: "Bash", tool_input: { command: "pnpm build" }, error: "exit 2" });
+    completingModel((events) => events.filter((e) => e.type.startsWith("claude_code.")));
+    await s.settle();
+    expect(await s.entry("task:jwt-auth")).toMatchObject({ status: "active", evidence: "claimed" });
   });
 });
