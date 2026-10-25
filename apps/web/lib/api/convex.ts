@@ -13,6 +13,15 @@ import type {
   Subscriber,
   TimelinePage,
   TimelineQuery,
+  ActivityEvent,
+  ActivityEventPage,
+  ActivityEventQuery,
+  ContextChange,
+  ContextChanges,
+  EntryHistory,
+  IntelActor,
+  ObservedContext,
+  ObservedEntry,
   ContextDetails,
   ContextEntry,
   Actor,
@@ -246,6 +255,64 @@ function timelineArgs(workspaceId: string, query: TimelineQuery) {
     ...(query.limit !== undefined ? { limit: query.limit } : {}),
     ...(query.connectionId ? { connectionId: query.connectionId as Id<"agent_connections"> } : {}),
     ...(query.kinds?.length ? { kinds: query.kinds } : {}),
+  };
+}
+
+type BackendObserved = FunctionReturnType<typeof api.intelligence.getObservedContext>;
+type BackendEvents = FunctionReturnType<typeof api.intelligence.listActivityEvents>;
+type BackendChanges = FunctionReturnType<typeof api.intelligence.listContextChanges>;
+type BackendHistory = FunctionReturnType<typeof api.intelligence.getEntryHistory>;
+
+function toIntelActor(actor: BackendActor): IntelActor {
+  return { type: actor.type, label: actor.label, client: actor.client ?? null, userName: actor.userName ?? null };
+}
+
+function toObservedEntry(entry: BackendObserved["entries"][number]): ObservedEntry {
+  return {
+    ...entry,
+    agents: entry.agents.map((a) => ({ ...a })),
+    files: entry.files.map((f) => ({ ...f })),
+    proposal: entry.proposal && { id: entry.proposal.id, status: entry.proposal.status },
+    createdBy: toIntelActor(entry.createdBy),
+    updatedBy: toIntelActor(entry.updatedBy),
+  };
+}
+
+export function toObservedContext(observed: BackendObserved): ObservedContext {
+  return { ...observed, entries: observed.entries.map(toObservedEntry) };
+}
+
+function toActivityEvent(event: BackendEvents["items"][number]): ActivityEvent {
+  return { ...event, actor: toIntelActor(event.actor), resources: event.resources.map((r) => ({ ...r })) };
+}
+
+export function toActivityEventPage(page: BackendEvents): ActivityEventPage {
+  return { items: page.items.map(toActivityEvent), nextBefore: page.nextBefore };
+}
+
+function toContextChange(change: BackendChanges["changes"][number]): ContextChange {
+  return { ...change, actor: toIntelActor(change.actor) };
+}
+
+export function toContextChanges(changes: BackendChanges): ContextChanges {
+  return { changes: changes.changes.map(toContextChange), runs: changes.runs };
+}
+
+export function toEntryHistory(history: BackendHistory): EntryHistory {
+  return {
+    entry: toObservedEntry(history.entry),
+    revisions: history.revisions.map(toContextChange),
+    evidence: history.evidence.map(toActivityEvent),
+  };
+}
+
+function activityEventArgs(workspaceId: string, query: ActivityEventQuery) {
+  return {
+    workspaceId: workspaceId as Id<"workspaces">,
+    ...(query.before !== undefined ? { before: query.before } : {}),
+    ...(query.limit !== undefined ? { limit: query.limit } : {}),
+    ...(query.connectionId ? { connectionId: query.connectionId as Id<"agent_connections"> } : {}),
+    ...(query.sources?.length ? { sources: query.sources } : {}),
   };
 }
 
@@ -675,5 +742,57 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
       forward(convex.watchQuery(api.activity.listTimeline, timelineArgs(workspaceId, query)), toTimelinePage, subscriber),
     listTimeline: (workspaceId, query) =>
       call(async () => toTimelinePage(await convex.query(api.activity.listTimeline, timelineArgs(workspaceId, query)))),
+    watchObservedContext: (workspaceId, subscriber) =>
+      forward(
+        convex.watchQuery(api.intelligence.getObservedContext, { workspaceId: workspaceId as Id<"workspaces"> }),
+        toObservedContext,
+        subscriber,
+      ),
+    watchActivityEvents: (workspaceId, query, subscriber) =>
+      forward(
+        convex.watchQuery(api.intelligence.listActivityEvents, activityEventArgs(workspaceId, query)),
+        toActivityEventPage,
+        subscriber,
+      ),
+    listActivityEvents: (workspaceId, query) =>
+      call(async () =>
+        toActivityEventPage(await convex.query(api.intelligence.listActivityEvents, activityEventArgs(workspaceId, query))),
+      ),
+    watchContextChanges: (workspaceId, subscriber) =>
+      forward(
+        convex.watchQuery(api.intelligence.listContextChanges, { workspaceId: workspaceId as Id<"workspaces"> }),
+        toContextChanges,
+        subscriber,
+      ),
+    watchEntryHistory: (workspaceId, entryId, subscriber) =>
+      forward(
+        convex.watchQuery(api.intelligence.getEntryHistory, {
+          workspaceId: workspaceId as Id<"workspaces">,
+          entryId: entryId as Id<"context_entries">,
+        }),
+        toEntryHistory,
+        subscriber,
+      ),
+    correctEntry: (workspaceId, entryId, correction) =>
+      call(async () => {
+        const { revision } = await convex.mutation(api.intelligence.correctEntry, {
+          workspaceId: workspaceId as Id<"workspaces">,
+          entryId: entryId as Id<"context_entries">,
+          ...correction,
+        });
+        return { revision };
+      }),
+    retractEntry: (workspaceId, entryId, input) =>
+      call(async () => {
+        const { revision } = await convex.mutation(api.intelligence.retractEntry, {
+          workspaceId: workspaceId as Id<"workspaces">,
+          entryId: entryId as Id<"context_entries">,
+          expectedRevision: input.expectedRevision,
+          ...(input.note ? { note: input.note } : {}),
+        });
+        return { revision };
+      }),
+    retryContextManager: (workspaceId) =>
+      call(() => convex.mutation(api.intelligence.retryContextManager, { workspaceId: workspaceId as Id<"workspaces"> })),
   };
 }

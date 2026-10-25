@@ -20,6 +20,7 @@ import type * as files from "../files.js";
 import type * as folders from "../folders.js";
 import type * as http from "../http.js";
 import type * as intel from "../intel.js";
+import type * as intelligence from "../intelligence.js";
 import type * as lib_activityLog from "../lib/activityLog.js";
 import type * as lib_agent from "../lib/agent.js";
 import type * as lib_auth from "../lib/auth.js";
@@ -62,6 +63,7 @@ declare const fullApi: ApiFromModules<{
   folders: typeof folders;
   http: typeof http;
   intel: typeof intel;
+  intelligence: typeof intelligence;
   "lib/activityLog": typeof lib_activityLog;
   "lib/agent": typeof lib_agent;
   "lib/auth": typeof lib_auth;

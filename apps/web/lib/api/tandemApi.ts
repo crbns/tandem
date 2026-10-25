@@ -31,6 +31,12 @@ import type {
   Subscriber,
   TimelinePage,
   TimelineQuery,
+  ActivityEventPage,
+  ActivityEventQuery,
+  ContextChanges,
+  EntryCorrection,
+  EntryHistory,
+  ObservedContext,
 } from "./types";
 
 /**
@@ -157,4 +163,23 @@ export interface TandemApi {
   watchTimeline(workspaceId: string, query: TimelineQuery, subscriber: Subscriber<TimelinePage>): () => void;
   /** One older page (`query.before` set), fetched once. */
   listTimeline(workspaceId: string, query: TimelineQuery): Promise<TimelinePage>;
+  /** Observed (derived) context and the context manager's status, reactively. Never approved context. */
+  watchObservedContext(workspaceId: string, subscriber: Subscriber<ObservedContext>): () => void;
+  /** The newest page of raw activity events (every source), reactively. */
+  watchActivityEvents(workspaceId: string, query: ActivityEventQuery, subscriber: Subscriber<ActivityEventPage>): () => void;
+  /** One older page of activity events (`query.before` set), fetched once. */
+  listActivityEvents(workspaceId: string, query: ActivityEventQuery): Promise<ActivityEventPage>;
+  /** Newest observed-context revisions and context-manager runs, reactively. */
+  watchContextChanges(workspaceId: string, subscriber: Subscriber<ContextChanges>): () => void;
+  /** One observed entry's revisions and evidence events, reactively. */
+  watchEntryHistory(workspaceId: string, entryId: string, subscriber: Subscriber<EntryHistory>): () => void;
+  /**
+   * A person's correction of an observed entry (any member). Rejects with
+   * VERSION_CONFLICT (details.currentRevision) when the entry changed since.
+   */
+  correctEntry(workspaceId: string, entryId: string, correction: EntryCorrection): Promise<{ revision: number }>;
+  /** Marks an observed entry wrong. Same rules as correctEntry. */
+  retractEntry(workspaceId: string, entryId: string, input: { expectedRevision: number; note?: string }): Promise<{ revision: number }>;
+  /** Owner/admin: clears the failure backoff and runs the context manager now. */
+  retryContextManager(workspaceId: string): Promise<{ scheduled: boolean }>;
 }
