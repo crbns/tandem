@@ -7,7 +7,7 @@ This document describes the integration boundary between the dashboard, MCP serv
 | Surface                             | Current implementation                                                                                 | Shared data?                                                                         |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
 | Dashboard (`apps/web`)              | Existing session/provider and `TandemApi` layers, backed by Convex Auth and generated Convex functions | Yes, uses `NEXT_PUBLIC_CONVEX_URL`                                                   |
-| MCP (`packages/backend/convex/mcp.ts`) | `@convex-dev/mcp` in Convex HTTP actions at `<CONVEX_SITE_URL>/mcp`: 14 tools, OAuth 2.1 (DCR, PKCE, refresh) and API keys | Yes: same deployment and core helpers as the dashboard (see "Agent path" below) |
+| MCP (`packages/backend/convex/mcp.ts`) | `@convex-dev/mcp` in Convex HTTP actions at `<CONVEX_SITE_URL>/mcp`: 15 tools, OAuth 2.1 (DCR, PKCE, refresh) and API keys | Yes: same deployment and core helpers as the dashboard (see "Agent path" below) |
 | Mock MCP (`apps/mcp`)               | Stateless Streamable HTTP over `MockBackend` (dev tokens), for the skill eval only                     | No, in-memory                                                                        |
 | Backend (`packages/backend/convex`) | Workspace membership, files, revisions, project context                                                | Dashboard functions are authenticated; MCP tools call internal functions with the component-verified principal |
 
@@ -66,4 +66,4 @@ These integration prerequisites are implemented. `apps/mcp` is not a deployment 
 - Search inspects the newest 200 files plus bounded filename-index hits. It does not guarantee substring matches across every older file's content (`searchFilesCore`).
 - The skill eval starts a fresh mock process per trial; it has no external MCP URL/key mode or isolated live seed setup (`skills/tandem/eval/run.mjs`).
 
-People, their assistants and the context manager all change project context directly, with attribution and history. Published findings do not change project context.
+People can change project context directly or direct their assistants to do so, with attribution and history. The context manager and published findings produce observations, not authoritative context changes.

@@ -17,13 +17,13 @@ Shared files for people. Shared understanding for their AI assistants. Built for
 
 - Team workspace (Drive/Notion-like) where humans collaborate on canonical files while each member keeps using their own assistant in native ChatGPT, Claude, or Gemini.
 - Assistants connect through a **remote MCP server** (Streamable HTTP + OAuth) plus a companion **Agent Skill** (`SKILL.md`) that tells them to sync workspace context, read canonical files, save their work as files, and change project context only when the user directs it.
-- Tandem owns two layers: canonical **files** with revision history, and compact structured **project context** (goal, scope, constraints, decisions, ownership, open questions) that references files instead of duplicating them. Tandem's context manager (Haiku) records findings, goals, decisions and owners from saved files and assistant activity.
+- Tandem owns two layers: canonical **files** with revision history, and compact structured **project context** (goal, scope, constraints, decisions, ownership, open questions) that references files instead of duplicating them. Tandem's context manager (Haiku) records evidence-backed observations from saved files and assistant activity; it does not change authoritative project context.
 - Audience is any team; software dev is an example, not a restriction.
 
 ## Hard rules
 
 - **Optimistic versioning:** every write carries `expected_version`. Stale writes return `VERSION_CONFLICT`; the client rereads and reconciles. A commit atomically creates version N+1, attribution, and a workspace event. Restore makes a new head revision, never deletes history.
-- **Context changes apply immediately.** A change to project context from a person (dashboard), their assistant (`update_context`), or the context manager takes effect at once, with actor attribution, a `context.updated` workspace event, and retained history (resolved and superseded entries are kept). There is no approval step, pending state, or conflict check; `expected_version` on `update_context` guards stale writes.
+- **Human direction for project context:** a person changes it in the dashboard or directs their assistant to call `update_context`. Those writes take effect at once with attribution, a `context.updated` event and retained history. Haiku may only record unapproved observations. `expected_version` guards stale context writes.
 - **No agent-to-agent messaging,** agent inbox, or message-flow UI. That was cut from scope on purpose.
 - **Presence is honest:** show "last MCP action / last sync" and "recently active", never "online". Native chats can't be woken by Tandem events, and a skill can't force tool calls.
 - **Privacy:** never auto-export private conversation history. Publish only relevant project work that the user has authorized.
@@ -32,7 +32,7 @@ Shared files for people. Shared understanding for their AI assistants. Built for
 
 ## MCP tool surface
 
-`sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`, `update_document` (needs `expected_version`), `create_folder`, `move_file` (needs `expected_version`), `move_folder` (needs `expected_revision`), `publish_work`, `update_context`, `get_file_versions`, `get_workspace_info`, `manage_task` (list/create/claim/update/complete workspace tasks; writes need `expected_version`). Binary uploads go through the dashboard first. Don't assume a native chat can send binaries through MCP.
+`sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`, `update_document` (needs `expected_version`), `create_folder`, `move_file` (needs `expected_version`), `move_folder` (needs `expected_revision`), `publish_work`, `update_context`, `resolve_observation` (needs `expected_revision`), `get_file_versions`, `get_workspace_info`, `manage_task` (list/create/claim/update/complete workspace tasks; writes need `expected_version`). Binary uploads go through the dashboard first. Don't assume a native chat can send binaries through MCP.
 
 ## Stack
 

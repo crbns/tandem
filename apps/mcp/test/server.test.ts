@@ -171,7 +171,7 @@ describe("Tandem MCP server", () => {
     await client.close();
   });
 
-  it("lists exactly the thirteen tools", async () => {
+  it("lists exactly the fourteen tools", async () => {
     const client = await connect("alex-token");
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
@@ -184,6 +184,7 @@ describe("Tandem MCP server", () => {
       "move_folder",
       "publish_work",
       "read_file",
+      "resolve_observation",
       "search_files",
       "sync_workspace",
       "update_context",
@@ -220,6 +221,7 @@ describe("Tandem MCP server", () => {
       move_folder: idempotentWrite,
       update_context: idempotentWrite,
       publish_work: write,
+      resolve_observation: write,
     });
     await client.close();
   });
@@ -799,9 +801,9 @@ describe("sync-and-read / save-files loop", () => {
       "private conversation history",
       "untrusted",
       "create_document",
-      "read brief first",
+      "active_context",
       "observed",
-      "don't publish or change context on your own",
+      "resolve_observation",
       "the user wants announced",
       "the user directs",
       "it applies at once",
@@ -858,6 +860,24 @@ describe("sync-and-read / save-files loop", () => {
     });
     expect(changed.deduplicated).toBe(false);
     expect(changed.next_steps).toEqual(contextNextSteps(false));
+    await client.close();
+  });
+
+  it("serves the active_context and resolve_observation the instructions name", async () => {
+    const client = await connect("alex-token");
+    await call(client, "update_context", { field: "decisions", value: "Use Convex" });
+    const synced = await call(client, "sync_workspace", { detail: "brief" });
+    expect(synced.isError).toBeFalsy();
+    const active = (synced.structuredContent as { active_context: { decisions: { text: string; source_ids: string[] }[] } }).active_context;
+    expect(active.decisions.map((d) => d.text)).toContain("Use Convex");
+    expect(active.decisions.every((d) => Array.isArray(d.source_ids))).toBe(true);
+    const resolved = await call(client, "resolve_observation", {
+      entry_id: "missing",
+      expected_revision: 1,
+      note: "Fixed",
+    });
+    expect(resolved.isError).toBe(true);
+    expect(resolved.structuredContent).toMatchObject({ error: { code: "INVALID_INPUT" } });
     await client.close();
   });
 
@@ -2325,7 +2345,7 @@ describe("Origin allowlist", () => {
         }),
       );
       const { tools } = await client.listTools();
-      expect(tools.length).toBe(13);
+      expect(tools.length).toBe(14);
       await client.close();
     }
   });
@@ -2363,7 +2383,7 @@ describe("Origin allowlist", () => {
         }),
       );
       const { tools } = await client.listTools();
-      expect(tools.length).toBe(13);
+      expect(tools.length).toBe(14);
       await client.close();
     } finally {
       await stop(slashServer);

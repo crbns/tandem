@@ -153,13 +153,13 @@ describe("agent activity recording", () => {
       lastTool: "sync_workspace",
       lastKind: "sync",
       lastOutcome: "ok",
-      // That sync was brief: no constraints or ownership arrived.
-      syncedContextBrief: true,
+      // Brief now carries all active constraints and ownership.
+      syncedContextBrief: false,
     });
     expect(network.agents[0]!.lastSyncAt).toBeTypeOf("number");
-    expect(rows[0]!.summary).toBe(`Synced a brief of context v${network.contextRevision}`);
+    expect(rows[0]!.summary).toBe(`Synced active context v${network.contextRevision}`);
 
-    // A full sync completes it, and a later brief of the same version doesn't undo that.
+    // A later full or brief sync keeps the same complete active context status.
     await callTool(t, apiKey, "sync_workspace");
     expect((await alex.query(api.activity.getAgentNetwork, { workspaceId })).agents[0]!.syncedContextBrief).toBe(false);
     await callTool(t, apiKey, "sync_workspace", { detail: "brief" });

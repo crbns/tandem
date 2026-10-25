@@ -1,6 +1,6 @@
 # Tandem MCP mock server (eval harness)
 
-> **Not the real MCP server.** Tandem's MCP server is `@convex-dev/mcp` in the Convex deployment, at `https://<deployment>.convex.site/mcp`, with OAuth and API keys (`packages/backend/convex/mcp.ts`, setup in [`docs/local-dev.md`](../../docs/local-dev.md)). This package is an in-memory mock with the same tools except `manage_task` (13), used by the skill eval (`skills/tandem/eval`) and for local tool experiments. It never talks to Convex and never deploys.
+> **Not the real MCP server.** Tandem's MCP server is `@convex-dev/mcp` in the Convex deployment, at `https://<deployment>.convex.site/mcp`, with OAuth and API keys (`packages/backend/convex/mcp.ts`, setup in [`docs/local-dev.md`](../../docs/local-dev.md)). This package is an in-memory mock with the same tools except `manage_task` (14; `resolve_observation` is a stub because the mock records no observations), used by the skill eval (`skills/tandem/eval`) and for local tool experiments. It never talks to Convex and never deploys.
 
 Stateless Streamable HTTP server over `MockBackend`.
 
@@ -10,7 +10,7 @@ Tools:
 - Sync: `sync_workspace` (project context, changed files, events, and an opaque `cursor`; pass it back as `since` for incremental syncs). It only records the last sync time.
 - Write: `create_document` (in a folder via `parent_id` or `folder_path`), `update_document` (optimistic versioning via `expected_version`), `create_folder` (idempotent `mkdir -p`), `move_file` (versioned like an edit), `move_folder` (checked by `expected_revision`), `update_context` (changes project context at once; optional `expected_version`), `publish_work` (records an authorized deliverable or finding)
 
-Loop guidance: the server sends `MCP_INSTRUCTIONS` at initialize, and successful `sync_workspace`, `create_document`, `update_document`, `publish_work` and `update_context` results carry `next_steps` (fixed text plus server-generated ids and versions, never workspace content) restating "sync and read before, save files after". Tandem's context manager records findings, goals, decisions and owners from saved files, so the guidance keeps `publish_work` and `update_context` for what the user explicitly asks for. `src/loop.ts` is a copy of the Convex server's `convex/lib/mcpLoop.ts`; `test/loopParity.test.ts` keeps them identical.
+Loop guidance: the server sends `MCP_INSTRUCTIONS` at initialize, and successful `sync_workspace`, `create_document`, `update_document`, `publish_work` and `update_context` results carry `next_steps` (fixed text plus server-generated ids and versions, never workspace content). Production sync includes complete `active_context` and compact observed leads. The context manager records observations from saved files; agents verify relevant leads, fix routine issues within the user's task, and call `resolve_observation` after closing an issue or disproving a stale lead. `publish_work` and `update_context` remain for what the user explicitly asks for. `src/loop.ts` is a copy of the Convex server's `convex/lib/mcpLoop.ts`; `test/loopParity.test.ts` keeps them identical. The mock server is an eval harness and does not yet implement the production observed state.
 
 ## Data model
 

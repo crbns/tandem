@@ -24,6 +24,7 @@ import {
   storedName,
 } from "../names.js";
 import type {
+  ActiveContext,
   Actor,
   AgentConnection,
   WorkspaceMember,
@@ -685,6 +686,7 @@ export class MockBackend implements TandemBackend {
     return {
       workspace: { id: workspaceId, name: ws.name },
       context: structuredClone(ws.context),
+      active_context: activeContext(ws.context),
       context_version: ws.context_version,
       changed_files: changed.slice(0, SYNC_LIMIT),
       files_truncated: changed.length > SYNC_LIMIT,
@@ -1467,6 +1469,32 @@ function requireDestination(input: {
       { field: "to_folder_path" },
     );
   }
+}
+
+/** The current project rules, without resolved or superseded history. */
+function activeContext(c: StructuredContext): ActiveContext {
+  const active = (entries: ContextEntry[]) =>
+    entries
+      .filter((e) => e.status === "active")
+      .map((e) => ({ id: e.id, text: e.text, source_ids: [...e.source_ids] }));
+  return {
+    goal: c.goal,
+    goal_source_ids: [],
+    scope: c.scope,
+    scope_source_ids: [],
+    constraints: active(c.constraints),
+    decisions: active(c.decisions),
+    ownership: c.ownership
+      .filter((e) => e.status === "active")
+      .map((e) => ({
+        id: e.id,
+        text: e.text,
+        source_ids: [...e.source_ids],
+        area: e.area,
+        owner_user_id: e.owner_user_id,
+      })),
+    open_questions: active(c.open_questions),
+  };
 }
 
 /** A move into the current folder that keeps the stored name changes nothing. */

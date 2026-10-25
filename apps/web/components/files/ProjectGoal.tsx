@@ -45,7 +45,7 @@ export function ProjectGoal({ workspaceId }: { workspaceId: string }) {
           No goal yet
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Set one on the Project context page, or let an assistant or Tandem&apos;s context manager record it.
+          Set one on the Project context page, or direct your assistant to record it.
         </p>
       </section>
     );

@@ -62,6 +62,7 @@ import {
   type FolderIndex,
 } from "./lib/fs";
 import { matchesQuery, queryTerms } from "./lib/names";
+import { recordWorkspaceEvent } from "./lib/auth";
 import { observedValidator } from "./lib/observed";
 import {
   actorValidator,
@@ -835,20 +836,16 @@ export const syncWorkspace = internalMutation({
         updatedAt: now,
       });
     }
-    // What the connection has now received; reads never advance it. A brief
-    // result leaves out constraints and ownership, so it only counts as a
-    // brief of this version, unless the full version had already arrived.
+    // Brief now carries the complete active context. Historical detail is
+    // optional, so a brief sync counts as receiving this context version.
     const contextRevision = result.context.revision;
     const previous = session.connection.syncedContextRevision;
-    const brief =
-      args.detail === "brief" &&
-      !(previous === contextRevision && session.connection.syncedContextBrief !== true);
     await recordAgentAction(ctx, session, {
       sync: true,
       syncedContextRevision: contextRevision,
-      syncedContextBrief: brief,
+      syncedContextBrief: false,
     });
-    const received = brief ? `a brief of context v${contextRevision}` : `context v${contextRevision}`;
+    const received = `active context v${contextRevision}`;
     await recordActivity(ctx, session, {
       tool: "sync_workspace",
       kind: "sync",
@@ -866,6 +863,64 @@ export const syncWorkspace = internalMutation({
       folders: folders.slice(0, SYNC_FOLDER_LIMIT),
       foldersTruncated: index.truncated || folders.length > SYNC_FOLDER_LIMIT,
     };
+  },
+});
+
+/** A verified routine fix may close a lead without claiming human confirmation. */
+export const resolveObservation = internalMutation({
+  args: {
+    principal,
+    workspaceId: v.optional(v.string()),
+    entryId: v.string(),
+    expectedRevision: v.number(),
+    note: v.string(),
+  },
+  returns: v.object({ key: v.string(), revision: v.number(), observedRevision: v.number() }),
+  handler: async (ctx, args) => {
+    const session = await agentCall(ctx, args.principal, { write: true });
+    const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
+    const id = ctx.db.normalizeId("context_entries", args.entryId);
+    const entry = id ? await ctx.db.get(id) : null;
+    if (!entry || entry.workspaceId !== workspaceId)
+      throw new ConvexError({ code: "INVALID_INPUT" });
+    if (entry.revision !== args.expectedRevision)
+      throw new ConvexError({
+        code: "VERSION_CONFLICT", entryId: args.entryId,
+        currentRevision: entry.revision, expectedRevision: args.expectedRevision,
+      });
+    if (entry.status !== "active")
+      throw new ConvexError({ code: "INVALID_INPUT", message: "Only active observations can be resolved." });
+    const note = boundedText(args.note, 300, "note");
+    const now = Date.now();
+    const revision = entry.revision + 1;
+    await ctx.db.patch(entry._id, {
+      status: "resolved", revision, updatedBy: session.actor, updatedAt: now,
+    });
+    await ctx.db.insert("context_entry_revisions", {
+      workspaceId, entryId: entry._id, key: entry.key, revision,
+      change: "status_changed", category: entry.category,
+      title: entry.title, content: entry.content, status: "resolved",
+      evidence: entry.evidence, confidence: entry.confidence,
+      reason: note, evidenceEventIds: entry.evidenceEventIds,
+      actor: session.actor, createdAt: now,
+    });
+    const state = await ctx.db.query("context_intel_state")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId)).unique();
+    if (!state) throw new ConvexError({ code: "INVALID_INPUT" });
+    const observedRevision = state.entriesRevision + 1;
+    await ctx.db.patch(state._id, { entriesRevision: observedRevision, updatedAt: now });
+    await recordWorkspaceEvent(ctx, {
+      workspaceId, kind: "context.corrected", entityType: "context_entry",
+      entityId: entry._id, summary: `Resolved observed ${entry.category}: ${entry.title.slice(0, 80)}`,
+      actor: session.actor,
+    });
+    await recordActivity(ctx, session, {
+      tool: "resolve_observation",
+      kind: "write",
+      summary: `Resolved observed ${entry.category}`,
+      resource: { type: "context", id: entry._id, label: entry.title.slice(0, 80) },
+    });
+    return { key: entry.key, revision, observedRevision };
   },
 });
 

@@ -201,6 +201,19 @@ export function toToolError(err: unknown, hint: ErrorHint = {}): unknown {
     case "INVALID_SOURCE_FILE":
       return fileNotFound(str("fileId") ?? hint.fileId ?? "(unknown)");
     case "VERSION_CONFLICT": {
+      const entryId = str("entryId");
+      if (entryId) {
+        // An observed entry: resolve_observation's lock is its revision.
+        const current = num("currentRevision") ?? 0;
+        const expected = num("expectedRevision") ?? 0;
+        return new ToolError(
+          "VERSION_CONFLICT",
+          `Observation ${entryId} is at revision ${current}, not ${expected}; someone else changed it. ` +
+            `Call sync_workspace to re-read it; if it is still active and your fix still applies, ` +
+            `retry resolve_observation with expected_revision=${current}.`,
+          { entry_id: entryId, current_revision: current, expected_revision: expected },
+        );
+      }
       if (num("currentRevision") !== undefined) {
         // A folder: its optimistic-lock counter is `revision`.
         const folderId = str("folderId") ?? hint.folderId ?? "(unknown)";
@@ -498,6 +511,16 @@ function toContextEntry(e: ContextEntry) {
   };
 }
 
+function toOwnership(e: ContextRow["ownership"][number]) {
+  if (e.ownerUserId !== null && e.ownerArea !== null)
+    return { area: e.ownerArea, owner_user_id: e.ownerUserId };
+  // Legacy free-text entry ("area: owner").
+  const sep = e.text.lastIndexOf(": ");
+  return sep > 0
+    ? { area: e.text.slice(0, sep), owner_user_id: e.text.slice(sep + 2) }
+    : { area: e.text, owner_user_id: "" };
+}
+
 function toContext(c: ContextRow) {
   return {
     goal: c.goal?.text ?? "",
@@ -508,23 +531,7 @@ function toContext(c: ContextRow) {
       decided_at: iso(e.updatedAt),
       source_ids: e.sourceFileIds,
     })),
-    ownership: c.ownership.map((e) => {
-      if (e.ownerUserId !== null && e.ownerArea !== null)
-        return {
-          ...toContextEntry(e),
-          area: e.ownerArea,
-          owner_user_id: e.ownerUserId,
-        };
-      // Legacy free-text entry ("area: owner").
-      const sep = e.text.lastIndexOf(": ");
-      return sep > 0
-        ? {
-            ...toContextEntry(e),
-            area: e.text.slice(0, sep),
-            owner_user_id: e.text.slice(sep + 2),
-          }
-        : { ...toContextEntry(e), area: e.text, owner_user_id: "" };
-    }),
+    ownership: c.ownership.map((e) => ({ ...toContextEntry(e), ...toOwnership(e) })),
     open_questions: c.openQuestions.map((e) => ({
       ...toContextEntry(e),
       created_at: iso(e.updatedAt),
@@ -532,6 +539,25 @@ function toContext(c: ContextRow) {
     })),
     updated_at: iso(c.updatedAt),
     updated_by: toAttribution(c.updatedBy),
+  };
+}
+
+/** All current project rules, without the retained resolved history. */
+function toActiveContext(c: ContextRow) {
+  const active = (entries: ContextEntry[]) => entries
+    .filter((e) => e.status === "active")
+    .map((e) => ({ id: e.id, text: e.text, source_ids: e.sourceFileIds }));
+  return {
+    goal: c.goal?.text ?? "",
+    goal_source_ids: c.goal?.sourceFileIds ?? [],
+    scope: c.scope?.text ?? "",
+    scope_source_ids: c.scope?.sourceFileIds ?? [],
+    constraints: active(c.constraints),
+    decisions: active(c.decisions),
+    ownership: c.ownership
+      .filter((e) => e.status === "active")
+      .map((e) => ({ id: e.id, text: e.text, source_ids: e.sourceFileIds, ...toOwnership(e) })),
+    open_questions: active(c.openQuestions),
   };
 }
 
@@ -565,6 +591,8 @@ function toObserved(o: Observed) {
     updated_at: isoOrNull(o.updatedAt),
     last_run_at: isoOrNull(o.lastRunAt),
     entries: o.entries.map((e) => ({
+      id: e.id,
+      revision: e.revision,
       key: e.key,
       category: e.category,
       title: e.title,
@@ -573,6 +601,7 @@ function toObserved(o: Observed) {
       evidence: e.evidence,
       confidence: e.confidence,
       agents: e.agents,
+      source_file_ids: e.sourceFileIds,
       updated_at: iso(e.updatedAt),
     })),
     truncated: o.truncated,
@@ -647,10 +676,12 @@ function toSyncBrief(r: SyncRow, detail: "brief" | "full") {
  */
 export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
   const brief = toSyncBrief(r, detail);
+  const activeContext = toActiveContext(r.context);
   const cursor = encodeCursor(r.workspace.id, r.cursorSeq);
   if (detail === "brief")
     return {
       brief,
+      active_context: activeContext,
       workspace: r.workspace,
       context_version: r.context.revision,
       changed_files: r.changedFiles.map((f) => ({ id: f.id, name: f.name, path: f.path, version: f.version })),
@@ -671,6 +702,7 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
     };
   return {
     brief,
+    active_context: activeContext,
     workspace: r.workspace,
     context: toContext(r.context),
     context_version: r.context.revision,

@@ -87,6 +87,12 @@ export function createMcpServer(
           .describe(
             "cursor from your previous sync_workspace of the same workspace. Omit for a full snapshot.",
           ),
+        detail: z
+          .enum(["brief", "full"])
+          .optional()
+          .describe(
+            'Accepted like production; this mock always returns the full result. active_context is complete either way.',
+          ),
       },
       // Not read-only: it records last_synced_at.
       annotations: {
@@ -624,6 +630,49 @@ export function createMcpServer(
         published: await backend.publishWork(actor, args),
         next_steps: publishedNextSteps(),
       })),
+  );
+
+  server.registerTool(
+    "resolve_observation",
+    {
+      title: "Resolve observation",
+      description:
+        "Mark one active observed lead resolved after reading its cited files and verifying a relevant routine fix or disproving the lead. " +
+        "Use the entry id and revision from sync_workspace, and explain the evidence in note. " +
+        "This does not approve or change project context. A stale revision returns VERSION_CONFLICT. " +
+        "This mock records no observations, so every entry_id is unknown.",
+      inputSchema: {
+        workspace_id: z
+          .string()
+          .optional()
+          .describe("Workspace of the entry. Defaults to your default workspace."),
+        entry_id: z.string().min(1).describe("The observed entry's id."),
+        expected_revision: z
+          .number()
+          .int()
+          .describe("The entry's revision as you last synced it."),
+        note: z
+          .string()
+          .trim()
+          .min(1)
+          .max(300)
+          .describe("The evidence that closes the lead, up to 300 characters."),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    () =>
+      run(async () => {
+        throw new TandemError(
+          "INVALID_INPUT",
+          "No active observation has that entry_id. Sync again and use an id from observed.",
+          { field: "entry_id" },
+        );
+      }),
   );
 
   return server;

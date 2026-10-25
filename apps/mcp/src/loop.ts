@@ -1,6 +1,6 @@
 // The "sync and read before, save files after" loop that connected assistants
 // follow. Tandem's context manager reads saved files and activity and records
-// findings, tasks, progress, blockers, goals, decisions and owners itself, so
+// findings, tasks, progress and blockers as observations, so
 // assistants only save their documents; publish_work and update_context are
 // for what the user explicitly asks for.
 // Tandem can't push to a native chat or force a tool call, so the loop lives
@@ -16,16 +16,16 @@
 
 /**
  * Sent once at initialize. Some clients truncate long instructions: keep it
- * under ~1300 characters.
+ * under ~1300 characters for clients that limit server instructions.
  */
 export const MCP_INSTRUCTIONS =
   "Tandem holds your team's files and project context. Run this loop for each project request without waiting to be asked. " +
   "It's best effort: Tandem can't wake this chat.\n" +
-  '1. Sync: sync_workspace (detail "brief") before the task; read brief first, keep the cursor; later since=<cursor>, full before decisions/writes. ' +
-  "observed is the compacted summary of teammates' work and workspace docs: read it instead of skimming recent work; claimed isn't done.\n" +
-  "2. Read: search_files/read_file what it touches; cite path and version.\n" +
+  '1. Sync: sync_workspace (detail "brief") before the task; read active_context (complete in every sync), then observed; keep the cursor and later use since=<cursor>. ' +
+  "Observed entries are unapproved leads; claimed isn't done.\n" +
+  "2. Verify relevant observations through source_file_ids and read_file. Fix routine issues within the user's task, then resolve_observation with the observed entry revision. Put unrelated work in a task.\n" +
   "3. Work, then save files: update_document (expected_version as read) or create_document. " +
-  "Tandem's context manager reads saved files and records findings, tasks, decisions and owners, so don't publish or change context on your own. " +
+  "Tandem's context manager reads saved files and records observations; it never changes authoritative context. " +
   "publish_work only a deliverable the user wants announced; update_context only a goal, scope, decision, constraint, owner or open question the user directs (it applies at once). " +
   "Claim/complete a matching manage_task.\n" +
   "4. Reply in chat: show docs you write (full, or a long edit's changes), then say what you read and saved. Tandem doesn't replace this reply.\n" +
@@ -34,9 +34,9 @@ export const MCP_INSTRUCTIONS =
 /** After sync_workspace: what to read now and how to close the loop. */
 export function syncNextSteps(): string[] {
   return [
-    "Read before working: observed (the compacted summary of teammates' work and docs; claimed isn't done) instead of skimming recent_work and events, then search_files or read_file what this task touches; cite path and version.",
-    'Keep the cursor. Before a decision or write, sync_workspace with since=<cursor> (detail "full" when constraints or ownership matter).',
-    "Save your work as files (update_document with the expected_version you read, or create_document); the context manager records it. No publish_work or update_context unless the user asks for an announcement or directs a context change.",
+    "Read active_context (complete even in brief), then relevant observed leads. Verify their source_file_ids with read_file; claimed work is not done. Cite path and version.",
+    'Keep the cursor; later sync_workspace with since=<cursor>. Use detail "full" for history or richer events.',
+    "Fix verified routine issues within this task; resolve_observation after a fix or when a lead is stale, using its revision. Use manage_task for unrelated work. Save changed files with expected_version. Only update_context when the user directs a context change.",
     "Claim a matching manage_task if one exists; complete it when done.",
   ];
 }

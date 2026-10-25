@@ -382,8 +382,8 @@ function existingEntry(
 }
 
 /**
- * Changes project context at once, for a person, their assistant or the
- * context manager alike: add a value (goal and scope replace the current
+ * Changes project context at once for a person or an assistant acting on
+ * that person's direction: add a value (goal and scope replace the current
  * one, ownership replaces the owner of an equal area, a decision may
  * supersede an active decision), or resolve/remove a constraint or open
  * question. `expectedVersion` (the context revision) guards against stale
