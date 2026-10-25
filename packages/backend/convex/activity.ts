@@ -1,0 +1,369 @@
+// The dashboard's Live view: which assistants touched the workspace, what each
+// MCP call did, and whether each connection has received the latest approved
+// context. Rows come from agent_activity (one per MCP call, written by
+// mcpTools.ts) merged with the human decisions and edits in workspace_events.
+// Queries only read; recording happens in the tool mutations themselves.
+import { v } from "convex/values";
+import { internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
+import { internalMutation, query } from "./_generated/server";
+import { agentActor } from "./lib/agent";
+import { requireMembership } from "./lib/auth";
+
+const AGENT_LIMIT = 50;
+const CONNECTION_SCAN = 200;
+// Rows read from each source per page; filtered-out rows still count.
+const TIMELINE_SCAN = 200;
+const TIMELINE_DEFAULT = 50;
+const TIMELINE_MAX = 100;
+const RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+const PRUNE_BATCH = 500;
+
+const outcomeValidator = v.union(v.literal("ok"), v.literal("conflict"), v.literal("error"));
+
+const timelineKind = v.union(
+  v.literal("sync"),
+  v.literal("read"),
+  v.literal("write"),
+  v.literal("propose"),
+  v.literal("publish"),
+  v.literal("task"),
+  v.literal("conflict"),
+  v.literal("error"),
+  v.literal("resolved"),
+  v.literal("approve"),
+  v.literal("reject"),
+  v.literal("context"),
+  v.literal("human_edit"),
+);
+type TimelineKind = typeof timelineKind.type;
+
+const timelineItemValidator = v.object({
+  id: v.string(),
+  source: v.union(v.literal("agent"), v.literal("workspace")),
+  createdAt: v.number(),
+  kind: timelineKind,
+  tool: v.union(v.string(), v.null()),
+  outcome: outcomeValidator,
+  errorCode: v.union(v.string(), v.null()),
+  summary: v.string(),
+  actor: v.object({
+    type: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
+    label: v.string(),
+    client: v.union(v.string(), v.null()),
+    agentConnectionId: v.union(v.id("agent_connections"), v.null()),
+  }),
+  resource: v.union(
+    v.object({ type: v.string(), id: v.string(), label: v.union(v.string(), v.null()) }),
+    v.null(),
+  ),
+  contextRevision: v.union(v.number(), v.null()),
+  previousSyncedContextRevision: v.union(v.number(), v.null()),
+  resolvesId: v.union(v.string(), v.null()),
+});
+type TimelineItem = typeof timelineItemValidator.type;
+
+const AGENT_KINDS = new Set<string>([
+  "sync", "read", "write", "propose", "publish", "task", "conflict", "error", "resolved",
+]);
+const WORKSPACE_KINDS = new Set<string>(["approve", "reject", "context", "human_edit"]);
+
+function activityKind(row: Doc<"agent_activity">): TimelineKind {
+  return row.resolvesActivityId ? "resolved" : row.kind;
+}
+
+/**
+ * The Live kind of a workspace event made by a person (or the system), or
+ * null for events the timeline leaves out. Agent-made events are skipped by
+ * the caller: their agent_activity rows already cover them.
+ */
+function workspaceKind(kind: string): TimelineKind | null {
+  if (kind === "context.approved") return "approve";
+  if (kind === "context.rejected") return "reject";
+  // Direct dashboard edits and proposals that applied at once.
+  if (
+    kind === "context.updated" ||
+    kind === "context.recorded" ||
+    kind === "context.resolved" ||
+    kind === "context.removed"
+  )
+    return "context";
+  // Creates, saves (restores are saves) and moves of canonical files.
+  if (kind.startsWith("file.")) return "human_edit";
+  return null;
+}
+
+function workspaceResource(event: Doc<"workspace_events">): TimelineItem["resource"] {
+  if (event.entityType === "file") return { type: "file", id: event.entityId, label: null };
+  if (event.entityType === "context_proposal")
+    return { type: "proposal", id: event.entityId, label: null };
+  if (event.entityType === "structured_context")
+    return { type: "context", id: event.entityId, label: null };
+  return null;
+}
+
+function fromActivity(row: Doc<"agent_activity">): TimelineItem {
+  return {
+    id: `a:${row._id}`,
+    source: "agent",
+    createdAt: row.createdAt,
+    kind: activityKind(row),
+    tool: row.tool,
+    outcome: row.outcome,
+    errorCode: row.errorCode ?? null,
+    summary: row.summary,
+    actor: {
+      type: row.actor.type,
+      label: row.actor.label,
+      client: row.actor.client ?? null,
+      agentConnectionId: row.agentConnectionId,
+    },
+    resource: row.resource
+      ? { type: row.resource.type, id: row.resource.id, label: row.resource.label ?? null }
+      : null,
+    contextRevision: row.contextRevision,
+    previousSyncedContextRevision: row.previousSyncedContextRevision ?? null,
+    resolvesId: row.resolvesActivityId ? `a:${row.resolvesActivityId}` : null,
+  };
+}
+
+function fromEvent(event: Doc<"workspace_events">, kind: TimelineKind): TimelineItem {
+  return {
+    id: `w:${event._id}`,
+    source: "workspace",
+    createdAt: event.createdAt,
+    kind,
+    tool: null,
+    outcome: "ok",
+    errorCode: null,
+    summary: event.summary,
+    actor: {
+      type: event.actor.type,
+      label: event.actor.label,
+      client: event.actor.client ?? null,
+      agentConnectionId: null,
+    },
+    resource: workspaceResource(event),
+    contextRevision: null,
+    previousSyncedContextRevision: null,
+    resolvesId: null,
+  };
+}
+
+/**
+ * Every live connection with its presence and propagation: how many approved
+ * context versions and workspace events it has not yet received through
+ * sync_workspace. Any member sees every assistant, like listAgentActivity.
+ */
+export const getAgentNetwork = query({
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.object({
+    contextRevision: v.number(),
+    contextUpdatedAt: v.union(v.number(), v.null()),
+    headSeq: v.number(),
+    agents: v.array(
+      v.object({
+        connectionId: v.id("agent_connections"),
+        label: v.string(),
+        client: v.string(),
+        oauthClientName: v.union(v.string(), v.null()),
+        lastMcpActionAt: v.union(v.number(), v.null()),
+        lastSyncAt: v.union(v.number(), v.null()),
+        syncedContextRevision: v.union(v.number(), v.null()),
+        contextVersionsBehind: v.union(v.number(), v.null()),
+        syncedSeq: v.union(v.number(), v.null()),
+        eventsBehind: v.union(v.number(), v.null()),
+        lastTool: v.union(v.string(), v.null()),
+        lastKind: v.union(v.string(), v.null()),
+        lastOutcome: v.union(v.string(), v.null()),
+      }),
+    ),
+  }),
+  handler: async (ctx, { workspaceId }) => {
+    await requireMembership(ctx, workspaceId);
+    const context = await ctx.db
+      .query("structured_context")
+      .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
+      .unique();
+    const contextRevision = context?.revision ?? 0;
+    const newest = await ctx.db
+      .query("workspace_events")
+      .withIndex("by_workspace_and_seq", (q) => q.eq("workspaceId", workspaceId))
+      .order("desc")
+      .first();
+    const headSeq = newest?.seq ?? 0;
+    const connections = await ctx.db
+      .query("agent_connections")
+      .withIndex("by_workspace_and_revoked_at", (q) =>
+        q.eq("workspaceId", workspaceId).eq("revokedAt", undefined),
+      )
+      .take(CONNECTION_SCAN);
+    connections.sort(
+      (a, b) =>
+        (b.lastMcpActionAt ?? -1) - (a.lastMcpActionAt ?? -1) || b.createdAt - a.createdAt,
+    );
+    const users = new Map<Id<"users">, Doc<"users"> | null>();
+    const agents = [];
+    for (const connection of connections.slice(0, AGENT_LIMIT)) {
+      if (!users.has(connection.userId))
+        users.set(connection.userId, await ctx.db.get(connection.userId));
+      const user = users.get(connection.userId);
+      const label = user
+        ? agentActor(connection, user).label
+        : (connection.displayName ?? `Workspace member's ${connection.client} assistant`);
+      const cursor = await ctx.db
+        .query("sync_cursors")
+        .withIndex("by_agent_connection", (q) => q.eq("agentConnectionId", connection._id))
+        .first();
+      const last = await ctx.db
+        .query("agent_activity")
+        .withIndex("by_connection_and_created", (q) =>
+          q.eq("agentConnectionId", connection._id),
+        )
+        .order("desc")
+        .first();
+      const synced = connection.syncedContextRevision ?? null;
+      const syncedSeq = cursor?.cursor ?? null;
+      agents.push({
+        connectionId: connection._id,
+        label,
+        client: connection.client,
+        oauthClientName: connection.oauthClientName ?? null,
+        lastMcpActionAt: connection.lastMcpActionAt ?? null,
+        lastSyncAt: connection.lastSyncAt ?? null,
+        syncedContextRevision: synced,
+        contextVersionsBehind: synced === null ? null : Math.max(0, contextRevision - synced),
+        syncedSeq,
+        eventsBehind: syncedSeq === null ? null : Math.max(0, headSeq - syncedSeq),
+        lastTool: last?.tool ?? null,
+        lastKind: last ? activityKind(last) : null,
+        lastOutcome: last?.outcome ?? null,
+      });
+    }
+    return {
+      contextRevision,
+      contextUpdatedAt: context?.updatedAt ?? null,
+      headSeq,
+      agents,
+    };
+  },
+});
+
+/**
+ * Agent activity and people's decisions and edits, newest first. Pages by
+ * `before` (createdAt, exclusive): pass the previous page's nextBefore. Each
+ * page reads at most TIMELINE_SCAN rows per source, so a filtered page can be
+ * short while nextBefore is still set.
+ */
+export const listTimeline = query({
+  args: {
+    workspaceId: v.id("workspaces"),
+    before: v.optional(v.number()),
+    limit: v.optional(v.number()),
+    connectionId: v.optional(v.id("agent_connections")),
+    kinds: v.optional(v.array(v.string())),
+  },
+  returns: v.object({
+    items: v.array(timelineItemValidator),
+    nextBefore: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    await requireMembership(ctx, args.workspaceId);
+    const limit = Math.min(
+      TIMELINE_MAX,
+      Math.max(1, Math.floor(args.limit ?? TIMELINE_DEFAULT)),
+    );
+    const before = args.before ?? Number.MAX_SAFE_INTEGER;
+    const kinds = args.kinds ? new Set(args.kinds) : null;
+    const wantAgent = !kinds || [...kinds].some((k) => AGENT_KINDS.has(k));
+    // Workspace rows are people's and the system's, never one connection's.
+    const wantWorkspace =
+      args.connectionId === undefined && (!kinds || [...kinds].some((k) => WORKSPACE_KINDS.has(k)));
+
+    let agentRows: Doc<"agent_activity">[] = [];
+    if (wantAgent) {
+      if (args.connectionId !== undefined) {
+        const connection = await ctx.db.get(args.connectionId);
+        // Another workspace's connection reads as empty, like an unknown one.
+        if (connection?.workspaceId === args.workspaceId)
+          agentRows = await ctx.db
+            .query("agent_activity")
+            .withIndex("by_connection_and_created", (q) =>
+              q.eq("agentConnectionId", connection._id).lt("createdAt", before),
+            )
+            .order("desc")
+            .take(TIMELINE_SCAN);
+      } else {
+        agentRows = await ctx.db
+          .query("agent_activity")
+          .withIndex("by_workspace_and_created", (q) =>
+            q.eq("workspaceId", args.workspaceId).lt("createdAt", before),
+          )
+          .order("desc")
+          .take(TIMELINE_SCAN);
+      }
+    }
+    const eventRows = wantWorkspace
+      ? await ctx.db
+          .query("workspace_events")
+          .withIndex("by_workspace_and_created", (q) =>
+            q.eq("workspaceId", args.workspaceId).lt("createdAt", before),
+          )
+          .order("desc")
+          .take(TIMELINE_SCAN)
+      : [];
+
+    // Below the oldest row a full source returned, that source is unread, so
+    // only rows newer than it are complete enough to page through.
+    let floor = -Infinity;
+    if (agentRows.length === TIMELINE_SCAN) floor = agentRows[TIMELINE_SCAN - 1]!.createdAt;
+    if (eventRows.length === TIMELINE_SCAN)
+      floor = Math.max(floor, eventRows[TIMELINE_SCAN - 1]!.createdAt);
+
+    const candidates: TimelineItem[] = [];
+    for (const row of agentRows) candidates.push(fromActivity(row));
+    for (const event of eventRows) {
+      if (event.actor.type === "agent") continue;
+      const kind = workspaceKind(event.kind);
+      if (kind) candidates.push(fromEvent(event, kind));
+    }
+    candidates.sort((a, b) => b.createdAt - a.createdAt);
+
+    const items: TimelineItem[] = [];
+    let cut = false;
+    for (const item of candidates) {
+      if (item.createdAt <= floor) break;
+      if (kinds && !kinds.has(item.kind)) continue;
+      // Keep rows sharing a timestamp on one page, since `before` is exclusive.
+      if (items.length >= limit && item.createdAt !== items[items.length - 1]!.createdAt) {
+        cut = true;
+        break;
+      }
+      items.push(item);
+    }
+    let nextBefore: number | null = null;
+    if (cut) nextBefore = items[items.length - 1]!.createdAt;
+    else if (floor !== -Infinity)
+      // Resume at the floor itself; if one timestamp filled the whole scan,
+      // skip past it rather than return the same page forever.
+      nextBefore = floor + 1 < before ? floor + 1 : floor;
+    return { items, nextBefore };
+  },
+});
+
+/** Daily (crons.ts): deletes activity older than 14 days, a batch per run. */
+export const pruneActivity = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const cutoff = Date.now() - RETENTION_MS;
+    const old = await ctx.db
+      .query("agent_activity")
+      .withIndex("by_creation_time", (q) => q.lt("_creationTime", cutoff))
+      .take(PRUNE_BATCH);
+    for (const row of old) await ctx.db.delete(row._id);
+    if (old.length === PRUNE_BATCH)
+      await ctx.scheduler.runAfter(0, internal.activity.pruneActivity, {});
+    return null;
+  },
+});

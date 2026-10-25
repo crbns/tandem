@@ -180,7 +180,7 @@ export interface ErrorHint {
   tool?: "update_document" | "create_document" | "create_folder" | "move_file" | "move_folder";
 }
 
-function codeOf(err: ConvexError<Value>): string | undefined {
+export function codeOf(err: ConvexError<Value>): string | undefined {
   const data = err.data as { code?: unknown } | string;
   if (typeof data === "string") return data;
   return typeof data?.code === "string" ? data.code : undefined;

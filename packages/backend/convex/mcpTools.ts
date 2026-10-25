@@ -13,10 +13,13 @@ import { internalMutation } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import {
+  CONFLICT_CODES,
+  recordActivity,
   requireAgent,
   requireWriteScope,
   resolveAgentWorkspace,
   touchConnection as recordAgentAction,
+  type ActivityResource,
   type AgentSession,
   type McpPrincipal,
 } from "./lib/agent";
@@ -159,16 +162,79 @@ function withPath<F extends { parentId: Id<"folders"> | null; name: string }>(
 const byName = (a: string, b: string) =>
   a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
+const fileResource = (file: { id: string; path: string }): ActivityResource => ({
+  type: "file",
+  id: file.id,
+  label: file.path,
+});
+
+/** A failed call's resource label, looked up only inside the connection's workspace. */
+async function failedResourceLabel(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  resource: ActivityResource,
+): Promise<string | undefined> {
+  if (resource.type === "file") {
+    const id = ctx.db.normalizeId("files", resource.id);
+    const file = id ? await ctx.db.get(id) : null;
+    if (file?.workspaceId === workspaceId && file.deletedAt === undefined)
+      return await filePath(ctx, file);
+  } else if (resource.type === "folder") {
+    const id = ctx.db.normalizeId("folders", resource.id);
+    const folder = id ? await ctx.db.get(id) : null;
+    if (folder?.workspaceId === workspaceId && folder.deletedAt === undefined)
+      return await folderPath(ctx, folder._id);
+  } else if (resource.type === "task") {
+    const id = ctx.db.normalizeId("tasks", resource.id);
+    const task = id ? await ctx.db.get(id) : null;
+    if (task?.workspaceId === workspaceId) return task.title;
+  }
+  return undefined;
+}
+
 /**
  * Presence for a failed agent call. A failing tool mutation rolls back its own
  * touch, so the MCP endpoint calls this after a call fails (never after one
- * succeeds) to keep "last MCP action" honest. Records no sync.
+ * succeeds) to keep "last MCP action" honest. Records no sync. With `tool`, it
+ * also records the failure as a conflict or error activity row.
  */
 export const touchConnection = internalMutation({
-  args: { principal },
+  args: {
+    principal,
+    tool: v.optional(v.string()),
+    errorCode: v.optional(v.string()),
+    resource: v.optional(
+      v.object({
+        type: v.union(v.literal("file"), v.literal("folder"), v.literal("task")),
+        id: v.string(),
+      }),
+    ),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await agentCall(ctx, args.principal);
+    const session = await agentCall(ctx, args.principal);
+    if (args.tool === undefined) return null;
+    const code = args.errorCode ?? "ERROR";
+    const conflict = CONFLICT_CODES.has(code);
+    let resource: ActivityResource | undefined;
+    if (args.resource) {
+      const label = await failedResourceLabel(ctx, session.workspaceId, args.resource);
+      resource = { ...args.resource, ...(label !== undefined ? { label } : {}) };
+    }
+    const target = resource?.label ?? (resource ? `a ${resource.type}` : null);
+    await recordActivity(ctx, session, {
+      tool: args.tool,
+      kind: conflict ? "conflict" : "error",
+      outcome: conflict ? "conflict" : "error",
+      errorCode: code,
+      summary:
+        code === "VERSION_CONFLICT"
+          ? `Version conflict${target ? ` on ${target}` : ""}: it changed since it was read`
+          : code === "TASK_ALREADY_CLAIMED"
+            ? `Task${resource?.label ? ` ${resource.label}` : ""} was already claimed`
+            : `${args.tool} failed (${code})`,
+      resource,
+    });
     return null;
   },
 });
@@ -224,6 +290,11 @@ export const getWorkspaceInfo = internalMutation({
         role: row.role,
       });
     }
+    await recordActivity(ctx, session, {
+      tool: "get_workspace_info",
+      kind: "read",
+      summary: "Read workspace info",
+    });
     return {
       userId: session.user._id,
       client: connection.client,
@@ -280,6 +351,13 @@ export const listFiles = internalMutation({
     const rootId = folder?._id ?? null;
     const base = await folderPath(ctx, rootId);
     const terms = queryTerms(args.query ?? "");
+    // The query is the assistant's own text, so the summary leaves it out.
+    await recordActivity(ctx, session, {
+      tool: "list_files",
+      kind: "read",
+      summary: terms.length > 0 ? `Searched file names in ${base}` : `Listed ${base}`,
+      ...(rootId ? { resource: { type: "folder" as const, id: rootId, label: base } } : {}),
+    });
 
     if (terms.length === 0 && !args.recursive) {
       const folders = await listChildFolders(ctx, workspaceId, folder?._id, LIST_LIMIT + 1);
@@ -374,6 +452,11 @@ export const searchFiles = internalMutation({
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
     const results = await searchFilesCore(ctx, workspaceId, args.query, args.limit);
     const index = await loadFolderIndex(ctx, workspaceId);
+    await recordActivity(ctx, session, {
+      tool: "search_files",
+      kind: "read",
+      summary: `Searched files (${results.length} result${results.length === 1 ? "" : "s"})`,
+    });
     return results.map((r) => ({ ...r, file: withPath(index, r.file) }));
   },
 });
@@ -412,6 +495,13 @@ export const readFile = internalMutation({
       file = found.file;
     }
     const row = toFileRow(file, await filePath(ctx, file));
+    const readVersion = args.version ?? file.version;
+    await recordActivity(ctx, session, {
+      tool: "read_file",
+      kind: "read",
+      summary: `Read ${row.path} v${readVersion}`,
+      resource: fileResource(row),
+    });
     if (args.version !== undefined && args.version !== file.version) {
       const revision = Number.isSafeInteger(args.version)
         ? await ctx.db
@@ -470,8 +560,15 @@ export const getFileVersions = internalMutation({
       // One extra so the oldest listed version has something to compare to.
       .take(limit + 1);
     const encoder = new TextEncoder();
+    const row = toFileRow(file, await filePath(ctx, file));
+    await recordActivity(ctx, session, {
+      tool: "get_file_versions",
+      kind: "read",
+      summary: `Listed versions of ${row.path}`,
+      resource: fileResource(row),
+    });
     return {
-      file: toFileRow(file, await filePath(ctx, file)),
+      file: row,
       // Sizes and line counts only: revision content never leaves through this function.
       versions: revisions.slice(0, limit).map((revision, i) => {
         const previous = revisions[i + 1];
@@ -522,7 +619,14 @@ export const createDocument = internalMutation({
       content: args.content,
       actor: session.actor,
     });
-    return toFileRow(file, await filePath(ctx, file));
+    const row = toFileRow(file, await filePath(ctx, file));
+    await recordActivity(ctx, session, {
+      tool: "create_document",
+      kind: "write",
+      summary: `Created ${row.path} (v${row.version})`,
+      resource: fileResource(row),
+    });
+    return row;
   },
 });
 
@@ -543,7 +647,14 @@ export const updateDocument = internalMutation({
       expectedVersion: args.expectedVersion,
       actor: session.actor,
     });
-    return toFileRow(updated, await filePath(ctx, updated));
+    const row = toFileRow(updated, await filePath(ctx, updated));
+    await recordActivity(ctx, session, {
+      tool: "update_document",
+      kind: "write",
+      summary: `Saved ${row.path} as v${row.version}`,
+      resource: fileResource(row),
+    });
+    return row;
   },
 });
 
@@ -559,7 +670,14 @@ export const createFolder = internalMutation({
       path: args.path,
       actor: session.actor,
     });
-    return { folder: toFolderRow(folder, await folderPath(ctx, folder._id)), created };
+    const row = toFolderRow(folder, await folderPath(ctx, folder._id));
+    await recordActivity(ctx, session, {
+      tool: "create_folder",
+      kind: "write",
+      summary: created ? `Created folder ${row.path}` : `Folder ${row.path} already existed`,
+      resource: { type: "folder", id: row.id, label: row.path },
+    });
+    return { folder: row, created };
   },
 });
 
@@ -592,7 +710,14 @@ export const moveFile = internalMutation({
       name: args.newName,
       actor: session.actor,
     });
-    return toFileRow(moved, await filePath(ctx, moved));
+    const row = toFileRow(moved, await filePath(ctx, moved));
+    await recordActivity(ctx, session, {
+      tool: "move_file",
+      kind: "write",
+      summary: `Moved file to ${row.path} (v${row.version})`,
+      resource: fileResource(row),
+    });
+    return row;
   },
 });
 
@@ -625,7 +750,14 @@ export const moveFolder = internalMutation({
       name: args.newName,
       actor: session.actor,
     });
-    return toFolderRow(moved, await folderPath(ctx, moved._id));
+    const row = toFolderRow(moved, await folderPath(ctx, moved._id));
+    await recordActivity(ctx, session, {
+      tool: "move_folder",
+      kind: "write",
+      summary: `Moved folder to ${row.path}`,
+      resource: { type: "folder", id: row.id, label: row.path },
+    });
+    return row;
   },
 });
 
@@ -708,6 +840,22 @@ export const syncWorkspace = internalMutation({
         updatedAt: now,
       });
     }
+    // Every sync result carries the full approved context, so this is what
+    // the connection has now received; reads never advance it.
+    const contextRevision = result.context.revision;
+    const previous = session.connection.syncedContextRevision;
+    await ctx.db.patch(session.connection._id, { syncedContextRevision: contextRevision });
+    await recordActivity(ctx, session, {
+      tool: "sync_workspace",
+      kind: "sync",
+      summary:
+        previous !== undefined && previous < contextRevision
+          ? `Synced context v${contextRevision} (was v${previous})`
+          : `Synced context v${contextRevision}`,
+      resource: { type: "context", id: workspaceId, label: `Context v${contextRevision}` },
+      contextRevision,
+      ...(previous !== undefined ? { previousSyncedContextRevision: previous } : {}),
+    });
     return {
       ...result,
       changedFiles: result.changedFiles.map((f) => withPath(index, f)),
@@ -753,6 +901,17 @@ export const proposeContextChange = internalMutation({
       ownerUserId: args.ownerUserId,
       actor: session.actor,
     });
+    // Field and status only: never the proposed text or the rationale.
+    const field = proposal.field.replaceAll("_", " ");
+    await recordActivity(ctx, session, {
+      tool: "propose_context_change",
+      kind: "propose",
+      summary:
+        proposal.status === "applied"
+          ? `Applied a ${field} change`
+          : `Proposed a ${field} change (pending approval)`,
+      resource: { type: "proposal", id: proposal._id, label: field },
+    });
     return {
       proposal: toProposal(proposal),
       contextRevision: proposal.contextRevision ?? 0,
@@ -779,6 +938,11 @@ export const getApprovals = internalMutation({
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
     const limit = boundedInt(args.limit, 1, 50);
     const proposals = await listProposals(ctx, workspaceId, args.status, limit);
+    await recordActivity(ctx, session, {
+      tool: "get_approvals",
+      kind: "read",
+      summary: `Checked ${args.status ?? "all"} proposals (${proposals.length})`,
+    });
     return proposals.map((proposal) => ({
       proposal: toProposal(proposal),
       contextRevision: proposal.contextRevision ?? 0,
@@ -823,8 +987,20 @@ export const manageTask = internalMutation({
     if (operation === "list") {
       const limit = boundedInt(args.limit ?? 50, 1, 100);
       const tasks = await listTasks(ctx, workspaceId, args.status, limit);
+      await recordActivity(ctx, session, {
+        tool: "manage_task",
+        kind: "read",
+        summary: `Listed ${args.status ?? "all"} tasks (${tasks.length})`,
+      });
       return { tasks: await Promise.all(tasks.map((task) => toTask(ctx, task))) };
     }
+    const taskActivity = (task: Doc<"tasks">, verb: string) =>
+      recordActivity(ctx, session, {
+        tool: "manage_task",
+        kind: "task",
+        summary: `${verb} a task`,
+        resource: { type: "task", id: task._id, label: task.title },
+      });
     if (operation === "create") {
       const task = await createTaskCore(ctx, {
         workspaceId,
@@ -832,6 +1008,7 @@ export const manageTask = internalMutation({
         description: args.description ?? "",
         actor: session.actor,
       });
+      await taskActivity(task, "Created");
       return { task: await toTask(ctx, task) };
     }
     if (args.taskId === undefined || args.expectedVersion === undefined)
@@ -854,6 +1031,10 @@ export const manageTask = internalMutation({
               description: args.description,
               status: args.status,
             });
+    await taskActivity(
+      updated,
+      operation === "claim" ? "Claimed" : operation === "complete" ? "Completed" : "Updated",
+    );
     return { task: await toTask(ctx, updated) };
   },
 });
@@ -878,6 +1059,13 @@ export const publishWork = internalMutation({
       summary: args.summary,
       fileIds: await checkSourceFiles(ctx, workspaceId, args.fileIds),
       actor: session.actor,
+    });
+    // The title labels the work; its summary stays out of the activity feed.
+    await recordActivity(ctx, session, {
+      tool: "publish_work",
+      kind: "publish",
+      summary: `Published a ${work.kind}${work.fileIds.length > 0 ? ` covering ${work.fileIds.length} file${work.fileIds.length === 1 ? "" : "s"}` : ""}`,
+      resource: { type: "published_work", id: work._id, label: work.title },
     });
     return toPublishedWork(work);
   },

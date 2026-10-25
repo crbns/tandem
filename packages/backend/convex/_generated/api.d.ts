@@ -8,10 +8,12 @@
  * @module
  */
 
+import type * as activity from "../activity.js";
 import type * as agentConnections from "../agentConnections.js";
 import type * as auth from "../auth.js";
 import type * as context from "../context.js";
 import type * as contextMigrations from "../contextMigrations.js";
+import type * as crons from "../crons.js";
 import type * as files from "../files.js";
 import type * as folders from "../folders.js";
 import type * as http from "../http.js";
@@ -38,10 +40,12 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  activity: typeof activity;
   agentConnections: typeof agentConnections;
   auth: typeof auth;
   context: typeof context;
   contextMigrations: typeof contextMigrations;
+  crons: typeof crons;
   files: typeof files;
   folders: typeof folders;
   http: typeof http;

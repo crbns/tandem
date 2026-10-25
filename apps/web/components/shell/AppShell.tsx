@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import {
+  ActivityIcon,
   BotIcon,
   BookOpenIcon,
   ChevronDownIcon,
@@ -53,6 +54,7 @@ function crumbFor(pathname: string, filesHref: string): string {
   if (pathname.startsWith(`${filesHref}/context`)) return "Project context";
   if (pathname.startsWith(`${filesHref}/approvals`)) return "Approvals";
   if (pathname.startsWith(`${filesHref}/assistants`)) return "Assistants";
+  if (pathname.startsWith(`${filesHref}/live`)) return "Live";
   if (pathname.startsWith(`${filesHref}/overview`)) return "Overview";
   return "Files";
 }
@@ -136,6 +138,13 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
             active={pathname.startsWith(`${filesHref}/assistants`)}
             current={pathname === `${filesHref}/assistants`}
           />
+          <NavItem
+            href={`${filesHref}/live`}
+            icon={ActivityIcon}
+            label="Live"
+            active={pathname.startsWith(`${filesHref}/live`)}
+            current={pathname === `${filesHref}/live`}
+          />
         </nav>
         <div className="mt-auto border-t px-4 py-4 text-xs leading-[1.125rem] text-muted-foreground">
           <p className="mb-2 font-semibold text-foreground">Assistants</p>
@@ -209,6 +218,10 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
                 <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/assistants`)}>
                   <BotIcon />
                   Assistants
+                </DropdownMenuItem>
+                <DropdownMenuItem className="md:hidden" onSelect={() => router.push(`${filesHref}/live`)}>
+                  <ActivityIcon />
+                  Live
                 </DropdownMenuItem>
                 <DropdownMenuSeparator className="md:hidden" />
                 <DropdownMenuItem
