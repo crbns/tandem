@@ -150,12 +150,14 @@ export class IntelParseError extends Error {
 // Prompt
 
 /**
- * Shared by the activity and digest prompts. Findings remain observed until
- * a person directs a project-context change.
+ * Shared by the activity and digest prompts: context_changes go straight
+ * into project context, so they need to be explicit, current and new.
  */
 const CONTEXT_CHANGES_RULE = [
-  "Return context_changes as an empty array. Never write or propose a change to the team's authoritative project context.",
-  "Record a clearly stated goal or decision as an observed entry with its evidence. Record a named owner assignment as an observed knowledge entry naming the area and person. These are leads for a person to confirm, not approved rules.",
+  "context_changes are recorded in the team's project context at once (no review step), so include only what is explicitly stated and not already in project_context, at most 8, each with a confidence.",
+  "goal: only when project_context has no goal and the team's goal is stated plainly; one self-contained sentence.",
+  "decision: an explicit choice (a library, protocol, architecture, data store, process or plan) in one self-contained sentence; it is tracked as its own decision entry, so don't add a separate decision entry for it. When it clearly replaces an active decision in project_context, set supersedes to that decision's id.",
+  "ownership: when work is assigned or delegated to a named person (an owner, an assignee, \"X owns Y\", a team split), one change per person and area: text is the area as a short noun phrase (\"Fetch.ai / Agentverse integration\"), owner_user_id is that person's id from members. Match people by name; skip anyone not in members, and skip an area project_context.ownership already gives the same person.",
 ].join(" ");
 
 export const SYSTEM_PROMPT = [
@@ -577,25 +579,23 @@ export function validateIntelOutput(raw: unknown, batch: IntelBatch): IntelResul
   }
 
   const changes = validateChanges(root.context_changes, batch, eventById, byRecency, fileIds, dropped);
-  // Older replies may still contain context_changes. Keep valid claims as
-  // observations; only a person can direct an authoritative context change.
+  // Each goal or decision is tracked as an entry that links to its context entry.
   for (const c of changes) {
-    if (entries.has(c.key)) continue;
+    if (c.field === "ownership" || entries.has(c.key)) continue;
     const existing = entryByKey.get(c.key);
-    const ownerName = c.field === "ownership" ? batch.members.find((m) => m.id === c.ownerUserId)?.name : undefined;
     entries.set(c.key, {
       op: "upsert",
       key: c.key,
-      category: c.field === "ownership" ? "knowledge" : c.field,
-      title: clip(c.field === "ownership" ? `Owner candidate: ${c.text}` : c.text, MAX_TITLE),
-      content: c.field === "ownership" ? `${c.text}: ${ownerName ?? "named member"} (observed assignment; confirm before changing project context)` : c.text,
+      category: c.field,
+      title: clip(c.text, MAX_TITLE),
+      content: c.text,
       status: existing?.status ?? "active",
       evidence: existing && evidenceRank(existing.evidence) > evidenceRank("observed") ? existing.evidence : "observed",
       confidence: c.confidence,
       evidenceEventIds: c.evidenceEventIds.slice(0, MAX_EVIDENCE_IDS),
       agentConnectionIds: [],
       fileIds: c.fileIds,
-      reason: "Candidate finding for human review",
+      reason: "Finding recorded in project context",
     });
   }
   return {
@@ -607,9 +607,9 @@ export function validateIntelOutput(raw: unknown, batch: IntelBatch): IntelResul
 }
 
 /**
- * Validate legacy context_changes as candidate observations. Require a batch
- * event, a known owner and reasonable confidence; skip facts context already
- * states. The returned records never write structured_context.
+ * The reply's context_changes, checked against the batch: goal only while
+ * project context has none, ownership only for a member, nothing project
+ * context already says, at most MAX_CHANGES, each backed by a batch event.
  */
 function validateChanges(
   raw: unknown,
@@ -622,9 +622,7 @@ function validateChanges(
   const changes: ContextChangeOp[] = [];
   const decisionIds = new Set(batch.context.decisions.map((d) => d.id));
   const memberIds = new Set(batch.members.map((m) => m.id));
-  // A goal that differs from the project's is a lead worth showing a person.
   const seen = new Set([
-    ...(batch.context.goal ? [`goal:${normalize(batch.context.goal)}`] : []),
     ...batch.context.decisions.map((d) => `decision:${normalize(d.text)}`),
     ...batch.context.ownership
       .filter((o) => o.ownerUserId)
@@ -642,6 +640,10 @@ function validateChanges(
     const max = field === "ownership" ? MAX_AREA : MAX_CHANGE_TEXT;
     if (!text || text.length > max) {
       dropped.push(`${label}: text must be 1-${max} characters`);
+      continue;
+    }
+    if (field === "goal" && batch.context.goal) {
+      dropped.push(`${label}: project context already has a goal`);
       continue;
     }
     const ownerUserId = str(item.owner_user_id);

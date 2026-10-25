@@ -25,7 +25,7 @@ export const MCP_INSTRUCTIONS =
   "Observed entries are unapproved leads; claimed isn't done.\n" +
   "2. Verify relevant observations through source_file_ids and read_file. Fix routine issues within the user's task, then resolve_observation with the observed entry revision. Put unrelated work in a task.\n" +
   "3. Work, then save files: update_document (expected_version as read) or create_document. " +
-  "Tandem's context manager reads saved files and records observations; it never changes authoritative context. " +
+  "Tandem's context manager reads saved files and records observations, and adds the goals, decisions and owners they state to project context. " +
   "publish_work only a deliverable the user wants announced; update_context only a goal, scope, decision, constraint, owner or open question the user directs (it applies at once). " +
   "Claim/complete a matching manage_task.\n" +
   "4. Reply in chat: show docs you write (full, or a long edit's changes), then say what you read and saved. Tandem doesn't replace this reply.\n" +
