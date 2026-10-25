@@ -10,6 +10,7 @@
 
 import type * as agentConnections from "../agentConnections.js";
 import type * as auth from "../auth.js";
+import type * as conflicts from "../conflicts.js";
 import type * as context from "../context.js";
 import type * as contextMigrations from "../contextMigrations.js";
 import type * as files from "../files.js";
@@ -40,6 +41,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   agentConnections: typeof agentConnections;
   auth: typeof auth;
+  conflicts: typeof conflicts;
   context: typeof context;
   contextMigrations: typeof contextMigrations;
   files: typeof files;

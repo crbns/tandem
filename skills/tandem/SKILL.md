@@ -263,14 +263,24 @@ Someone else saved a newer version since you read it.
   `blockers.pending_approvals` (and `pending_proposals` in a full sync). A
   pending proposal doesn't count as approved context, so a workspace with only
   pending proposals still reads as empty: don't propose the same goal again on
-  every sync or save. The server doesn't dedupe proposals.
+  every sync or save. The server returns your own identical pending proposal
+  (with `deduplicated: true`) instead of creating another, but only for the
+  same assistant and exact change.
 - Goal, scope, major decisions, and ownership change only through
   `propose_context_change`. Never change them directly, including by editing a
   file to claim they changed.
 - Each workspace sets `context_approval` (see `get_workspace_info`). In a
   `"manual"` workspace, the default, every `propose_context_change` (all
   fields, resolves and removals included) waits for a human owner or admin. In
-  an `"automatic"` workspace every change applies at once.
+  an `"automatic"` workspace a change applies at once unless it conflicts.
+- Tandem checks additions for conflicts with approved context and other
+  pending proposals; `proposal.conflict.status` is `clear`, `checking`,
+  `conflict` or `uncertain`. A conflicting, uncertain or still-checking
+  proposal waits for a person in every workspace and is NOT in effect: keep
+  following the approved value, tell the user what it conflicts with (the
+  `next_steps` name the entry and `context_version`), and don't re-propose it.
+  The sync brief lists open ones in `blockers.conflicts`; `resolved_conflicts`
+  says how a person settled each one and which entries are `in_effect`.
 - Call `propose_context_change` with `field`, `proposed_value`, a short
   `rationale`, and `source_ids` (ids of files that support it). Value by field:
   - `goal` or `scope`: the full new text.

@@ -70,6 +70,15 @@ function toProposal(proposal: BackendProposal): ContextProposal {
     createdAt: proposal.createdAt,
     decidedBy: proposal.decidedBy ? toActor(proposal.decidedBy) : null,
     decidedAt: proposal.decidedAt,
+    conflict: proposal.conflict
+      ? {
+          ...proposal.conflict,
+          items: proposal.conflict.items.map((item) => ({ ...item, targetBy: toActor(item.targetBy) })),
+        }
+      : null,
+    resolution: proposal.resolution,
+    decisionNote: proposal.decisionNote,
+    revision: proposal.revision,
   };
 }
 
@@ -451,10 +460,17 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
         });
         return proposals.map(toProposal);
       }),
-    decideProposal: ({ id, workspaceId }, decision) =>
+    decideProposal: ({ id, workspaceId }, decision, { resolution, note, expectedRevision } = {}) =>
       call(async () => {
         const proposalId = id as Id<"context_proposals">;
-        await convex.mutation(api.context.decideContextProposal, { proposalId, decision });
+        // Only the keys that are set: Convex rejects `undefined` in some clients.
+        await convex.mutation(api.context.decideContextProposal, {
+          proposalId,
+          decision,
+          ...(resolution ? { resolution } : {}),
+          ...(note ? { note } : {}),
+          ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+        });
         if (decision !== "approved") return;
         // A stale approval doesn't throw: the backend marks the proposal stale
         // and returns null. Look where it landed so the UI can say so.
@@ -463,6 +479,13 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
           status: "stale",
         });
         if (stale.some((p) => p.id === proposalId)) throw new TandemApiError("VERSION_CONFLICT");
+      }),
+    listConflicts: (workspaceId) =>
+      call(async () => {
+        const { pending, resolved } = await convex.query(api.context.listConflicts, {
+          workspaceId: workspaceId as Id<"workspaces">,
+        });
+        return { pending: pending.map(toProposal), resolved: resolved.map(toProposal) };
       }),
     getMcpServerUrl: () => call(() => convex.query(api.agentConnections.getMcpServerUrl, {})),
     createAgentConnection: (workspaceId, { client, displayName }) =>

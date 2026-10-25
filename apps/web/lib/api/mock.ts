@@ -16,6 +16,9 @@ import {
   type ContextApproval,
   type ContextField,
   type ContextProposal,
+  type ConflictItem,
+  type ConflictList,
+  type ProposalConflict,
   type FileDetail,
   type FileSummary,
   type FolderSummary,
@@ -78,6 +81,14 @@ const DEMO: Actor = {
   actorType: "human",
   userId: "user_demo",
   userName: "Demo Human",
+};
+// A second assistant, so a conflict shows which agent proposed what.
+const DEMO_CHATGPT: Actor = {
+  actorType: "agent",
+  userId: "user_demo",
+  userName: "Demo Human",
+  agentClient: "chatgpt",
+  agentName: "ChatGPT",
 };
 
 const MINUTE = 60_000;
@@ -314,8 +325,9 @@ export function createMockApi({
   const memberNames = new Map<string, string>();
   // Proposals keep the value they were based on (goal/scope only), like the
   // backend's baseValue, so a mock approval can go stale.
-  type StoredProposal = ContextProposal & { baseValue?: string; ownerUserId?: string; ownerArea?: string; entryId?: string };
-  const proposals: StoredProposal[] = seedProposals(Date.now(), context);
+  // hasConflict: the check ever found a conflict, like the backend's indexed flag.
+  type StoredProposal = ContextProposal & { baseValue?: string; ownerUserId?: string; ownerArea?: string; entryId?: string; hasConflict?: boolean };
+  const proposals: StoredProposal[] = seedProposals(Date.now(), context, details.get(MOCK_WORKSPACE_ID)!);
   // Unset means "manual", like the backend's default.
   const contextApprovals = new Map<string, ContextApproval>();
   type StoredConnection = AgentConnection & { workspaceId: string };
@@ -339,12 +351,44 @@ export function createMockApi({
   // Async like a backend push, so a watcher never runs inside the write itself.
   const notify = (workspaceId: string) =>
     watchers.get(workspaceId)?.forEach((listener) => queueMicrotask(listener));
-  const cloneProposal = ({ baseValue: _baseValue, ownerUserId: _ownerUserId, ownerArea: _ownerArea, entryId: _entryId, ...p }: StoredProposal): ContextProposal => ({
+  const cloneProposal = ({ baseValue: _baseValue, ownerUserId: _ownerUserId, ownerArea: _ownerArea, entryId: _entryId, hasConflict: _hasConflict, ...p }: StoredProposal): ContextProposal => ({
     ...p,
     sourceFileIds: [...p.sourceFileIds],
     createdBy: { ...p.createdBy },
     decidedBy: p.decidedBy ? { ...p.decidedBy } : null,
+    conflict: p.conflict ? structuredClone(p.conflict) : null,
   });
+  /**
+   * The backend's structural checks (docs/conflict-resolution.md): an explicit
+   * supersedes, or another pending proposal for the same goal/scope or the same
+   * superseded decision. The mock has no AI check; seeded proposals show one.
+   */
+  const detectConflict = (
+    workspaceId: string,
+    input: { field: ContextField; supersedes?: string },
+    ctx: ContextDetails,
+  ): ProposalConflict | null => {
+    const items: ConflictItem[] = [];
+    const target = input.supersedes ? ctx.decisions.find((entry) => entry.id === input.supersedes && entry.status === "active") : undefined;
+    if (target) {
+      items.push({
+        kind: "replaces", targetType: "decision", targetId: target.id, targetText: target.text, targetBy: { ...target.updatedBy },
+        targetAt: target.updatedAt, contextVersion: ctx.version, explanation: "This proposal explicitly supersedes the approved decision.",
+      });
+    }
+    for (const other of proposals) {
+      if (other.workspaceId !== workspaceId || other.status !== "pending" || other.operation !== "add") continue;
+      const sameField = (input.field === "goal" || input.field === "scope") && other.field === input.field;
+      const sameTarget = input.supersedes !== undefined && other.supersedes === input.supersedes;
+      if (!sameField && !sameTarget) continue;
+      items.push({
+        kind: "competing", targetType: "proposal", targetId: other.id, targetText: other.proposedValue, targetBy: { ...other.createdBy },
+        targetAt: other.createdAt, contextVersion: ctx.version,
+        explanation: sameField ? `Another pending proposal also changes the ${input.field}.` : "Another pending proposal supersedes the same decision.",
+      });
+    }
+    return items.length > 0 ? { status: "conflict", method: "structural", checkedAt: Date.now(), items } : null;
+  };
   const cloneConnection = ({ workspaceId: _workspaceId, ...c }: StoredConnection): AgentConnection => ({ ...c });
 
   const delay = () => {
@@ -863,7 +907,9 @@ export function createMockApi({
       }
       const id = `proposal_${nextId++}`;
       const area = proposedValue.trim();
-      const apply = contextApprovals.get(workspaceId) === "automatic";
+      const conflict = operation === "add" ? detectConflict(workspaceId, input, ctx) : null;
+      // A conflict waits for a person even in an automatic workspace.
+      const apply = contextApprovals.get(workspaceId) === "automatic" && !conflict;
       const status = apply ? "applied" as const : "pending" as const;
       if (apply) {
         if (operation === "add") applyAddition(workspaceId, { ...input, proposedValue }, actor);
@@ -877,6 +923,7 @@ export function createMockApi({
         ...(input.field === "ownership" ? { ownerArea: area, ownerUserId: input.ownerUserId } : {}),
         ...(input.field === "goal" || input.field === "scope" ? { baseValue: ctx[input.field]?.text ?? "" } : {}),
         status, createdBy: { ...actor }, createdAt: Date.now(), decidedBy: null, decidedAt: null,
+        conflict, hasConflict: conflict !== null, resolution: null, decisionNote: null, revision: 1,
       });
       notify(workspaceId);
       return { id, status };
@@ -927,15 +974,23 @@ export function createMockApi({
         .map(cloneProposal);
     },
 
-    async decideProposal({ id, workspaceId }, decision) {
+    async decideProposal({ id, workspaceId }, decision, { resolution, note, expectedRevision } = {}) {
       await delay();
       const proposal = proposals.find((p) => p.id === id && p.workspaceId === workspaceId);
       if (!proposal) throw new TandemApiError("PROPOSAL_DECIDED");
       requireAdmin(workspaceId);
       if (proposal.status !== "pending") throw new TandemApiError("PROPOSAL_DECIDED");
+      if (expectedRevision !== undefined && expectedRevision !== proposal.revision) throw new TandemApiError("PROPOSAL_CHANGED");
+      const approving = decision === "approved";
+      if (resolution && (resolution === "accepted" || resolution === "kept_both") !== approving) throw new TandemApiError("INVALID_INPUT");
+      const decisionNote = note?.trim() ?? "";
+      if (decisionNote.length > 2000) throw new TandemApiError("INVALID_INPUT");
+      // A proposal that went through a conflict check always records how it was settled.
+      const outcome = resolution ?? (proposal.conflict ? (approving ? "accepted" : "rejected") : null);
       const actor = getActor();
       const now = Date.now();
       const ctx = contexts.get(workspaceId);
+      let newEntryId: string | undefined;
       if (decision === "approved" && proposal.operation !== "add") {
         if (!applyEntryOperation(workspaceId, proposal.field, proposal.operation, proposal.entryId!, actor)) {
           proposal.status = "stale";
@@ -949,7 +1004,9 @@ export function createMockApi({
           notify(workspaceId);
           throw new TandemApiError("VERSION_CONFLICT");
         }
-        const input = { ...proposal, proposedValue: proposal.ownerArea ?? proposal.proposedValue };
+        // A checked proposal supersedes its targets below, and only when accepted;
+        // a target that is no longer active is left alone instead of failing.
+        const input = { ...proposal, proposedValue: proposal.ownerArea ?? proposal.proposedValue, ...(proposal.conflict ? { supersedes: null } : {}) };
         // Sources were accepted when proposed; deletion must not strand approval.
         validateChange(workspaceId, input, proposal.sourceFileIds);
         try {
@@ -959,9 +1016,57 @@ export function createMockApi({
           notify(workspaceId);
           throw err;
         }
+        const working = details.get(workspaceId)!;
+        if (proposal.field === "decision" || proposal.field === "constraint") newEntryId = working[entryKey[proposal.field]].at(-1)!.id;
+        if (outcome === "accepted" && newEntryId) {
+          const targets = new Set(proposal.conflict!.items.filter((item) => item.kind !== "competing").map((item) => item.targetId));
+          if (proposal.supersedes) targets.add(proposal.supersedes);
+          for (const entry of [...working.decisions, ...working.constraints]) {
+            if (targets.has(entry.id) && entry.status === "active" && entry.id !== newEntryId) Object.assign(entry, { status: "superseded", supersededBy: newEntryId });
+          }
+          Object.assign(contexts.get(workspaceId)!, {
+            decisions: working.decisions.filter((entry) => entry.status === "active").map((entry) => entry.text),
+            constraints: working.constraints.filter((entry) => entry.status === "active").map((entry) => entry.text),
+          });
+        }
       }
-      Object.assign(proposal, { status: decision, decidedBy: { ...actor }, decidedAt: now });
+      Object.assign(proposal, {
+        status: decision, decidedBy: { ...actor }, decidedAt: now,
+        resolution: outcome, decisionNote: decisionNote || null, revision: proposal.revision + 1,
+      });
+      // Pending proposals that competed with this one now face the approved value, or nothing.
+      for (const other of proposals) {
+        if (other.status !== "pending" || !other.conflict?.items.some((item) => item.kind === "competing" && item.targetId === proposal.id)) continue;
+        const items = other.conflict.items.flatMap((item): ConflictItem[] => {
+          if (item.kind !== "competing" || item.targetId !== proposal.id) return [item];
+          if (!approving) return [];
+          const targetType = proposal.field === "goal" || proposal.field === "scope" || proposal.field === "constraint" ? proposal.field : "decision";
+          return [{
+            ...item, kind: "replaces", targetType, targetId: newEntryId ?? proposal.field, targetBy: { ...actor }, targetAt: now,
+            contextVersion: details.get(workspaceId)!.version, explanation: "The proposal it competed with was approved; this would replace it.",
+          }];
+        });
+        other.conflict = { ...other.conflict, items, status: items.length === 0 ? "clear" : other.conflict.status };
+        other.revision++;
+      }
       notify(workspaceId);
+    },
+
+    async listConflicts(workspaceId): Promise<ConflictList> {
+      await delay();
+      membersFor(workspaceId);
+      const own = proposals.filter((p) => p.workspaceId === workspaceId);
+      return {
+        pending: own
+          .filter((p) => p.status === "pending" && p.conflict && p.conflict.status !== "clear")
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .map(cloneProposal),
+        resolved: own
+          .filter((p) => (p.status === "approved" || p.status === "rejected") && p.hasConflict)
+          .sort((a, b) => (b.decidedAt ?? b.createdAt) - (a.decidedAt ?? a.createdAt))
+          .slice(0, 100)
+          .map(cloneProposal),
+      };
     },
 
     async getMcpServerUrl() {
@@ -1085,9 +1190,60 @@ export function createMockApi({
   };
 }
 
-function seedProposals(now: number, context: ProjectContext): Array<ContextProposal & { baseValue?: string }> {
-  const base = { operation: "add" as const, supersedes: null, workspaceId: MOCK_WORKSPACE_ID, decidedBy: null, decidedAt: null, status: "pending" as const };
+function seedProposals(
+  now: number,
+  context: ProjectContext,
+  details: ContextDetails,
+): Array<ContextProposal & { baseValue?: string; hasConflict?: boolean }> {
+  const base = {
+    operation: "add" as const, supersedes: null, workspaceId: MOCK_WORKSPACE_ID, decidedBy: null, decidedAt: null, status: "pending" as const,
+    conflict: null, resolution: null, decisionNote: null, revision: 1,
+  };
+  const decision = (text: string) => details.decisions.find((entry) => entry.text === text)!;
+  const contradicts = (target: ContextEntry, explanation: string, confidence: number): ConflictItem => ({
+    kind: "contradicts", targetType: "decision", targetId: target.id, targetText: target.text, targetBy: { ...target.updatedBy },
+    targetAt: target.updatedAt, contextVersion: details.version, explanation, confidence,
+  });
   return [
+    {
+      // An AI-detected conflict, so the conflict card can be tried without a backend.
+      ...base,
+      id: "proposal_conflict",
+      field: "decision",
+      proposedValue: "Let the last save win instead of rejecting stale writes",
+      rationale: "Version conflicts interrupted the rehearsal twice; last-write-wins keeps edits flowing.",
+      sourceFileIds: ["file_brief"],
+      createdBy: { ...DEMO_CHATGPT },
+      createdAt: now - 5 * MINUTE,
+      conflict: {
+        status: "conflict", method: "semantic", model: "claude-haiku-5-5", checkedAt: now - 5 * MINUTE + 3_000,
+        items: [contradicts(decision("Optimistic versioning on every write"), "Last-write-wins drops the version check the approved decision requires on every write.", 0.93)],
+      },
+      hasConflict: true,
+      revision: 2,
+    },
+    {
+      // A settled conflict for the history.
+      ...base,
+      id: "proposal_conflict_resolved",
+      field: "decision",
+      proposedValue: "Make Gemini the primary demo client",
+      rationale: "Gemini is already open on the demo laptop.",
+      sourceFileIds: [],
+      createdBy: { ...DEMO_CHATGPT },
+      createdAt: now - 40 * MINUTE,
+      status: "rejected",
+      decidedBy: { ...ALEX },
+      decidedAt: now - 30 * MINUTE,
+      conflict: {
+        status: "conflict", method: "semantic", model: "claude-haiku-5-5", checkedAt: now - 40 * MINUTE + 3_000,
+        items: [contradicts(decision("Claude is the primary demo client"), "Both name the primary demo client; only one can be primary.", 0.88)],
+      },
+      hasConflict: true,
+      resolution: "retained_current",
+      decisionNote: "Claude connectors work on every plan; Gemini custom apps have eligibility limits.",
+      revision: 3,
+    },
     {
       ...base,
       id: "proposal_goal",

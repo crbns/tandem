@@ -22,6 +22,10 @@ import {
   entryTargetMissing,
   normalizeContext,
   toProposal,
+  conflictStatus,
+  truncate,
+  type ConflictItem,
+  type Resolution,
 } from "./lib/ops";
 import {
   contextFieldValidator as fieldValidator,
@@ -29,6 +33,7 @@ import {
   proposalValidator,
   contextValidator,
   publishedWorkValidator,
+  resolutionValidator,
 } from "./lib/validators";
 
 /** Full context, including per-entry attribution and ownership metadata. */
@@ -230,13 +235,48 @@ export const getApprovals = query({
   },
 });
 
+/**
+ * Conflicts for the Approvals page: pending proposals a check holds (or is
+ * still checking), and the newest 50 decided proposals that had a conflict.
+ */
+export const listConflicts = query({
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.object({
+    pending: v.array(proposalValidator),
+    resolved: v.array(proposalValidator),
+  }),
+  handler: async (ctx, { workspaceId }) => {
+    await requireMembership(ctx, workspaceId);
+    const pending = (await listProposals(ctx, workspaceId, "pending", 100)).filter(
+      (p) => p.conflict !== undefined && p.conflict.status !== "clear",
+    );
+    const resolved = (
+      await ctx.db
+        .query("context_proposals")
+        .withIndex("by_workspace_and_has_conflict_and_created", (q) =>
+          q.eq("workspaceId", workspaceId).eq("hasConflict", true),
+        )
+        .order("desc")
+        .take(200)
+    )
+      .filter((p) => p.status === "approved" || p.status === "rejected")
+      .slice(0, 50);
+    return { pending: pending.map(toProposal), resolved: resolved.map(toProposal) };
+  },
+});
+
 export const decideContextProposal = mutation({
   args: {
     proposalId: v.id("context_proposals"),
     decision: v.union(v.literal("approved"), v.literal("rejected")),
+    /** How a conflict was settled; defaults to accepted or rejected. */
+    resolution: v.optional(resolutionValidator),
+    note: v.optional(v.string()),
+    /** The proposal revision the person saw; PROPOSAL_CHANGED if it moved. */
+    expectedRevision: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { proposalId, decision }) => {
+  handler: async (ctx, { proposalId, decision, ...options }) => {
     // Human-only, whichever way the decision goes: agent-bound identities
     // are rejected here, not just left out of the MCP tool list. Checked
     // before the load so callers can't probe which proposal ids exist.
@@ -249,25 +289,131 @@ export const decideContextProposal = mutation({
     );
     if (membership.role !== "owner" && membership.role !== "admin")
       throw new ConvexError({ code: "FORBIDDEN" });
-    await decideProposalCore(ctx, proposal, decision, user);
+    await decideProposalCore(ctx, proposal, decision, user, options);
     return null;
   },
 });
 
+const MAX_NOTE_LENGTH = 2000;
+
+/** What the resolver chose when there was a conflict (docs/conflict-resolution.md). */
+function conflictSummary(
+  proposal: Doc<"context_proposals">,
+  resolution: Resolution,
+): string {
+  const quote = (text: string) => `"${truncate(text, 60)}"`;
+  const proposed = quote(proposal.proposedValue);
+  const target = proposal.conflict?.items[0];
+  const current = target ? quote(target.targetText) : "the current value";
+  switch (resolution) {
+    case "accepted":
+      return `Accepted ${proposed} over ${current}`;
+    case "kept_both":
+      return `Kept both ${proposed} and ${current}`;
+    case "retained_current":
+      return `Kept ${current} over ${proposed}`;
+    case "rejected":
+      return `Rejected ${proposed}`;
+  }
+}
+
+/**
+ * Pending proposals that competed with `decided`: on approval they now
+ * contradict the entry it added; on rejection the item is dropped, and a
+ * proposal with no items left is clear (it still waits for a person, even in
+ * an automatic workspace).
+ */
+async function retargetCompeting(
+  ctx: MutationCtx,
+  decided: Doc<"context_proposals">,
+  decision: "approved" | "rejected",
+  approvedEntryId: string | undefined,
+  actor: Doc<"context_proposals">["updatedBy"],
+  now: number,
+) {
+  const context = await ctx.db
+    .query("structured_context")
+    .withIndex("by_workspace", (q) => q.eq("workspaceId", decided.workspaceId))
+    .unique();
+  const pending = await listProposals(ctx, decided.workspaceId, "pending", 100);
+  for (const other of pending) {
+    const conflict = other.conflict;
+    if (!conflict?.items.some((i) => i.kind === "competing" && i.targetId === decided._id))
+      continue;
+    const targetType: ConflictItem["targetType"] =
+      decided.field === "goal" || decided.field === "scope"
+        ? decided.field
+        : decided.field === "constraint"
+          ? "constraint"
+          : "decision";
+    const scalar = targetType === "goal" || targetType === "scope";
+    const items = conflict.items.flatMap((i): ConflictItem[] => {
+      if (i.kind !== "competing" || i.targetId !== decided._id) return [i];
+      if (decision === "rejected" || (!scalar && approvedEntryId === undefined))
+        return [];
+      return [{
+        ...i,
+        kind: "contradicts",
+        targetType,
+        targetId: scalar ? targetType : approvedEntryId!,
+        targetAt: now,
+        contextVersion: context?.revision ?? i.contextVersion,
+      }];
+    });
+    await ctx.db.patch(other._id, {
+      conflict: {
+        ...conflict,
+        items,
+        status: conflict.status === "checking" ? "checking" : conflictStatus(items),
+      },
+      updatedBy: actor,
+      updatedAt: now,
+      revision: other.revision + 1,
+    });
+  }
+}
+
 /**
  * Records a decision by `user`, who the caller has verified is a human owner
  * or admin of the proposal's workspace. A stale approval marks the proposal
- * stale instead of applying it.
+ * stale instead of applying it. For a conflict, `resolution` says how it was
+ * settled: accepted supersedes the entries it replaces or contradicts,
+ * kept_both adds it alongside them, and retained_current or rejected change
+ * nothing.
  */
 export async function decideProposalCore(
   ctx: MutationCtx,
   proposal: Doc<"context_proposals">,
   decision: "approved" | "rejected",
   user: Doc<"users">,
+  options: { resolution?: Resolution; note?: string; expectedRevision?: number } = {},
 ): Promise<void> {
   const proposalId = proposal._id;
   if (proposal.status !== "pending")
     throw new ConvexError({ code: "PROPOSAL_ALREADY_DECIDED" });
+  if (
+    options.expectedRevision !== undefined &&
+    options.expectedRevision !== proposal.revision
+  )
+    throw new ConvexError({
+      code: "PROPOSAL_CHANGED",
+      currentRevision: proposal.revision,
+      expectedRevision: options.expectedRevision,
+    });
+  const resolution =
+    options.resolution ??
+    (proposal.hasConflict ? (decision === "approved" ? "accepted" : "rejected") : undefined);
+  if (
+    resolution !== undefined &&
+    (decision === "approved") !== (resolution === "accepted" || resolution === "kept_both")
+  )
+    throw new ConvexError({ code: "INVALID_INPUT", field: "resolution" });
+  const note = options.note?.trim() || undefined;
+  if (note !== undefined && note.length > MAX_NOTE_LENGTH)
+    throw new ConvexError({ code: "INVALID_INPUT", field: "note" });
+  // Keeping both is a plain addition, so it supersedes nothing.
+  const applied =
+    resolution === "kept_both" ? { ...proposal, supersedes: undefined } : proposal;
   if (decision === "approved") {
     const context = await ctx.db
       .query("structured_context")
@@ -282,14 +428,14 @@ export async function decideProposalCore(
         : proposal.field === "scope"
           ? (context.scope?.text ?? null)
           : undefined;
-    const supersededTarget = proposal.supersedes
+    const supersededTarget = applied.supersedes
       ? normalizeContext(context).decisions.find(
-          (e) => e.id === proposal.supersedes,
+          (e) => e.id === applied.supersedes,
         )
       : null;
     const stale =
       entryTargetMissing(context, proposal) ||
-      (proposal.supersedes !== undefined &&
+      (applied.supersedes !== undefined &&
         (!supersededTarget ||
           (supersededTarget.status !== undefined &&
             supersededTarget.status !== "active"))) ||
@@ -319,6 +465,22 @@ export async function decideProposalCore(
   }
   const actor = humanActor(user);
   const now = Date.now();
+  // Accepting over a conflict supersedes what it replaces or contradicts;
+  // targets that are no longer active are left alone.
+  const supersedeIds =
+    resolution === "accepted"
+      ? (proposal.conflict?.items ?? [])
+          .filter(
+            (i) =>
+              (i.kind === "replaces" || i.kind === "contradicts") &&
+              (i.targetType === "decision" || i.targetType === "constraint"),
+          )
+          .map((i) => i.targetId)
+      : [];
+  const appliedEntryId =
+    decision === "approved"
+      ? await applyApprovedProposal(ctx, applied, actor, now, undefined, supersedeIds)
+      : undefined;
   await ctx.db.patch(proposalId, {
     status: decision,
     decidedBy: actor,
@@ -326,6 +488,9 @@ export async function decideProposalCore(
     updatedBy: actor,
     updatedAt: now,
     revision: proposal.revision + 1,
+    ...(resolution !== undefined ? { resolution } : {}),
+    ...(note !== undefined ? { decisionNote: note } : {}),
+    ...(appliedEntryId !== undefined ? { appliedEntryId } : {}),
   });
   await ctx.db.insert("approvals", {
     workspaceId: proposal.workspaceId,
@@ -333,9 +498,17 @@ export async function decideProposalCore(
     decision,
     decidedBy: actor,
     decidedAt: now,
+    ...(resolution !== undefined ? { resolution } : {}),
+    ...(note !== undefined ? { note } : {}),
   });
-  if (decision === "approved")
-    await applyApprovedProposal(ctx, proposal, actor, now);
+  await retargetCompeting(
+    ctx,
+    proposal,
+    decision,
+    appliedEntryId,
+    actor,
+    now,
+  );
   await recordWorkspaceEvent(ctx, {
     workspaceId: proposal.workspaceId,
     kind: `context.${decision}`,
@@ -344,4 +517,13 @@ export async function decideProposalCore(
     summary: `${decision === "approved" ? "Approved" : "Rejected"} ${proposal.field.replaceAll("_", " ")} change`,
     actor,
   });
+  if (proposal.hasConflict && resolution !== undefined)
+    await recordWorkspaceEvent(ctx, {
+      workspaceId: proposal.workspaceId,
+      kind: "context.conflict_resolved",
+      entityType: "context_proposal",
+      entityId: proposalId,
+      summary: conflictSummary(proposal, resolution),
+      actor,
+    });
 }

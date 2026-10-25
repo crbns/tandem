@@ -8,7 +8,16 @@ import { normalizeError, useTandemApi, type ContextProposal, type TandemApiError
 import { DECIDE_ERROR_COPY, ERROR_COPY } from "@/lib/api/errorCopy";
 import { useResource } from "@/lib/api/useResource";
 import { useWorkspaceRefresh, useWorkspaceRole } from "@/lib/api/useWorkspace";
-import { canDecideProposals, FIELD_LABELS, scopeReference } from "@/lib/proposals";
+import {
+  canDecideProposals,
+  CONFLICT_ACTIONS,
+  FIELD_LABELS,
+  needsConflictReview,
+  scopeReference,
+  type ConflictAction,
+} from "@/lib/proposals";
+import { ConflictCard } from "@/components/approvals/ConflictCard";
+import { ConflictHistory } from "@/components/approvals/ConflictHistory";
 import { ContextApprovalSetting } from "@/components/approvals/ContextApprovalSetting";
 import { DecidedProposal, ProposalCard, type Decision } from "@/components/approvals/ProposalCard";
 import { ErrorState } from "@/components/common/ErrorState";
@@ -29,28 +38,48 @@ export default function ApprovalsPage() {
   const canDecide = canDecideProposals(role);
 
   const load = useCallback(async () => {
-    const [proposals, context] = await Promise.all([
+    const [proposals, context, conflicts] = await Promise.all([
       api.listProposals(workspaceId),
       // Shows what a goal/scope change would replace, and the scope other changes must fit.
       api.getContext(workspaceId).catch(() => null),
+      // History only; pending conflicts come with the proposals.
+      api.listConflicts(workspaceId).catch(() => null),
     ]);
-    return { proposals, context };
+    return { proposals, context, conflicts };
   }, [api, workspaceId]);
   const { resource, refreshing, reload } = useResource(load);
   useWorkspaceRefresh(workspaceId, reload);
 
-  const [deciding, setDeciding] = useState<{ id: string; decision: Decision } | null>(null);
+  const [deciding, setDeciding] = useState<{ id: string; decision: Decision; action?: ConflictAction } | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
 
-  async function decide(proposal: ContextProposal, decision: Decision) {
-    setDeciding({ id: proposal.id, decision });
+  async function decide(proposal: ContextProposal, decision: Decision, action?: ConflictAction, note?: string) {
+    setDeciding({ id: proposal.id, decision, action });
     setOutcome(null);
+    const field = FIELD_LABELS[proposal.field].toLowerCase();
     try {
-      await api.decideProposal(proposal, decision);
+      await api.decideProposal(
+        proposal,
+        decision,
+        action
+          ? {
+              resolution: CONFLICT_ACTIONS[action].resolution,
+              ...(note?.trim() ? { note: note.trim() } : {}),
+              // A verdict that lands while the card is open fails with PROPOSAL_CHANGED.
+              expectedRevision: proposal.revision,
+            }
+          : undefined,
+      );
       toast.success(
-        decision === "approved"
-          ? `Approved. The ${FIELD_LABELS[proposal.field].toLowerCase()} ${proposal.operation === "remove" ? "is removed" : proposal.operation === "resolve" ? "is resolved" : "is updated"}.`
-          : "Rejected. Nothing in the context changed.",
+        action === "accept"
+          ? `Accepted. The proposed ${field} is in effect; what it replaced stays in history.`
+          : action === "keep_both"
+            ? `Kept both. The proposed ${field} is added beside the current one.`
+            : action === "keep_current"
+              ? `Kept the current ${field}. Nothing in the context changed.`
+              : decision === "approved"
+                ? `Approved. The ${field} ${proposal.operation === "remove" ? "is removed" : proposal.operation === "resolve" ? "is resolved" : "is updated"}.`
+                : "Rejected. Nothing in the context changed.",
       );
     } catch (err) {
       setOutcome({ proposal, error: normalizeError(err) });
@@ -61,9 +90,17 @@ export default function ApprovalsPage() {
     }
   }
 
-  const pending = resource.status === "ready" ? resource.data.proposals.filter((p) => p.status === "pending") : [];
+  // Conflicts first: they're the ones that need a judgment call.
+  const pending =
+    resource.status === "ready"
+      ? resource.data.proposals
+          .filter((p) => p.status === "pending")
+          .sort((a, b) => Number(needsConflictReview(b)) - Number(needsConflictReview(a)))
+      : [];
   const decided = resource.status === "ready" ? resource.data.proposals.filter((p) => p.status !== "pending") : [];
   const context = resource.status === "ready" ? resource.data.context : null;
+  const resolvedConflicts = resource.status === "ready" ? (resource.data.conflicts?.resolved ?? []) : [];
+  const conflictCount = pending.filter(needsConflictReview).length;
   const currentFor = (p: ContextProposal) =>
     p.field === "goal" ? (context?.goal ?? "") : p.field === "scope" ? (context?.scope ?? "") : undefined;
 
@@ -74,6 +111,11 @@ export default function ApprovalsPage() {
         {resource.status === "ready" && (
           <span className="pb-1 text-sm text-muted-foreground">
             {pending.length === 0 ? "nothing waiting" : pending.length === 1 ? "1 waiting" : `${pending.length} waiting`}
+            {conflictCount > 0 && (
+              <span className="text-warn">
+                {" "}· {conflictCount === 1 ? "1 conflict" : `${conflictCount} conflicts`}
+              </span>
+            )}
           </span>
         )}
         <Button
@@ -125,20 +167,33 @@ export default function ApprovalsPage() {
                 No proposals are waiting. When a teammate or their assistant proposes a change, it shows up here.
               </div>
             ) : (
-              pending.map((proposal) => (
-                <ProposalCard
-                  key={proposal.id}
-                  proposal={proposal}
-                  current={currentFor(proposal)}
-                  approvedScope={scopeReference(proposal.field, context?.scope)}
-                  canDecide={canDecide}
-                  deciding={deciding?.id === proposal.id ? deciding.decision : null}
-                  busy={deciding !== null}
-                  onDecide={(decision) => void decide(proposal, decision)}
-                />
-              ))
+              pending.map((proposal) =>
+                needsConflictReview(proposal) ? (
+                  <ConflictCard
+                    key={proposal.id}
+                    proposal={proposal}
+                    canDecide={canDecide}
+                    deciding={deciding?.id === proposal.id ? (deciding.action ?? null) : null}
+                    busy={deciding !== null}
+                    onDecide={(action, note) => void decide(proposal, CONFLICT_ACTIONS[action].decision, action, note)}
+                  />
+                ) : (
+                  <ProposalCard
+                    key={proposal.id}
+                    proposal={proposal}
+                    current={currentFor(proposal)}
+                    approvedScope={scopeReference(proposal.field, context?.scope)}
+                    canDecide={canDecide}
+                    deciding={deciding?.id === proposal.id ? deciding.decision : null}
+                    busy={deciding !== null}
+                    onDecide={(decision) => void decide(proposal, decision)}
+                  />
+                ),
+              )
             )}
           </section>
+
+          <ConflictHistory resolved={resolvedConflicts} />
 
           {decided.length > 0 && (
             <section aria-labelledby="decided-heading" className="flex flex-col gap-2">
@@ -167,8 +222,8 @@ function OutcomeAlert({ outcome, onDismiss }: { outcome: Outcome; onDismiss: () 
           description: `It's already ${outcome.proposal.operation === "resolve" ? "resolved or removed" : "removed"}, so there's nothing to apply. It's now marked stale.`,
         }
       : (DECIDE_ERROR_COPY[code] ?? ERROR_COPY[code]);
-  // A stale approval is contested work (ochre), not a failure.
-  const contested = code === "VERSION_CONFLICT";
+  // A stale approval, or a card that changed underneath, is contested work (ochre), not a failure.
+  const contested = code === "VERSION_CONFLICT" || code === "PROPOSAL_CHANGED";
   return (
     <Alert variant={contested ? "warning" : "destructive"}>
       <AlertTriangleIcon />
