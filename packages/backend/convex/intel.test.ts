@@ -325,7 +325,7 @@ describe("context manager: model path", () => {
     expect((await s.entries()).map((e) => e.key)).toEqual(["task:keep"]);
     const [run] = await s.runs();
     expect(run).toMatchObject({ status: "succeeded", created: 1, proposals: 0 });
-    for (const why of ["below 0.35", "unknown category", "unknown op", "outside the batch", "unknown status", "below 0.7"])
+    for (const why of ["below 0.35", "unknown category", "unknown op", "outside the batch", "unknown status", "below 0.5"])
       expect(run!.error).toContain(why);
   });
 

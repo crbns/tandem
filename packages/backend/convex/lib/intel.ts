@@ -26,7 +26,9 @@ export const MAX_CONTENT = 1000;
 export const MAX_PROPOSALS = 2;
 export const MAX_PROPOSAL_TEXT = 500;
 export const MIN_CONFIDENCE = 0.35;
-export const MIN_PROPOSAL_CONFIDENCE = 0.7;
+// Proposals only wait for a person (or the conflict check), so the bar is
+// lower than an applied fact's would be; Haiku rates contradictions ~0.6.
+export const MIN_PROPOSAL_CONFIDENCE = 0.5;
 export const MAX_EVIDENCE_IDS = 20;
 /** Cap on the JSON inside <data>, so one batch is one bounded model call. */
 export const MAX_DATA_CHARS = 24_000;
@@ -147,10 +149,11 @@ export const SYSTEM_PROMPT = [
   "Separate observed activity (a tool call that happened, a file that changed) from inferred conclusions; say which one an entry is in its content.",
   "Evidence ladder, weakest first: requested < claimed < observed < verified < human_confirmed. Example: a user asks for JWT auth (requested); the assistant says it implemented it (claimed); a file write adding JWT code is seen (observed); the test suite then passes in a hook event (verified); a person approves it (human_confirmed).",
   "Only mark a task completed (op complete or status completed) when the evidence is verified or human_confirmed and you cite the event that shows it. An assistant saying it is done is only claimed.",
+  'An event with evidence_signal "verified" (a test, build or deploy command that succeeded) or "human_confirmed" (a person\'s change) is that level of evidence: use it for the entries it supports, and complete a task once such an event shows the requested work validated. A later failure or an open blocker on the same work outweighs an earlier success.',
   "Express uncertainty through confidence (0 to 1) and evidence, not by guessing. Skip anything you are not reasonably sure about.",
   "Prefer updating an existing entry over creating a new one: reuse the keys given in entries exactly. New keys look like category:short-slug (lowercase letters, digits and dashes).",
   "Emit a coordination entry (severity potential or actual) when two different connections touch the same files or components with diverging objectives, when one changes a decision another depends on, or when work is claimed complete while a blocker is active. Parallel work that does not conflict is at most potential.",
-  "proposals are for goal or decision findings that the approved context lacks, at most 2, each with a confidence; a person approves them. Do not repeat the approved context or pending proposals.",
+  "proposals are for goal or decision findings that the approved context lacks, at most 2, each with a confidence; a person approves them. Do not repeat the approved context or pending proposals. When a prompt, document or file change states an explicit technical choice (a library, protocol, architecture or data store), propose it as a decision in one self-contained sentence; the proposal is tracked as its own decision entry, so don't add a separate decision entry for it. If it contradicts an approved decision, still propose it so a person can resolve the conflict.",
   "Cite only event ids from events, connection ids from connections, and file ids from files.",
   'Reply with JSON only: {"summary": one line, "entries": [{"op": "upsert"|"supersede"|"complete"|"reopen"|"resolve"|"retract", "key", "category", "title", "content", "status", "evidence", "confidence", "evidence_event_ids", "agent_connection_ids", "file_ids", "superseded_by" (key, or ""), "severity" ("potential"|"actual"; read only for coordination), "reason"}], "proposals": [{"field": "goal"|"decision", "text", "rationale", "confidence", "evidence_event_ids", "supersedes" (an approved decision id, or "")}]}.',
 ].join("\n");
@@ -220,6 +223,9 @@ function clip(text: string, max: number): string {
 /** The <data> payload, shrunk until it fits MAX_DATA_CHARS. */
 export function buildData(batch: IntelBatch): string {
   const fileName = new Map(batch.files.map((f) => [f.id, f.name]));
+  // Computed here, not by the model: which events validation will accept as
+  // verified or human-confirmed evidence.
+  const signals = new Map(batch.events.map((e) => [e.id, verifiedSignal(e)]));
   const build = (payloadMax: number, entries: number, changes: number, events: number) => ({
     approved_context: batch.approved,
     pending_proposals: batch.pendingProposals,
@@ -246,6 +252,7 @@ export function buildData(batch: IntelBatch): string {
       ...(e.agentConnectionId ? { connection: e.agentConnectionId } : {}),
       actor: `${e.actorType}: ${e.actorLabel}`,
       summary: e.summary,
+      ...(signals.get(e.id) ? { evidence_signal: signals.get(e.id) } : {}),
       ...(e.fileIds.length
         ? { files: e.fileIds.map((id) => ({ id, name: fileName.get(id) ?? "" })) }
         : {}),

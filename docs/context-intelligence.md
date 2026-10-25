@@ -118,12 +118,15 @@ quality depended entirely on assistants remembering to write it.
    from the batch / workspace, text clamped, confidence clamped, `completed`
    downgraded to `active` + `claimed` unless the evidence includes a verified
    signal (successful test/build/deploy tool result, or a human), entries
-   below 0.35 confidence dropped.
+   below 0.35 confidence dropped, proposals below 0.5 dropped. Which events
+   count as verified is computed deterministically and handed to the model
+   as `evidence_signal`, so it never has to guess.
 5. One mutation applies everything, guarded by `entriesRevision` read at load
    (stale ⇒ retry the batch once against fresh state), writes revisions,
    marks the batch processed, bumps `entriesRevision`, records a
    `context.observed` workspace event, and raises goal/decision findings via
-   `proposeContextChangeCore` with `INTEL_ACTOR` (≤ 2 per run; dedupe and
+   `proposeContextChangeCore` with `INTEL_ACTOR` (≤ 2 per run, each tracked
+   by a companion `goal:`/`decision:` entry carrying `proposalId`; dedupe and
    `ALREADY_IN_CONTEXT` are swallowed). Those proposals go through the
    existing structural + semantic conflict detection and stay pending for a
    person (or apply at once in automatic workspaces, exactly like an
@@ -150,3 +153,51 @@ is authoritative. Brief mode caps it. A `context.observed` event appears in
 | `CONTEXT_MODEL` | `claude-haiku-5-5` | Model for the context manager. |
 | `INTEL_BATCH_WINDOW_MS` | `5000` | Debounce window before a batch runs. |
 | `INTEL_DISABLED` | unset | `1` logs events but never runs the context manager. |
+
+The Claude Code hook script and its setup are in `docs/claude-code-hooks.md`.
+
+## Dashboard
+
+The Live page shows **What the team is doing** (observed entries by category,
+with evidence chips, the assistants involved, confirm/correct/retract), the
+context manager's status (idle/scheduled/running, last run, model, pending
+events, failures, Run now/Retry), **Context change history** (each revision
+with its evidence events), and an **All activity** feed of `activity_events`
+(MCP, Claude Code, Workspace, and dashed **Simulated** rows). The Overview has
+a compact card. Corrections bump `entriesRevision`, so an in-flight model
+batch goes stale instead of overwriting a person's edit.
+
+## Demo (verified locally on 2026-10-24 with the real model)
+
+1. Two connections in one workspace: Agent A (Claude Code with the MCP key and
+   hooks installed), Agent B (any MCP client).
+2. Ask Agent A: "Implement JWT authentication for the API: 15-minute access
+   tokens signed with jose, rotating refresh tokens in an httpOnly cookie,
+   plus middleware and tests." It edits files, writes `auth-design.md`
+   through MCP, runs the tests (a failure, then a pass) and stops.
+3. Within ~10 s (batch window + one Haiku call) the Live page shows the task
+   **completed · verified** (because a test command exited 0), progress and
+   knowledge entries, and goal and decision **proposals** on Approvals.
+   Without the passing test run the same task stays `active` / `claimed`.
+4. Ask Agent B: "What has the other assistant been working on?" Its
+   `sync_workspace` returns `observed` and a `context.observed` change; it can
+   say what is verified, what is only claimed, and what is pending approval.
+5. Conflict: have Agent B write a doc that decides "drop JWTs; use Redis
+   sessions". The context manager records a `coordination` entry and a
+   decision proposal; the existing semantic conflict check marks both
+   decision proposals `conflict` (competing) on Approvals.
+
+Repeatable without assistants: `node integrations/claude-code/replay.mjs`
+replays `demo-events.jsonl` (labeled simulated everywhere).
+
+## Limitations
+
+- Visibility is limited to Tandem MCP calls, installed Claude Code hooks, and
+  workspace file changes. Native ChatGPT/Claude.ai chats are only observed
+  through their MCP calls. Tandem never sees their conversations.
+- `activity_events` follows the 14-day `agent_activity` retention, so evidence
+  links on old entries can dangle.
+- Model output varies: confidence on contradicting decisions is ~0.6, which
+  is why the proposal gate is 0.5. Duplicate-ish entries can still appear and
+  can be retracted on the dashboard.
+- The context manager runs per workspace, one batch at a time (≤ 40 events).
