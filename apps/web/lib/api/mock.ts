@@ -1,6 +1,7 @@
 import { MAX_NAME_LENGTH, nameKey, storedName } from "@repo/backend/convex/lib/names.ts";
 import { normalizeError, TandemApiError } from "./errors";
 import { clientName } from "../actors";
+import { generateInviteCode, normalizeInviteCode } from "../inviteCode";
 import { BINARY_MIME_TYPES, MAX_UPLOAD_BYTES } from "@repo/backend/convex/lib/binaries.js";
 
 const MOCK_MCP_URL = "https://mock-deployment.convex.site/mcp";
@@ -706,7 +707,9 @@ export function createMockApi({
       await delay();
       requireAdmin(workspaceId);
       if (role !== "admin" && role !== "member") throw new TandemApiError("INVALID_INPUT");
-      const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
+      const taken = new Set([...invites.values()].map((i) => i.token));
+      let token = generateInviteCode();
+      while (taken.has(token)) token = generateInviteCode();
       const now = Date.now();
       const id = `invite_${nextId++}`;
       const expiresAt = now + 7 * 24 * 60 * 60 * 1000;
@@ -718,7 +721,8 @@ export function createMockApi({
       await delay();
       const userId = signedInUser();
       memberNames.set(userId, getActor().userName ?? "Workspace member");
-      const invite = [...invites.values()].find((i) => i.token === token);
+      const code = normalizeInviteCode(token);
+      const invite = [...invites.values()].find((i) => i.token === code);
       if (!invite) throw new TandemApiError("INVITE_INVALID");
       if (invite.revokedAt !== undefined) throw new TandemApiError("INVITE_REVOKED");
       if (invite.expiresAt <= Date.now()) throw new TandemApiError("INVITE_EXPIRED");

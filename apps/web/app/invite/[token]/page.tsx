@@ -2,13 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { normalizeError, useTandemApi, type TandemApiError } from "@/lib/api";
+import { normalizeError, TandemApiError, useTandemApi } from "@/lib/api";
 import { useSession } from "@/lib/auth/useSession";
 import { ErrorState } from "@/components/common/ErrorState";
 import { FullPageSpinner } from "@/components/common/FullPageSpinner";
+import { normalizeInviteCode } from "@/lib/inviteCode";
 
 export default function InvitePage() {
-  const { token } = useParams<{ token: string }>();
+  const { token: param } = useParams<{ token: string }>();
+  // Links and hand-typed URLs may say "abc-def" or "ABC%20DEF"; the backend wants "ABCDEF".
+  const token = normalizeInviteCode(safeDecode(param));
   const { status } = useSession();
   const api = useTandemApi();
   const router = useRouter();
@@ -17,6 +20,7 @@ export default function InvitePage() {
   const pending = useRef<{ token: string; result: Promise<{ workspaceId: string }> } | null>(null);
 
   useEffect(() => {
+    if (!token) return;
     if (status === "unauthenticated") {
       router.replace(`/sign-in?next=${encodeURIComponent(`/invite/${token}`)}`);
       return;
@@ -33,6 +37,16 @@ export default function InvitePage() {
     return () => { cancelled = true; };
   }, [status, token, api, router]);
 
-  if (!error) return <FullPageSpinner />;
-  return <main className="mx-auto max-w-lg px-4 py-12"><ErrorState error={error} /></main>;
+  // A link with no letters left can't match any invite.
+  const shown = error ?? (token ? null : new TandemApiError("INVITE_INVALID"));
+  if (!shown) return <FullPageSpinner />;
+  return <main className="mx-auto max-w-lg px-4 py-12"><ErrorState error={shown} /></main>;
+}
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }

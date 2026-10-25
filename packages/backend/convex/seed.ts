@@ -113,6 +113,7 @@ ${DEMO_GOAL}
 - No engineering work beyond the existing checklist component.
 - $5k budget for design and copy.
 - Launch before the January 15 billing cycle.
+- No new help-center platform: the guides live in the existing help center or the app.
 
 ## Decided at kickoff
 
@@ -131,11 +132,24 @@ Draft proposal.md: milestones, owners, and how we measure success.
 export const DEMO_DECISION =
   'First value means "first project created", not "first teammate invited".';
 export const DEMO_CONSTRAINT = "Launch before the January 15 billing cycle.";
+/**
+ * The approved constraint Casey's proposal contradicts. Context conflict
+ * detection (#61) compares decisions against decisions and constraints, not
+ * scope, so the scope's "Out: a new help-center platform" is restated here
+ * for the check to find.
+ */
+export const DEMO_HELP_CENTER_CONSTRAINT =
+  "No new help-center platform: the guides live in the existing help center or the app.";
 export const DEMO_OPEN_QUESTION =
   "Do the how-to guides live in the app or in the existing help center?";
-/** Casey's Gemini proposes this; it contradicts the approved scope on purpose. */
+/**
+ * Casey's Gemini proposes this; it contradicts the approved scope and the
+ * help-center constraint on purpose. Keep it free of words the other context
+ * entries use (e.g. "launch"): without an ANTHROPIC_API_KEY the conflict check
+ * falls back to word overlap and would flag those too.
+ */
 export const DEMO_PENDING_DECISION =
-  "Move the three how-to guides to a new help-center platform before launch.";
+  "Move the three how-to guides to a new help-center platform.";
 
 const DEMO_SUPPORT_TICKETS = `# Support tickets: first 30 days
 
@@ -509,6 +523,7 @@ async function seedStory(
     { field: "decision", proposedValue: DEMO_DECISION, sourceFileIds: [tickets._id] },
     { field: "ownership", proposedValue: "Welcome email sequence", ownerUserId: user("blake")._id, sourceFileIds: [briefId] },
     { field: "constraint", proposedValue: DEMO_CONSTRAINT, sourceFileIds: [briefId] },
+    { field: "constraint", proposedValue: DEMO_HELP_CENTER_CONSTRAINT, sourceFileIds: [briefId] },
     { field: "open_question", proposedValue: DEMO_OPEN_QUESTION, sourceFileIds: [briefId] },
   ] as const;
   for (const change of approved) {

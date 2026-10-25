@@ -1,13 +1,14 @@
 /// <reference types="vite/client" />
 import mcpTest from "@convex-dev/mcp/test";
 import { convexTest } from "convex-test";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { randomSecret } from "./lib/mcpConfig";
 import {
   DEMO_CONSTRAINT,
+  DEMO_HELP_CENTER_CONSTRAINT,
   DEMO_DECISION,
   DEMO_GOAL,
   DEMO_OPEN_QUESTION,
@@ -174,7 +175,7 @@ describe("seed:rebuildDemoWorkspace", () => {
       workspaceId: demo.workspaceId,
     });
     expect(context?.decisions.map((d) => d.text)).toEqual([DEMO_DECISION]);
-    expect(context?.constraints.map((c) => c.text)).toEqual([DEMO_CONSTRAINT]);
+    expect(context?.constraints.map((c) => c.text)).toEqual([DEMO_CONSTRAINT, DEMO_HELP_CENTER_CONSTRAINT]);
     expect(context?.openQuestions.map((q) => q.text)).toEqual([DEMO_OPEN_QUESTION]);
     expect(context?.ownership).toHaveLength(1);
 
@@ -190,6 +191,30 @@ describe("seed:rebuildDemoWorkspace", () => {
       field: "decision",
       createdBy: { type: "agent", label: "Casey's Gemini", userName: "Casey" },
     });
+  });
+
+  it("flags Casey's proposal against the help-center constraint it contradicts, and nothing else", async () => {
+    // Pins #61's no-key word-overlap fallback (an empty key counts as unset,
+    // even when the shell exports a real one): the seed's wording must point
+    // it at the real contradiction (the help-center constraint), not at an
+    // incidental shared word like "launch".
+    vi.useFakeTimers();
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    try {
+      const { t, rebuild } = await setup();
+      const demo = await rebuild();
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const proposals = await t.run((ctx) =>
+        ctx.db.query("context_proposals")
+          .withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", demo.workspaceId)).collect());
+      const pending = proposals.filter((p) => p.status === "pending");
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.conflict).toMatchObject({ status: "uncertain", method: "heuristic" });
+      expect(pending[0]!.conflict?.items.map((item) => item.targetText)).toEqual([DEMO_HELP_CENTER_CONSTRAINT]);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+    }
   });
 
   it("a rebuild replaces only the demo workspace and revokes its old tokens", async () => {

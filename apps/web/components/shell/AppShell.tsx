@@ -12,6 +12,7 @@ import {
   LayoutDashboardIcon,
   LogOutIcon,
   StampIcon,
+  TicketIcon,
   type LucideIcon,
 } from "lucide-react";
 import { useSession } from "@/lib/auth/useSession";
@@ -224,6 +225,10 @@ export function AppShell({ workspaceId, workspaceName, fileCount = null, childre
                   Live
                 </DropdownMenuItem>
                 <DropdownMenuSeparator className="md:hidden" />
+                <DropdownMenuItem onSelect={() => router.push("/?join")}>
+                  <TicketIcon />
+                  Join with code
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() => {
                     const unsaved = countDraftStashes();

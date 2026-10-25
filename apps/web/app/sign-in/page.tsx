@@ -80,7 +80,7 @@ function SignInForm() {
         <CardTitle className="text-lg">{signingUp ? "Create your account" : "Sign in"}</CardTitle>
         <CardDescription>
           {signingUp
-            ? "Then create a workspace, or open the invite link a teammate sent you."
+            ? "Then create a workspace, or join one with the invite code or link a teammate sent you."
             : "Sign in with your Tandem email and password."}
         </CardDescription>
       </CardHeader>
