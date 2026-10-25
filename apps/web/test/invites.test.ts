@@ -18,7 +18,7 @@ describe("workspace invites", () => {
 
   it("joins once with the invited role and never exposes a token in listings", async () => {
     const invite = await api.createInvite(MOCK_WORKSPACE_ID, "admin");
-    expect(invite.token).toMatch(/^[a-f0-9]{64}$/);
+    expect(invite.token).toMatch(/^[A-HJ-NP-Z]{6}$/);
     const listed = await api.listInvites(MOCK_WORKSPACE_ID);
     expect(listed[0]).not.toHaveProperty("token");
     expect(listed[0]).not.toHaveProperty("tokenHash");
@@ -28,6 +28,19 @@ describe("workspace invites", () => {
     await expect(api.acceptInvite(invite.token)).rejects.toMatchObject({ code: "INVITE_USED" });
     actor = owner;
     expect((await api.listInvites(MOCK_WORKSPACE_ID))[0]?.acceptedBy).toBe(teammate.userId);
+  });
+
+  it("accepts a code typed in lowercase or with dashes and spaces", async () => {
+    const lower = await api.createInvite(MOCK_WORKSPACE_ID, "member");
+    const dashed = await api.createInvite(MOCK_WORKSPACE_ID, "member");
+    actor = teammate;
+    await expect(api.acceptInvite(lower.token.toLowerCase())).resolves.toEqual({ workspaceId: MOCK_WORKSPACE_ID });
+    actor = { actorType: "human", userId: "third" };
+    const typed = ` ${dashed.token.slice(0, 3).toLowerCase()}-${dashed.token.slice(3)} `;
+    await expect(api.acceptInvite(typed)).resolves.toEqual({ workspaceId: MOCK_WORKSPACE_ID });
+    actor = owner;
+    const listed = await api.listInvites(MOCK_WORKSPACE_ID);
+    expect(listed.map((i) => i.acceptedBy).sort()).toEqual(["teammate", "third"]);
   });
 
   it("does not consume a valid link when an existing member opens it", async () => {

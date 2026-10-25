@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useState, type FormEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2Icon } from "lucide-react";
 import { useSession } from "@/lib/auth/useSession";
 import { normalizeError, useTandemApi } from "@/lib/api";
@@ -9,6 +9,7 @@ import { useResource } from "@/lib/api/useResource";
 import { DEFAULT_WORKSPACE_ID } from "@/lib/config";
 import { FullPageSpinner } from "@/components/common/FullPageSpinner";
 import { ErrorState } from "@/components/common/ErrorState";
+import { JoinWithCodeForm } from "@/components/common/JoinWithCodeForm";
 import { signOutAndLeave } from "@/lib/auth/signOutAndLeave";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +17,8 @@ import { Label } from "@/components/ui/label";
 import { ERROR_COPY } from "@/lib/api/errorCopy";
 
 function WorkspaceRedirect() {
+  // `/?join` keeps members here to enter a code instead of opening their workspace.
+  const joining = useSearchParams().has("join");
   const api = useTandemApi();
   const { signOut } = useSession();
   const router = useRouter();
@@ -46,10 +49,10 @@ function WorkspaceRedirect() {
   }
 
   useEffect(() => {
-    if (resource.status === "ready" && resource.data)
+    if (resource.status === "ready" && resource.data && !joining)
       // Overview first: assistants, files and approved context on one screen.
       router.replace(`/w/${resource.data}/overview`);
-  }, [resource, router]);
+  }, [resource, router, joining]);
 
   if (resource.status === "error") {
     return (
@@ -63,6 +66,28 @@ function WorkspaceRedirect() {
       </div>
     );
   }
+  if (resource.status === "ready" && resource.data && joining) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-5 px-4 text-sm text-muted-foreground">
+        <div className="max-w-sm text-center">
+          <h1 className="text-lg font-semibold text-foreground">
+            Join another workspace
+          </h1>
+          <p className="mt-1">
+            Enter the invite code a teammate shared, or open their invite link.
+          </p>
+        </div>
+        <JoinWithCodeForm className="w-full max-w-sm rounded-md border bg-card p-4" />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => router.replace(`/w/${resource.data}/overview`)}
+        >
+          Back to your workspace
+        </Button>
+      </div>
+    );
+  }
   if (resource.status === "ready" && !resource.data) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-5 px-4 text-sm text-muted-foreground">
@@ -71,9 +96,11 @@ function WorkspaceRedirect() {
             No workspace yet
           </h1>
           <p className="mt-1">
-            Create a workspace to get started, or ask a teammate to invite you.
+            Create a workspace to get started, or join a teammate&apos;s with
+            their invite code or link.
           </p>
         </div>
+        <JoinWithCodeForm className="w-full max-w-sm rounded-md border bg-card p-4" />
         <form
           onSubmit={createWorkspace}
           className="grid w-full max-w-sm gap-3 rounded-md border bg-card p-4"
@@ -123,5 +150,9 @@ export default function Home() {
   }, [status, router]);
 
   if (status !== "authenticated") return <FullPageSpinner />;
-  return <WorkspaceRedirect />;
+  return (
+    <Suspense fallback={<FullPageSpinner />}>
+      <WorkspaceRedirect />
+    </Suspense>
+  );
 }

@@ -1,5 +1,6 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
+import { mutation, query, type QueryCtx } from "./_generated/server";
 import { createFolderCore } from "./lib/fs";
 import { loadContext } from "./lib/ops";
 import { contextApprovalValidator, contextValidator } from "./lib/validators";
@@ -128,9 +129,48 @@ export const createFolder = mutation({
 
 const inviteRole = v.union(v.literal("admin"), v.literal("member"));
 
+// Invite codes are 6 uppercase letters, minus the easily confused I and O.
+const INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const INVITE_CODE_LENGTH = 6;
+const INVITE_CODE_PATTERN = /^[A-HJ-NP-Z]{6}$/;
+const INVITE_CODE_ATTEMPTS = 5;
+// Old consumed invites can share a code's hash, so read a bounded batch per hash.
+const INVITE_HASH_SCAN = 20;
+
 async function hashInviteToken(token: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function generateInviteCode() {
+  // Rejection sampling: only bytes below the largest multiple of the alphabet
+  // size map to a letter, so every letter is equally likely.
+  const limit = 256 - (256 % INVITE_CODE_ALPHABET.length);
+  let code = "";
+  while (code.length < INVITE_CODE_LENGTH) {
+    for (const byte of crypto.getRandomValues(new Uint8Array(16))) {
+      if (byte >= limit) continue;
+      code += INVITE_CODE_ALPHABET[byte % INVITE_CODE_ALPHABET.length];
+      if (code.length === INVITE_CODE_LENGTH) break;
+    }
+  }
+  return code;
+}
+
+/** Canonical form of a typed code: no spaces or dashes, uppercase. */
+function normalizeInviteCode(input: string) {
+  return input.trim().replace(/[\s-]+/g, "").toUpperCase();
+}
+
+function isInviteUsable(invite: Doc<"workspace_invites">, now: number) {
+  return invite.acceptedAt === undefined && invite.revokedAt === undefined && invite.expiresAt > now;
+}
+
+/** Newest invites first, so a stale row never shadows the live one. */
+function invitesByHash(ctx: QueryCtx, tokenHash: string) {
+  return ctx.db.query("workspace_invites")
+    .withIndex("by_token_hash", (q) => q.eq("tokenHash", tokenHash))
+    .order("desc").take(INVITE_HASH_SCAN);
 }
 
 export const createWorkspaceInvite = mutation({
@@ -140,14 +180,20 @@ export const createWorkspaceInvite = mutation({
     const { user, membership } = await requireMembership(ctx, workspaceId);
     if (membership.role !== "owner" && membership.role !== "admin")
       throw new ConvexError({ code: "FORBIDDEN" });
-    const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
     const now = Date.now();
+    let token: string | null = null;
+    let tokenHash = "";
+    for (let attempt = 0; attempt < INVITE_CODE_ATTEMPTS && token === null; attempt++) {
+      const candidate = generateInviteCode();
+      tokenHash = await hashInviteToken(candidate);
+      const clashes = await invitesByHash(ctx, tokenHash);
+      if (!clashes.some((invite) => isInviteUsable(invite, now))) token = candidate;
+    }
+    if (token === null) throw new ConvexError({ code: "INVITE_CODE_EXHAUSTED" });
     const expiresAt = now + 7 * 24 * 60 * 60 * 1000;
     const actor = humanActor(user);
     const inviteId = await ctx.db.insert("workspace_invites", {
-      workspaceId, tokenHash: await hashInviteToken(token), role,
+      workspaceId, tokenHash, role,
       createdBy: user._id, createdAt: now, expiresAt,
       updatedBy: actor, revision: 1, updatedAt: now,
     });
@@ -164,11 +210,12 @@ export const acceptWorkspaceInvite = mutation({
   returns: v.object({ workspaceId: v.id("workspaces") }),
   handler: async (ctx, { token }) => {
     const user = await requireUser(ctx);
-    if (!/^[a-f0-9]{64}$/.test(token))
+    const code = normalizeInviteCode(token);
+    if (!INVITE_CODE_PATTERN.test(code))
       throw new ConvexError({ code: "INVITE_INVALID" });
-    const tokenHash = await hashInviteToken(token);
-    const invite = await ctx.db.query("workspace_invites")
-      .withIndex("by_token_hash", (q) => q.eq("tokenHash", tokenHash)).unique();
+    const candidates = await invitesByHash(ctx, await hashInviteToken(code));
+    // Prefer the live invite; otherwise report on the newest one with this code.
+    const invite = candidates.find((row) => isInviteUsable(row, Date.now())) ?? candidates[0];
     if (!invite) throw new ConvexError({ code: "INVITE_INVALID" });
     if (invite.revokedAt !== undefined) throw new ConvexError({ code: "INVITE_REVOKED" });
     if (invite.expiresAt <= Date.now()) throw new ConvexError({ code: "INVITE_EXPIRED" });
