@@ -1132,6 +1132,28 @@ describe("context manager: section compaction", () => {
     expect((await s.runs())[0]).toMatchObject({ contextChanges: 0 });
     expect((await s.runs())[0]!.error).toContain("decision_supersede: ignored");
   });
+
+  it("folds a lead an assistant resolved", async () => {
+    const s = await setup();
+    const old = await s.addEvent({ type: "mcp.tool_call", tool: "publish_work", summary: "Earlier", connection: s.claude, intelStatus: "processed" });
+    await seed(s, old, Array.from({ length: 8 }, (_, i) => ({ key: `blocker:b${i}`, category: "blocker" as const, status: "resolved" as const })));
+    const b1 = (await s.entry("blocker:b1"))!;
+    await s.t.run((ctx) => ctx.db.patch(b1._id, { updatedBy: { type: "agent", agentConnectionId: s.chatgpt, label: "ChatGPT" }, updatedAt: Date.now() + 10_000 }));
+    await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Updated", connection: s.claude });
+    stubModel(
+      (data) => ({ summary: "x", entries: [entryJson({ key: "task:t", category: "task", title: "T", evidence_event_ids: [data.events[0].id] })], context_changes: [] }),
+      {
+        compact: () => ({
+          summary: "Merged",
+          merged: [{ key: "blocker:b0", title: "Auth blockers", content: "Both fixed.", status: "resolved", evidence: "observed", confidence: 0.9, evidence_event_ids: [], replaces: ["blocker:b1"] }],
+          decision_supersede: { decision_id: "", text: "", confidence: 0 },
+        }),
+      },
+    );
+    await s.process();
+    expect(await s.entry("blocker:b1")).toMatchObject({ status: "superseded", supersededBy: "blocker:b0" });
+    expect((await s.runs())[0]!.error ?? "").not.toContain("an assistant resolved it");
+  });
 });
 
 describe("context manager: leads an assistant resolved", () => {

@@ -607,8 +607,12 @@ async function applyEntry(
   if (byPerson && evidenceRank(op.evidence) <= evidenceRank(existing.evidence)) return "protected";
   // An assistant resolved this lead after fixing or disproving it; the batch
   // may predate that, so only an event recorded since reopens it (the
-  // resolve call's own event, logged just after, doesn't count).
-  if (existing.status === "resolved" && existing.updatedBy.type === "agent" && op.status !== "resolved") {
+  // resolve call's own event, logged just after, doesn't count). Compaction
+  // folding it into a merged entry isn't a reopen.
+  if (
+    existing.status === "resolved" && existing.updatedBy.type === "agent" &&
+    op.status !== "resolved" && op.op !== "supersede"
+  ) {
     const events = await Promise.all(op.evidenceEventIds.map((id) => ctx.db.get(id)));
     const newer = events.some(
       (e) => e !== null && e.createdAt > existing.updatedAt && e.tool !== "resolve_observation",
