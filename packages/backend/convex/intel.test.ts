@@ -1209,6 +1209,55 @@ describe("context manager: promoting findings to proposals", () => {
     // Content that narrates the observation falls back to the title.
     expect(proposal).toMatchObject({ field: "decision", proposedValue: "Use Convex for the backend", status: "pending" });
   });
+
+  const observedEntry = (s: Setup, key: string, category: "goal" | "decision", title: string, extra: Record<string, unknown> = {}) =>
+    s.t.run((ctx) =>
+      ctx.db.insert("context_entries", {
+        workspaceId: s.workspaceId, key, category, title, content: title, status: "active", evidence: "observed",
+        confidence: 0.8, evidenceEventIds: [], agentConnectionIds: [], fileIds: [],
+        createdBy: INTEL_ACTOR, updatedBy: INTEL_ACTOR, revision: 1, createdAt: Date.now(), updatedAt: Date.now(),
+        ...extra,
+      }),
+    );
+  const pendingProposals = (s: Setup) =>
+    s.t.run((ctx) =>
+      ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect());
+
+  it("marks a refused raise and moves on to older findings instead of retrying it every run", async () => {
+    const s = await setup();
+    const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    await s.alex.mutation(api.context.updateContextField, {
+      workspaceId: s.workspaceId, field: "decision", proposedValue: "Ship on Fridays", sourceFileIds: [], expectedVersion: before.revision,
+    });
+    // Older first, so the refused one is the newest.
+    await observedEntry(s, "decision:use-convex", "decision", "Use Convex for the backend");
+    const refusedFileId = await addDoc(s, "gone.md", "# Gone\n");
+    await s.t.run((ctx) => ctx.db.patch(refusedFileId, { deletedAt: Date.now() }));
+    await observedEntry(s, "decision:refused", "decision", "Deploy with Fly.io", { fileIds: [refusedFileId] });
+    stubModel(noActivity);
+    await s.process();
+    expect((await s.entry("decision:refused"))!.proposalSkipped).toBeDefined();
+    expect((await s.entry("decision:use-convex"))!.proposalId).toBeDefined();
+    const runsBefore = (await pendingProposals(s)).length;
+    await s.process();
+    expect((await pendingProposals(s)).length).toBe(runsBefore);
+  });
+
+  it("doesn't re-propose what is approved or pending, and raises at most one goal", async () => {
+    const s = await setup();
+    const before = await s.alex.query(api.context.getDetails, { workspaceId: s.workspaceId });
+    await s.alex.mutation(api.context.updateContextField, {
+      workspaceId: s.workspaceId, field: "decision", proposedValue: "Use Postgres for all data", sourceFileIds: [], expectedVersion: before.revision,
+    });
+    await observedEntry(s, "decision:postgres", "decision", "Use Postgres for all data");
+    await observedEntry(s, "goal:a", "goal", "Ship the demo by Sunday");
+    await observedEntry(s, "goal:b", "goal", "Win the Convex track");
+    stubModel(noActivity);
+    await s.process();
+    const pending = await pendingProposals(s);
+    expect(pending.filter((p) => p.field === "decision")).toHaveLength(0);
+    expect(pending.filter((p) => p.field === "goal")).toHaveLength(1);
+  });
 });
 
 describe("context manager: heuristic path (no ANTHROPIC_API_KEY)", () => {

@@ -568,6 +568,9 @@ export default defineSchema({
     supersededBy: v.optional(v.string()),
     // A goal or decision finding raised for human approval.
     proposalId: v.optional(v.id("context_proposals")),
+    // Why raising it as a proposal was refused (an error code); it isn't
+    // raised again.
+    proposalSkipped: v.optional(v.string()),
     // Document digests (knowledge:doc-*) only: hash of the content the digest
     // was made from; an unchanged hash skips the model call.
     sourceHash: v.optional(v.string()),

@@ -8,7 +8,7 @@
 // any section over its size threshold is compacted the same way. Goal and
 // decision findings only reach approved context as proposals, through the
 // existing conflict detection.
-import { v, type Infer } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -64,7 +64,7 @@ import {
   INTEL_ACTOR,
   intelDisabled,
 } from "./lib/intelQueue";
-import { listProposals, loadContext, proposeContextChangeCore } from "./lib/ops";
+import { listProposals, loadContext, normalizeContext, proposeContextChangeCore } from "./lib/ops";
 import schema from "./schema";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -484,7 +484,7 @@ export const claimBatch = internalMutation({
     if (events.length === 0) {
       // Nothing new to read, but findings recorded before promotion existed
       // (or that the model never proposed) still reach Approvals.
-      const promoted = await promoteFindings(ctx, workspaceId, []);
+      const promoted = await promoteFindings(ctx, workspaceId, [], PROMOTE_PER_RUN);
       if (promoted > 0) await ctx.db.patch(runId, { proposals: promoted });
       await patchState(ctx, workspaceId, {
         status: "idle",
@@ -731,10 +731,14 @@ async function raiseProposals(
         });
       if (entry) await ctx.db.patch(entry._id, { proposalId: raised.proposalId });
       if (!raised.deduplicated) proposals++;
-    } catch {
-      // ALREADY_IN_CONTEXT, INVALID_INPUT and the like: the finding stays an
-      // observed entry; nothing reaches approved context.
-      dropped.push(`proposal ${p.key}: not raised`);
+    } catch (err) {
+      // ALREADY_IN_CONTEXT, INVALID_SOURCE_FILE and the like: the finding
+      // stays an observed entry, and is marked so it isn't retried every run.
+      const data = err instanceof ConvexError ? err.data : undefined;
+      const parsed = typeof data === "string" ? (() => { try { return JSON.parse(data); } catch { return null; } })() : data;
+      const code = parsed && typeof parsed === "object" && typeof parsed.code === "string" ? parsed.code : "ERROR";
+      if (entry) await ctx.db.patch(entry._id, { proposalSkipped: code });
+      dropped.push(`proposal ${p.key}: not raised (${code})`);
     }
   }
   return proposals;
@@ -743,17 +747,36 @@ async function raiseProposals(
 const PROMOTE_PER_RUN = 3;
 const PROMOTE_SCAN = 20;
 // Content that narrates the observation rather than stating the finding.
-const NARRATION = /^(observed|requested|claimed|document|the document|open question)\b/i;
+const NARRATION = /^(observed|requested|claimed|document|the document|open question)\b|\b(said|says|reported|claims?)\b/i;
 
 /**
  * Goal and decision findings the model recorded only as observed entries
  * (it often doesn't list them under proposals) are raised as proposals
  * here, so they reach Approvals and, once a person approves, the project
- * context. The entry becomes the proposal's companion; one already linked to
- * a proposal (pending, decided or rejected) is never raised again.
+ * context. The entry becomes the proposal's companion; one linked to a
+ * proposal, or whose raise was refused, is never raised again. Skips what
+ * approved context or a pending proposal already says, and raises at most
+ * one goal, and only while no goal is approved or pending.
  */
-async function promoteFindings(ctx: MutationCtx, workspaceId: Id<"workspaces">, dropped: string[]) {
-  const candidates: Infer<typeof proposalOpValidator>[] = [];
+async function promoteFindings(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  dropped: string[],
+  budget: number,
+) {
+  if (budget <= 0) return 0;
+  const stored = await ctx.db
+    .query("structured_context")
+    .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
+    .unique();
+  const approved = stored ? normalizeContext(stored) : null;
+  const pending = await listProposals(ctx, workspaceId, "pending", 100);
+  const decisions = [
+    ...(approved?.decisions ?? []).filter((d) => !d.status || d.status === "active").map((d) => d.text),
+    ...pending.filter((p) => p.field === "decision" && !p.operation).map((p) => p.proposedValue),
+  ];
+  let goalTaken = Boolean(stored?.goal?.text) || pending.some((p) => p.field === "goal");
+  let raised = 0;
   for (const category of ["goal", "decision"] as const) {
     const rows = await ctx.db
       .query("context_entries")
@@ -763,24 +786,30 @@ async function promoteFindings(ctx: MutationCtx, workspaceId: Id<"workspaces">, 
       .order("desc")
       .take(PROMOTE_SCAN);
     for (const e of rows) {
+      if (raised >= budget) return raised;
       if (
-        e.proposalId !== undefined || e.status !== "active" ||
+        e.proposalId !== undefined || e.proposalSkipped !== undefined || e.status !== "active" ||
         e.confidence < MIN_PROPOSAL_CONFIDENCE || e.updatedBy.type === "human"
       )
         continue;
       const text = !NARRATION.test(e.content) && e.content.length <= 500 ? e.content : e.title;
-      candidates.push({
+      if (category === "goal" ? goalTaken : decisions.some((d) => normalize(d) === normalize(text) || similar(d, text)))
+        continue;
+      const count = await raiseProposals(ctx, workspaceId, [{
         field: category,
         text,
-        rationale: `Recorded by the context manager from workspace activity and documents.`,
+        rationale: "Recorded by the context manager from workspace activity and documents.",
         confidence: e.confidence,
         evidenceEventIds: e.evidenceEventIds.slice(0, 3),
         fileIds: e.fileIds,
         key: e.key,
-      });
+      }], dropped);
+      raised += count;
+      if (category === "goal") goalTaken = true;
+      else decisions.push(text);
     }
   }
-  return await raiseProposals(ctx, workspaceId, candidates.slice(0, PROMOTE_PER_RUN), dropped);
+  return raised;
 }
 
 /** Schedules the next batch when events are still waiting; returns whether it did. */
@@ -842,9 +871,9 @@ export const applyResult = internalMutation({
       else if (outcome === "protected") dropped.push(`${op.key}: kept the person's version`);
     }
 
+    const raised = await raiseProposals(ctx, workspaceId, args.proposals, dropped);
     const proposals =
-      (await raiseProposals(ctx, workspaceId, args.proposals, dropped)) +
-      (await promoteFindings(ctx, workspaceId, dropped));
+      raised + (await promoteFindings(ctx, workspaceId, dropped, Math.min(PROMOTE_PER_RUN, MAX_RUN_PROPOSALS - raised)));
 
     // A deleted document's digest leaves observed context with it; nothing
     // else would ever retract it (only a digest call writes doc keys).
@@ -1122,6 +1151,16 @@ export const applyCompaction = internalMutation({
       else if (outcome === "updated") updated++;
       else if (outcome === "protected") dropped.push(`${op.key}: kept the person's version`);
       if (outcome === "updated" && op.op === "supersede") superseded++;
+    }
+    // A merged entry keeps the proposal link (or refusal) of what it folded,
+    // so promotion doesn't raise an already-decided finding again.
+    for (const op of args.entries) {
+      if (op.op !== "supersede" || op.supersededBy === undefined) continue;
+      const folded = await getEntry(ctx, workspaceId, op.key);
+      const merged = await getEntry(ctx, workspaceId, op.supersededBy);
+      if (!folded || !merged || merged.proposalId !== undefined || merged.proposalSkipped !== undefined) continue;
+      if (folded.proposalId !== undefined) await ctx.db.patch(merged._id, { proposalId: folded.proposalId });
+      else if (folded.proposalSkipped !== undefined) await ctx.db.patch(merged._id, { proposalSkipped: folded.proposalSkipped });
     }
     const proposals = await raiseProposals(ctx, workspaceId, args.proposals, dropped);
     const changed = created + updated > 0;
