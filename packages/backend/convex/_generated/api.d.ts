@@ -25,6 +25,7 @@ import type * as lib_binaries from "../lib/binaries.js";
 import type * as lib_conflicts from "../lib/conflicts.js";
 import type * as lib_diff from "../lib/diff.js";
 import type * as lib_fs from "../lib/fs.js";
+import type * as lib_intel from "../lib/intel.js";
 import type * as lib_intelQueue from "../lib/intelQueue.js";
 import type * as lib_mcpConfig from "../lib/mcpConfig.js";
 import type * as lib_mcpContract from "../lib/mcpContract.js";
@@ -63,6 +64,7 @@ declare const fullApi: ApiFromModules<{
   "lib/conflicts": typeof lib_conflicts;
   "lib/diff": typeof lib_diff;
   "lib/fs": typeof lib_fs;
+  "lib/intel": typeof lib_intel;
   "lib/intelQueue": typeof lib_intelQueue;
   "lib/mcpConfig": typeof lib_mcpConfig;
   "lib/mcpContract": typeof lib_mcpContract;
