@@ -25,9 +25,12 @@ import { EntryCard } from "./EntryCard";
 export function ObservedContextPanel({
   workspaceId,
   onOpenHistory,
+  narrow = false,
 }: {
   workspaceId: string;
   onOpenHistory: (entryId: string) => void;
+  /** In a narrow column (the Context page): at most two groups per row. */
+  narrow?: boolean;
 }) {
   const { resource, retry } = useObservedContext(workspaceId);
   const groups = useMemo(() => (resource.status === "ready" ? groupEntries(resource.data.entries) : null), [resource]);
@@ -40,9 +43,9 @@ export function ObservedContextPanel({
           What the team is doing
         </h2>
         <p className="max-w-3xl text-xs text-muted-foreground">
-          Observed by Tandem&apos;s context manager from recorded activity and documents. It is not project context;
-          goals, decisions and owners need a person&apos;s direction. Assistants receive this on their
-          next sync.
+          Observed by Tandem&apos;s context manager from recorded activity and documents. Goals, decisions and
+          owners it finds are also added to project context, attributed to the context manager; anyone can edit
+          them there. Assistants receive this on their next sync.
         </p>
       </div>
       {resource.status === "loading" && (
@@ -61,7 +64,7 @@ export function ObservedContextPanel({
               the context manager summarizes the work here.
             </p>
           ) : (
-            <div className="grid gap-x-5 gap-y-4 md:grid-cols-2 2xl:grid-cols-4">
+            <div className={cn("grid gap-x-5 gap-y-4 md:grid-cols-2", !narrow && "2xl:grid-cols-4")}>
               {GROUPS.map((group) => {
                 const entries = groups.get(group.key)!;
                 return (

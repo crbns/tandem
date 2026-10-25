@@ -14,6 +14,8 @@ import {
   ContextFieldPanel,
   SourceLinks,
 } from "@/components/context/ContextFieldPanel";
+import { ObservedContextPanel } from "@/components/intelligence/ObservedContextPanel";
+import { EntryHistoryDialog } from "@/components/intelligence/EntryHistoryDialog";
 import { ActorBadge } from "@/components/common/ActorBadge";
 import { ErrorState } from "@/components/common/ErrorState";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +32,7 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
   const api = useTandemApi();
   const role = useWorkspaceRole(workspaceId);
   const [pageCount, setPageCount] = useState(1);
+  const [historyEntryId, setHistoryEntryId] = useState<string | null>(null);
   const load = useCallback(
     () => loadContextPage(api, workspaceId, pageCount),
     [api, workspaceId, pageCount],
@@ -61,9 +64,9 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
         </Button>
       </div>
       <p className="-mt-2 text-sm text-muted-foreground">
-        The team&apos;s current shared understanding. Every member can edit it or
-        direct an assistant to update it. Tandem&apos;s context manager records
-        observations separately. Each change shows who made it.
+        The team&apos;s current shared understanding. Every member can edit it,
+        assistants and Tandem&apos;s context manager update it too, and every
+        change applies at once with who made it.
       </p>
       {resource.status === "loading" && (
         <Skeleton className="h-64" aria-label="Loading project context" />
@@ -94,6 +97,11 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
               />
             ))}
           </div>
+          <ObservedContextPanel
+            workspaceId={workspaceId}
+            onOpenHistory={setHistoryEntryId}
+            narrow
+          />
           <section
             aria-labelledby="published-work"
             className="mt-3 flex flex-col gap-3"
@@ -152,6 +160,11 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
         resource={tasks.resource}
         onRetry={tasks.reload}
         retrying={tasks.refreshing}
+      />
+      <EntryHistoryDialog
+        workspaceId={workspaceId}
+        entryId={historyEntryId}
+        onClose={() => setHistoryEntryId(null)}
       />
     </div>
   );

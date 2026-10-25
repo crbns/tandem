@@ -749,7 +749,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
     update_context: tool({
       title: "Update context",
       description:
-        "Change project context when the user directs a goal, scope, decision, constraint, ownership or open-question change. Tandem's context manager only records observations from saved files; project context changes only through this tool or the dashboard. " +
+        "Change project context when the user directs a goal, scope, decision, constraint, ownership or open-question change. Tandem's context manager also adds goals, decisions and owners that saved files state; never undo a person's change. " +
         "If you haven't called sync_workspace in this conversation, do that first; re-sync with since before changing context. " +
         "Every change applies at once and is attributed to you; there is no approval step. operation defaults to add. " +
         "goal and scope replace the current value. A decisions addition may supersede an active decision id using supersedes, which marks the old one superseded. " +
