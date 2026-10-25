@@ -30,6 +30,7 @@ type IntelligenceMethods = Pick<
   | "correctEntry"
   | "retractEntry"
   | "retryContextManager"
+  | "backfillDocuments"
 >;
 
 export interface MockIntelligence extends IntelligenceMethods {
@@ -329,6 +330,11 @@ export function createMockIntelligence(deps: Deps): MockIntelligence {
         }, 1500);
       }
       return { scheduled: true };
+    },
+    async backfillDocuments(workspaceId) {
+      await deps.delay();
+      deps.requireAdmin(workspaceId);
+      return { queued: 0, more: false };
     },
     __simulateIntelActivity: simulate,
   };

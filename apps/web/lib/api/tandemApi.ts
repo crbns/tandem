@@ -182,4 +182,9 @@ export interface TandemApi {
   retractEntry(workspaceId: string, entryId: string, input: { expectedRevision: number; note?: string }): Promise<{ revision: number }>;
   /** Owner/admin: clears the failure backoff and runs the context manager now. */
   retryContextManager(workspaceId: string): Promise<{ scheduled: boolean }>;
+  /**
+   * Owner/admin: queues a read of every text document the context manager
+   * hasn't read at its current version, and asks for a run.
+   */
+  backfillDocuments(workspaceId: string): Promise<{ queued: number; more: boolean }>;
 }

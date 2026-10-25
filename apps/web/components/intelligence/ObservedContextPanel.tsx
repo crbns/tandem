@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2Icon, RotateCwIcon } from "lucide-react";
+import { FileTextIcon, Loader2Icon, RotateCwIcon } from "lucide-react";
 import { toast } from "sonner";
 import { normalizeError, useTandemApi } from "@/lib/api";
 import { ERROR_COPY } from "@/lib/api/errorCopy";
@@ -105,6 +105,7 @@ function ManagerStatus({ workspaceId, observed }: { workspaceId: string; observe
   const now = useNow();
   const role = useWorkspaceRole(workspaceId);
   const [retrying, setRetrying] = useState(false);
+  const [reading, setReading] = useState(false);
   const canRetry = role === "owner" || role === "admin";
   const failing = observed.consecutiveFailures > 0;
   const last = observed.lastRun;
@@ -117,6 +118,21 @@ function ManagerStatus({ workspaceId, observed }: { workspaceId: string; observe
       toast.error(ERROR_COPY[normalizeError(err).code].title);
     } finally {
       setRetrying(false);
+    }
+  };
+  const readDocuments = async () => {
+    setReading(true);
+    try {
+      const { queued, more } = await api.backfillDocuments(workspaceId);
+      toast.success(
+        queued || more
+          ? `Reading ${queued}${more ? "+" : ""} document${queued === 1 && !more ? "" : "s"}.`
+          : "Every document is already read at its current version.",
+      );
+    } catch (err) {
+      toast.error(ERROR_COPY[normalizeError(err).code].title);
+    } finally {
+      setReading(false);
     }
   };
   return (
@@ -159,7 +175,13 @@ function ManagerStatus({ workspaceId, observed }: { workspaceId: string; observe
           </span>
         )}
         {canRetry && (
-          <Button variant="outline" size="sm" className="ml-auto h-7 text-xs" onClick={() => void retry()} disabled={retrying || observed.status === "running"}>
+          <Button variant="ghost" size="sm" className="ml-auto h-7 text-xs" onClick={() => void readDocuments()} disabled={reading}>
+            {reading ? <Loader2Icon className="animate-spin" /> : <FileTextIcon />}
+            Read existing documents
+          </Button>
+        )}
+        {canRetry && (
+          <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => void retry()} disabled={retrying || observed.status === "running"}>
             {retrying ? <Loader2Icon className="animate-spin" /> : <RotateCwIcon />}
             {failing ? "Retry now" : "Run now"}
           </Button>

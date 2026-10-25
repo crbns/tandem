@@ -794,5 +794,7 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
       }),
     retryContextManager: (workspaceId) =>
       call(() => convex.mutation(api.intelligence.retryContextManager, { workspaceId: workspaceId as Id<"workspaces"> })),
+    backfillDocuments: (workspaceId) =>
+      call(() => convex.mutation(api.intelligence.backfillDocuments, { workspaceId: workspaceId as Id<"workspaces"> })),
   };
 }
