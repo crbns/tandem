@@ -9,7 +9,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { recordWorkspaceEvent } from "./lib/auth";
 import { INTEL_ACTOR } from "./lib/intelQueue";
 import { ALL_MCP_SCOPES } from "./lib/mcpConfig";
-import { toSyncResult } from "./lib/mcpContract";
+import { toAttribution, toSyncResult } from "./lib/mcpContract";
+import { CONFLICT_ACTOR } from "./lib/conflicts";
 import {
   OBSERVED_BRIEF_CONTENT,
   OBSERVED_BRIEF_LIMIT,
@@ -346,7 +347,7 @@ describe("sync_workspace observed", () => {
       type: "context.observed",
       subject_id: workspaceId,
       summary: "Observed context updated: 2 entries changed",
-      actor: { label: "Tandem context manager", client: "system" },
+      actor: { actor_type: "system", label: "Tandem context manager", client: "system", user_id: "" },
     });
     expect(since.brief.recent_changes).toEqual([
       expect.objectContaining({ type: "context.observed", actor: "Tandem context manager", summary: "Observed context updated: 2 entries changed" }),
@@ -358,5 +359,19 @@ describe("sync_workspace observed", () => {
     // The raw internal result carries the same observed state toSyncResult shapes.
     const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: samAgent.principal });
     expect(toSyncResult(raw).observed).toEqual(since.observed);
+  });
+});
+
+describe("toAttribution", () => {
+  it("reports system actors as system and keeps the human and agent mappings", () => {
+    expect(toAttribution(INTEL_ACTOR)).toEqual({ actor_type: "system", user_id: "", client: "system", label: "Tandem context manager" });
+    expect(toAttribution(CONFLICT_ACTOR).actor_type).toBe("system");
+    expect(toAttribution({ type: "human", label: "Alex", userId: "u1" as Id<"users"> })).toEqual({
+      actor_type: "human", user_id: "u1", client: "dashboard", label: "Alex",
+    });
+    expect(toAttribution({
+      type: "agent", label: "Sam's claude assistant", userId: "u2" as Id<"users">,
+      agentConnectionId: "c1" as Id<"agent_connections">, client: "claude",
+    })).toEqual({ actor_type: "agent", user_id: "u2", client: "claude", agent_connection_id: "c1", label: "Sam's claude assistant" });
   });
 });

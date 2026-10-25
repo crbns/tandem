@@ -16,8 +16,11 @@ export interface Actor {
 }
 
 export interface Attribution {
-  /** "agent" for writes made through MCP, "human" for edits made in the dashboard. */
-  actor_type: "agent" | "human";
+  /**
+   * "agent" for writes made through MCP, "human" for edits made in the
+   * dashboard, "system" for Tandem's own (context manager, conflict check).
+   */
+  actor_type: "agent" | "human" | "system";
   user_id: string;
   /** The agent client, or "dashboard" for human edits. */
   client: string;

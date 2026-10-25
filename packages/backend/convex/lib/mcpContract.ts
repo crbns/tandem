@@ -466,10 +466,14 @@ export function isoOrNull(ms: number | null): string | null {
   return ms === null ? null : iso(ms);
 }
 
+/**
+ * System actors (the context manager, the conflict check) are "system", not
+ * "human": a person never made those changes.
+ */
 export function toAttribution(a: Actor) {
   const agent = a.type === "agent";
   return {
-    actor_type: agent ? ("agent" as const) : ("human" as const),
+    actor_type: a.type === "system" ? ("system" as const) : agent ? ("agent" as const) : ("human" as const),
     user_id: a.userId ?? "",
     client: a.client ?? (a.type === "system" ? "system" : agent ? "agent" : "dashboard"),
     ...(a.agentConnectionId ? { agent_connection_id: a.agentConnectionId } : {}),

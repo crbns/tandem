@@ -539,7 +539,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       title: "Get file versions",
       description:
         "List a file's revision history, newest first: version number, when it was saved, who saved it (author.actor_type is " +
-        '"human" for dashboard edits or "agent" for assistant edits), and size. Use this to answer "who changed what, and when". ' +
+        '"human" for dashboard edits, "agent" for assistant edits, or "system" for Tandem\'s own), and size. Use this to answer "who changed what, and when". ' +
         "Each version's change says how many lines it added and removed against the version before it (null for binary uploads). " +
         "Lines are counted, not ordered: 0 added and 0 removed means a rename or move, or lines that were only reordered, so read both versions before saying nothing changed. " +
         "It returns no content: read_file with version reads any listed version, so read two and compare them to say what changed. limit: 1–100, default 20.",
