@@ -442,6 +442,8 @@ export function createMockApi({
           lastMcpActionAt: c.lastMcpActionAt ?? null,
           lastSyncAt: c.lastSyncAt ?? null,
           syncedContextRevision: c.syncedContextRevision ?? null,
+          // Mock syncs are always full.
+          syncedContextBrief: false,
           contextVersionsBehind: c.syncedContextRevision === undefined ? null : contextRevision - c.syncedContextRevision,
           lastTool: last?.tool ?? null,
           lastKind: last?.kind ?? null,
@@ -451,8 +453,10 @@ export function createMockApi({
     const ctx = details.get(workspaceId);
     return { contextRevision, contextUpdatedAt: contexts.get(workspaceId)?.approvedAt ?? ctx?.goal?.updatedAt ?? null, agents };
   };
-  const timeline = (workspaceId: string, { before, limit = 50, connectionId, kinds }: TimelineQuery): TimelinePage => {
+  const timeline = (workspaceId: string, { before: cursor, limit = 50, connectionId, kinds }: TimelineQuery): TimelinePage => {
     const size = Math.min(Math.max(1, Math.floor(limit)), 100);
+    // The mock's cursor is just createdAt; the backend's is opaque.
+    const before = cursor === undefined ? undefined : Number(cursor);
     // Newest first; same-millisecond calls keep the order they happened in.
     const matching = [...activity]
       .reverse()
@@ -460,7 +464,7 @@ export function createMockApi({
         (!connectionId || a.actor.agentConnectionId === connectionId) && (!kinds?.length || kinds.includes(a.kind)))
       .sort((a, b) => b.createdAt - a.createdAt);
     const items = matching.slice(0, size).map(({ workspaceId: _workspaceId, ...item }) => structuredClone(item));
-    return { items, nextBefore: matching.length > size ? items[items.length - 1]!.createdAt : null };
+    return { items, nextBefore: matching.length > size ? String(items[items.length - 1]!.createdAt) : null };
   };
   /** A reactive mock query: computed after the latency, again on every Live ping. */
   const watchLive = <T,>(workspaceId: string, compute: () => T, subscriber: Subscriber<T>) => {

@@ -142,8 +142,11 @@ export default defineSchema({
     lastMcpActionAt: v.optional(v.number()),
     lastSyncAt: v.optional(v.number()),
     // structured_context.revision handed out by this connection's last
-    // successful sync_workspace (which always carries the full context).
+    // successful sync_workspace.
     syncedContextRevision: v.optional(v.number()),
+    // True when that version only arrived as a brief sync (goal, scope,
+    // recent decisions and blockers; no constraints or ownership).
+    syncedContextBrief: v.optional(v.boolean()),
   })
     .index("by_workspace_and_user", ["workspaceId", "userId"])
     // Live (unrevoked) connections have no revokedAt, so they sort first.

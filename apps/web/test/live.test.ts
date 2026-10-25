@@ -9,6 +9,7 @@ import {
   resourceHref,
   ringPositions,
   takeArrivals,
+  arrivalLog,
 } from "@/lib/live";
 
 const MINUTE = 60_000;
@@ -23,6 +24,7 @@ function agent(overrides: Partial<NetworkAgent> = {}): NetworkAgent {
     lastMcpActionAt: null,
     lastSyncAt: null,
     syncedContextRevision: null,
+    syncedContextBrief: false,
     contextVersionsBehind: null,
     lastTool: null,
     lastKind: null,
@@ -75,10 +77,23 @@ describe("Live helpers", () => {
   });
 
   it("only counts unseen items as arrivals, oldest first", () => {
-    const seen = new Set(["a"]);
+    const seen = arrivalLog([item("a", 1)]);
     const fresh = takeArrivals(seen, [item("c", 3), item("b", 2), item("a", 1)]);
     expect(fresh.map((i) => i.id)).toEqual(["b", "c"]);
     expect(takeArrivals(seen, [item("c", 3)])).toEqual([]);
+  });
+
+  it("doesn't pulse for an old item re-entering the head page", () => {
+    const seen = arrivalLog([item("new", 60_000)]);
+    expect(takeArrivals(seen, [item("new", 60_000), item("old", 1_000)])).toEqual([]);
+  });
+
+  it("marks an up-to-date brief sync", () => {
+    expect(propagation(agent({ syncedContextRevision: 3, syncedContextBrief: true, contextVersionsBehind: 0 }))).toMatchObject({
+      state: "current",
+      label: "Up to date (brief)",
+      brief: true,
+    });
   });
 
   it("keeps items that scrolled off the head page", () => {

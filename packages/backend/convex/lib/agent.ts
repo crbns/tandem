@@ -114,7 +114,7 @@ export function resolveAgentWorkspace(
 export async function touchConnection(
   ctx: MutationCtx,
   session: AgentSession,
-  options: { sync?: boolean; syncedContextRevision?: number } = {},
+  options: { sync?: boolean; syncedContextRevision?: number; syncedContextBrief?: boolean } = {},
 ): Promise<void> {
   const now = Date.now();
   await ctx.db.patch(session.connection._id, {
@@ -122,6 +122,9 @@ export async function touchConnection(
     ...(options.sync ? { lastSyncAt: now } : {}),
     ...(options.syncedContextRevision !== undefined
       ? { syncedContextRevision: options.syncedContextRevision }
+      : {}),
+    ...(options.syncedContextBrief !== undefined
+      ? { syncedContextBrief: options.syncedContextBrief }
       : {}),
   });
 }
@@ -133,6 +136,9 @@ export type ActivityResource = NonNullable<Doc<"agent_activity">["resource"]>;
 // same resource when it comes within this window.
 const RESOLVE_WINDOW_MS = 30 * 60 * 1000;
 const RESOLVE_SCAN = 20;
+// An identical read repeated within this window adds no row: presence still
+// moves, but a chatty assistant re-listing or re-reading doesn't grow the log.
+const READ_REPEAT_MS = 60 * 1000;
 const LABEL_MAX = 80;
 
 /** Codes that mean "someone else got there first" rather than a failure. */
@@ -177,6 +183,23 @@ export async function recordActivity(
 ): Promise<Id<"agent_activity">> {
   const now = Date.now();
   const outcome = entry.outcome ?? "ok";
+  if (outcome === "ok" && entry.kind === "read") {
+    const latest = await ctx.db
+      .query("agent_activity")
+      .withIndex("by_connection_and_created", (q) =>
+        q.eq("agentConnectionId", session.connection._id).gte("createdAt", now - READ_REPEAT_MS),
+      )
+      .order("desc")
+      .first();
+    if (
+      latest?.kind === "read" &&
+      latest.outcome === "ok" &&
+      latest.tool === entry.tool &&
+      latest.summary === entry.summary &&
+      latest.resource?.id === entry.resource?.id
+    )
+      return latest._id;
+  }
   let resolvesActivityId: Id<"agent_activity"> | undefined;
   if (
     outcome === "ok" &&

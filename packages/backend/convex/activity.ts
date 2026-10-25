@@ -3,7 +3,7 @@
 // context. Rows come from agent_activity (one per MCP call, written by
 // mcpTools.ts) merged with the human decisions and edits in workspace_events.
 // Queries only read; recording happens in the tool mutations themselves.
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, query } from "./_generated/server";
@@ -168,6 +168,8 @@ export const getAgentNetwork = query({
         lastMcpActionAt: v.union(v.number(), v.null()),
         lastSyncAt: v.union(v.number(), v.null()),
         syncedContextRevision: v.union(v.number(), v.null()),
+        /** That version arrived only as a brief sync (no constraints or ownership). */
+        syncedContextBrief: v.boolean(),
         contextVersionsBehind: v.union(v.number(), v.null()),
         lastTool: v.union(v.string(), v.null()),
         lastKind: v.union(v.string(), v.null()),
@@ -217,6 +219,7 @@ export const getAgentNetwork = query({
         lastMcpActionAt: connection.lastMcpActionAt ?? null,
         lastSyncAt: connection.lastSyncAt ?? null,
         syncedContextRevision: synced,
+        syncedContextBrief: synced !== null && connection.syncedContextBrief === true,
         contextVersionsBehind: synced === null ? null : Math.max(0, contextRevision - synced),
         lastTool: last?.tool ?? null,
         lastKind: last ? activityKind(last) : null,
@@ -231,23 +234,65 @@ export const getAgentNetwork = query({
   },
 });
 
+/** A row's place in the timeline: createdAt, then _creationTime for ties. */
+interface TimelineKey {
+  createdAt: number;
+  creationTime: number;
+}
+
+const keyOf = (row: { createdAt: number; _creationTime: number }): TimelineKey => ({
+  createdAt: row.createdAt,
+  creationTime: row._creationTime,
+});
+
+/** Newest first: positive when `a` sorts after (is older than) `b`. */
+const compareKeys = (a: TimelineKey, b: TimelineKey) =>
+  b.createdAt - a.createdAt || b.creationTime - a.creationTime;
+
+const encodeCursor = (key: TimelineKey) => `${key.createdAt}:${key.creationTime}`;
+
+function decodeCursor(cursor: string): TimelineKey {
+  const match = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(cursor);
+  const key = match && { createdAt: Number(match[1]), creationTime: Number(match[2]) };
+  if (!key || !Number.isFinite(key.createdAt) || !Number.isFinite(key.creationTime))
+    throw new ConvexError({ code: "INVALID_INPUT", field: "before" });
+  return key;
+}
+
+/**
+ * Up to TIMELINE_SCAN rows strictly older than `before`, newest first, from an
+ * index ending in createdAt (and so _creationTime): first the rest of the
+ * cursor's own millisecond, then everything before it. Rows sharing a
+ * timestamp page apart cleanly instead of being skipped.
+ */
+async function scanBefore<T extends { createdAt: number; _creationTime: number }>(
+  before: TimelineKey | null,
+  sameMillisecond: (key: TimelineKey) => Promise<T[]>,
+  older: (createdAt: number | null, take: number) => Promise<T[]>,
+): Promise<T[]> {
+  if (!before) return await older(null, TIMELINE_SCAN);
+  const tied = await sameMillisecond(before);
+  if (tied.length >= TIMELINE_SCAN) return tied;
+  return [...tied, ...(await older(before.createdAt, TIMELINE_SCAN - tied.length))];
+}
+
 /**
  * Agent activity and people's decisions and edits, newest first. Pages by
- * `before` (createdAt, exclusive): pass the previous page's nextBefore. Each
- * page reads at most TIMELINE_SCAN rows per source, so a filtered page can be
- * short while nextBefore is still set.
+ * `before`, an opaque cursor (exclusive): pass the previous page's
+ * nextBefore. Each page reads at most TIMELINE_SCAN rows per source, so a
+ * filtered page can be short while nextBefore is still set.
  */
 export const listTimeline = query({
   args: {
     workspaceId: v.id("workspaces"),
-    before: v.optional(v.number()),
+    before: v.optional(v.string()),
     limit: v.optional(v.number()),
     connectionId: v.optional(v.id("agent_connections")),
     kinds: v.optional(v.array(v.string())),
   },
   returns: v.object({
     items: v.array(timelineItemValidator),
-    nextBefore: v.union(v.number(), v.null()),
+    nextBefore: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
     await requireMembership(ctx, args.workspaceId);
@@ -255,7 +300,7 @@ export const listTimeline = query({
       TIMELINE_MAX,
       Math.max(1, Math.floor(args.limit ?? TIMELINE_DEFAULT)),
     );
-    const before = args.before ?? Number.MAX_SAFE_INTEGER;
+    const before = args.before === undefined ? null : decodeCursor(args.before);
     const kinds = args.kinds ? new Set(args.kinds) : null;
     const wantAgent = !kinds || [...kinds].some((k) => AGENT_KINDS.has(k));
     // Workspace rows are people's and the system's, never one connection's.
@@ -268,68 +313,116 @@ export const listTimeline = query({
         const connection = await ctx.db.get(args.connectionId);
         // Another workspace's connection reads as empty, like an unknown one.
         if (connection?.workspaceId === args.workspaceId)
-          agentRows = await ctx.db
-            .query("agent_activity")
-            .withIndex("by_connection_and_created", (q) =>
-              q.eq("agentConnectionId", connection._id).lt("createdAt", before),
-            )
-            .order("desc")
-            .take(TIMELINE_SCAN);
+          agentRows = await scanBefore(
+            before,
+            (key) =>
+              ctx.db
+                .query("agent_activity")
+                .withIndex("by_connection_and_created", (q) =>
+                  q
+                    .eq("agentConnectionId", connection._id)
+                    .eq("createdAt", key.createdAt)
+                    .lt("_creationTime", key.creationTime),
+                )
+                .order("desc")
+                .take(TIMELINE_SCAN),
+            (createdAt, take) =>
+              ctx.db
+                .query("agent_activity")
+                .withIndex("by_connection_and_created", (q) => {
+                  const scoped = q.eq("agentConnectionId", connection._id);
+                  return createdAt === null ? scoped : scoped.lt("createdAt", createdAt);
+                })
+                .order("desc")
+                .take(take),
+          );
       } else {
-        agentRows = await ctx.db
-          .query("agent_activity")
-          .withIndex("by_workspace_and_created", (q) =>
-            q.eq("workspaceId", args.workspaceId).lt("createdAt", before),
-          )
-          .order("desc")
-          .take(TIMELINE_SCAN);
+        agentRows = await scanBefore(
+          before,
+          (key) =>
+            ctx.db
+              .query("agent_activity")
+              .withIndex("by_workspace_and_created", (q) =>
+                q
+                  .eq("workspaceId", args.workspaceId)
+                  .eq("createdAt", key.createdAt)
+                  .lt("_creationTime", key.creationTime),
+              )
+              .order("desc")
+              .take(TIMELINE_SCAN),
+          (createdAt, take) =>
+            ctx.db
+              .query("agent_activity")
+              .withIndex("by_workspace_and_created", (q) => {
+                const scoped = q.eq("workspaceId", args.workspaceId);
+                return createdAt === null ? scoped : scoped.lt("createdAt", createdAt);
+              })
+              .order("desc")
+              .take(take),
+        );
       }
     }
     const eventRows = wantWorkspace
-      ? await ctx.db
-          .query("workspace_events")
-          .withIndex("by_workspace_and_created", (q) =>
-            q.eq("workspaceId", args.workspaceId).lt("createdAt", before),
-          )
-          .order("desc")
-          .take(TIMELINE_SCAN)
+      ? await scanBefore(
+          before,
+          (key) =>
+            ctx.db
+              .query("workspace_events")
+              .withIndex("by_workspace_and_created", (q) =>
+                q
+                  .eq("workspaceId", args.workspaceId)
+                  .eq("createdAt", key.createdAt)
+                  .lt("_creationTime", key.creationTime),
+              )
+              .order("desc")
+              .take(TIMELINE_SCAN),
+          (createdAt, take) =>
+            ctx.db
+              .query("workspace_events")
+              .withIndex("by_workspace_and_created", (q) => {
+                const scoped = q.eq("workspaceId", args.workspaceId);
+                return createdAt === null ? scoped : scoped.lt("createdAt", createdAt);
+              })
+              .order("desc")
+              .take(take),
+        )
       : [];
 
-    // Below the oldest row a full source returned, that source is unread, so
-    // only rows newer than it are complete enough to page through.
-    let floor = -Infinity;
-    if (agentRows.length === TIMELINE_SCAN) floor = agentRows[TIMELINE_SCAN - 1]!.createdAt;
-    if (eventRows.length === TIMELINE_SCAN)
-      floor = Math.max(floor, eventRows[TIMELINE_SCAN - 1]!.createdAt);
+    // Past the oldest row a full source returned, that source is unread, so
+    // only rows at or newer than it are complete enough to page through.
+    let floor: TimelineKey | null = null;
+    for (const rows of [agentRows, eventRows]) {
+      if (rows.length < TIMELINE_SCAN) continue;
+      const oldest = keyOf(rows[rows.length - 1]!);
+      if (!floor || compareKeys(oldest, floor) < 0) floor = oldest;
+    }
 
-    const candidates: TimelineItem[] = [];
-    for (const row of agentRows) candidates.push(fromActivity(row));
+    const candidates: { key: TimelineKey; item: TimelineItem }[] = [];
+    for (const row of agentRows) candidates.push({ key: keyOf(row), item: fromActivity(row) });
     for (const event of eventRows) {
       if (event.actor.type === "agent") continue;
       const kind = workspaceKind(event.kind);
-      if (kind) candidates.push(fromEvent(event, kind));
+      if (kind) candidates.push({ key: keyOf(event), item: fromEvent(event, kind) });
     }
-    candidates.sort((a, b) => b.createdAt - a.createdAt);
+    candidates.sort((a, b) => compareKeys(a.key, b.key));
 
     const items: TimelineItem[] = [];
+    let last: TimelineKey | null = null;
     let cut = false;
-    for (const item of candidates) {
-      if (item.createdAt <= floor) break;
+    for (const { key, item } of candidates) {
+      if (floor && compareKeys(key, floor) > 0) break;
       if (kinds && !kinds.has(item.kind)) continue;
-      // Keep rows sharing a timestamp on one page, since `before` is exclusive.
-      if (items.length >= limit && item.createdAt !== items[items.length - 1]!.createdAt) {
+      if (items.length >= limit) {
         cut = true;
         break;
       }
       items.push(item);
+      last = key;
     }
-    let nextBefore: number | null = null;
-    if (cut) nextBefore = items[items.length - 1]!.createdAt;
-    else if (floor !== -Infinity)
-      // Resume at the floor itself; if one timestamp filled the whole scan,
-      // skip past it rather than return the same page forever.
-      nextBefore = floor + 1 < before ? floor + 1 : floor;
-    return { items, nextBefore };
+    // Every key is unique, so resuming strictly after the last row (or the
+    // floor, which is always older than `before`) neither repeats nor skips.
+    const nextBefore = cut ? last! : floor;
+    return { items, nextBefore: nextBefore ? encodeCursor(nextBefore) : null };
   },
 });
 

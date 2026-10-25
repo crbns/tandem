@@ -153,13 +153,26 @@ describe("agent activity recording", () => {
       lastTool: "sync_workspace",
       lastKind: "sync",
       lastOutcome: "ok",
+      // That sync was brief: no constraints or ownership arrived.
+      syncedContextBrief: true,
     });
     expect(network.agents[0]!.lastSyncAt).toBeTypeOf("number");
+    expect(rows[0]!.summary).toBe(`Synced a brief of context v${network.contextRevision}`);
+
+    // A full sync completes it, and a later brief of the same version doesn't undo that.
+    await callTool(t, apiKey, "sync_workspace");
+    expect((await alex.query(api.activity.getAgentNetwork, { workspaceId })).agents[0]!.syncedContextBrief).toBe(false);
+    await callTool(t, apiKey, "sync_workspace", { detail: "brief" });
+    expect((await alex.query(api.activity.getAgentNetwork, { workspaceId })).agents[0]!.syncedContextBrief).toBe(false);
 
     // Reads record activity but never advance the synced context.
     await callTool(t, apiKey, "get_workspace_info");
     await callTool(t, apiKey, "list_files");
+    // An identical repeat read within a minute adds no row.
+    await callTool(t, apiKey, "list_files");
     expect((await activityRows(t, connectionId)).map((r) => [r.tool, r.kind])).toEqual([
+      ["sync_workspace", "sync"],
+      ["sync_workspace", "sync"],
       ["sync_workspace", "sync"],
       ["get_workspace_info", "read"],
       ["list_files", "read"],
@@ -322,6 +335,25 @@ describe("agent activity recording", () => {
     expect(all).toHaveLength(1);
   });
 
+  it("records argument errors and a text file with no content as errors, not reads", async () => {
+    const { t, sam, workspaceId } = await setup();
+    const { apiKey, connectionId } = await connect(sam, { workspaceId, client: "claude" });
+    const bad = await callTool(t, apiKey, "manage_task", { operation: "update", task_id: "x", expected_version: 1 });
+    expect(bad.isError).toBe(true);
+
+    const created = await callTool(t, apiKey, "create_document", { name: "empty.md", content: "x" });
+    const fileId = created.structuredContent.id as Id<"files">;
+    await t.run((ctx) => ctx.db.patch(fileId, { content: undefined }));
+    const empty = await callTool(t, apiKey, "read_file", { file_id: fileId });
+    expect(empty.isError).toBe(true);
+
+    expect((await activityRows(t, connectionId)).map((r) => [r.tool, r.kind, r.outcome, r.errorCode])).toEqual([
+      ["manage_task", "error", "error", "INVALID_INPUT"],
+      ["create_document", "write", "ok", undefined],
+      ["read_file", "error", "error", "INVALID_INPUT"],
+    ]);
+  });
+
   it("records task conflicts and the claim that follows", async () => {
     const { t, alex, sam, workspaceId } = await setup();
     const samBot = await connect(sam, { workspaceId, client: "claude" });
@@ -416,7 +448,7 @@ describe("activity queries", () => {
       expect(full.items[i]!.createdAt).toBeLessThanOrEqual(full.items[i - 1]!.createdAt);
 
     const paged: string[] = [];
-    let before: number | undefined;
+    let before: string | undefined;
     for (let page = 0; page < 50; page++) {
       const result = await alex.query(api.activity.listTimeline, { workspaceId, limit: 2, before });
       paged.push(...result.items.map((i) => i.id));
@@ -455,9 +487,9 @@ describe("activity queries", () => {
         });
     });
     const seen: string[] = [];
-    let before: number | undefined = base + 100_000;
+    let before: string | undefined = `${base + 100_000}:${Number.MAX_SAFE_INTEGER}`;
     for (let page = 0; page < 20 && before !== undefined; page++) {
-      const result: { items: { id: string }[]; nextBefore: number | null } = await alex.query(
+      const result: { items: { id: string }[]; nextBefore: string | null } = await alex.query(
         api.activity.listTimeline,
         { workspaceId, limit: 100, before },
       );
@@ -466,6 +498,49 @@ describe("activity queries", () => {
     }
     expect(new Set(seen).size).toBe(seen.length);
     expect(seen).toHaveLength(480);
+  });
+
+  it("pages through more rows than one scan that share a single millisecond", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    const { apiKey, connectionId } = await connect(sam, { workspaceId, client: "claude" });
+    await callTool(t, apiKey, "get_workspace_info");
+    const [template] = await activityRows(t, connectionId);
+    const at = 1_700_000_000_000;
+    await t.run(async (ctx) => {
+      const { _id, _creationTime, ...row } = template!;
+      for (let i = 0; i < 250; i++)
+        await ctx.db.insert("agent_activity", { ...row, summary: `burst ${i}`, createdAt: at });
+      // A folder delete's file events land in one millisecond too.
+      for (let i = 0; i < 230; i++)
+        await ctx.db.insert("workspace_events", {
+          workspaceId,
+          kind: "file.deleted",
+          entityType: "file",
+          entityId: `f${i}`,
+          summary: `deleted ${i}`,
+          actor: { type: "human", label: "Alex" },
+          createdAt: at,
+        });
+    });
+    const seen: string[] = [];
+    let before: string | undefined = `${at + 1}:0`;
+    for (let page = 0; page < 30 && before !== undefined; page++) {
+      const result: { items: { id: string }[]; nextBefore: string | null } = await alex.query(
+        api.activity.listTimeline,
+        { workspaceId, limit: 100, before },
+      );
+      seen.push(...result.items.map((i) => i.id));
+      before = result.nextBefore ?? undefined;
+    }
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen).toHaveLength(480);
+  });
+
+  it("rejects a malformed cursor", async () => {
+    const { alex, workspaceId } = await setup();
+    expect(await errorData(alex.query(api.activity.listTimeline, { workspaceId, before: "nope" }))).toMatchObject({
+      code: "INVALID_INPUT",
+    });
   });
 
   it("prunes activity older than 14 days", async () => {

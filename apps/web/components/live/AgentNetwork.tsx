@@ -403,7 +403,9 @@ function AgentNode({
 function PropagationBadge({ sync, contextRevision }: { sync: ReturnType<typeof propagation>; contextRevision: number }) {
   const received =
     sync.state === "current"
-      ? `Has received context v${contextRevision}`
+      ? sync.brief
+        ? `Has received a brief of context v${contextRevision}: goal, scope, recent decisions and blockers, not constraints or ownership`
+        : `Has received context v${contextRevision}`
       : sync.state === "behind"
         ? `Has received v${contextRevision - sync.behind}; v${contextRevision} is approved`
         : "Has never received the approved context";

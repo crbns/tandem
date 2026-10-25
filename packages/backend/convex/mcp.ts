@@ -131,9 +131,11 @@ async function run(
     });
   } catch (raw) {
     // A failed tool mutation rolls back its own presence touch and activity
-    // row, so record both separately: only for errors Convex raised past the
-    // credential check, and never fatal.
-    if (raw instanceof ConvexError && !isUnauthenticated(raw)) {
+    // row, so record both separately, never fatally: for errors Convex raised
+    // past the credential check, and for the handler's own ToolErrors (bad
+    // arguments, or a text file with no content), which come after the
+    // component already verified the credential.
+    if ((raw instanceof ConvexError && !isUnauthenticated(raw)) || raw instanceof ToolError) {
       try {
         await ctx.runMutation(internal.mcpTools.touchConnection, {
           principal,
@@ -166,9 +168,9 @@ async function run(
   }
 }
 
-/** A ConvexError's code for the activity feed; anything else is "ERROR". */
-function activityErrorCode(err: ConvexError<Value>): string {
-  const code = codeOf(err);
+/** A ConvexError's or ToolError's code for the activity feed; anything else is "ERROR". */
+function activityErrorCode(err: ConvexError<Value> | ToolError): string {
+  const code = err instanceof ToolError ? err.code : codeOf(err);
   return code && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : "ERROR";
 }
 
@@ -290,6 +292,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
             workspaceId: args.workspace_id,
             sinceSeq: since?.seq,
             cursorWorkspaceId: since?.workspaceId,
+            detail: args.detail ?? "full",
           });
           const c = r.context;
           const contextEmpty = !c.goal?.text && !c.scope?.text &&

@@ -5,7 +5,7 @@ import { useTandemApi } from "./index";
 import { normalizeError } from "./errors";
 import type { Resource } from "./useResource";
 import type { ActivityKind, AgentNetwork, TimelineItem } from "./types";
-import { mergeTimeline, takeArrivals } from "../live";
+import { arrivalLog, mergeTimeline, takeArrivals, type ArrivalLog } from "../live";
 
 /** The Live page's network: reactive, so it changes the moment an assistant calls a tool. */
 export function useAgentNetwork(workspaceId: string) {
@@ -47,11 +47,11 @@ export function useActivityArrivals(workspaceId: string, onArrive: (items: Timel
     callback.current = onArrive;
   });
   useEffect(() => {
-    let seen: Set<string> | null = null;
+    let seen: ArrivalLog | null = null;
     return api.watchTimeline(workspaceId, { limit: ARRIVALS_PAGE }, {
       onData: ({ items }) => {
         if (!seen) {
-          seen = new Set(items.map((item) => item.id));
+          seen = arrivalLog(items);
           return;
         }
         const fresh = takeArrivals(seen, items);
@@ -67,7 +67,7 @@ const MAX_EMPTY_PAGES = 5;
 
 interface Feed {
   items: TimelineItem[];
-  nextBefore: number | null;
+  nextBefore: string | null;
   /** Ids that arrived after the first page, for the entry motion. */
   fresh: ReadonlySet<string>;
 }
@@ -91,7 +91,7 @@ export function useTimeline(workspaceId: string, connectionId: string | null, ki
     setState({ status: "loading" });
     setLoadingMore(false);
     setLoadMoreError(null);
-    let seen: Set<string> | null = null;
+    let seen: ArrivalLog | null = null;
     const query = {
       limit: PAGE_SIZE,
       ...(connectionId ? { connectionId } : {}),
@@ -101,7 +101,7 @@ export function useTimeline(workspaceId: string, connectionId: string | null, ki
       onData: (page) => {
         if (gen !== generation.current) return;
         if (!seen) {
-          seen = new Set(page.items.map((item) => item.id));
+          seen = arrivalLog(page.items);
           setState({ status: "ready", data: { items: page.items, nextBefore: page.nextBefore, fresh: new Set() } });
           return;
         }
@@ -132,7 +132,7 @@ export function useTimeline(workspaceId: string, connectionId: string | null, ki
     try {
       // A filtered page can come back short or even empty with more behind it
       // (the backend scans a bounded window), so keep going a few pages.
-      let cursor: number | null = before;
+      let cursor: string | null = before;
       const found: TimelineItem[] = [];
       for (let i = 0; i < MAX_EMPTY_PAGES && cursor !== null && found.length === 0; i++) {
         const page = await api.listTimeline(workspaceId, {

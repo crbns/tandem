@@ -195,6 +195,7 @@ export function toAgentNetwork(network: BackendNetwork): AgentNetwork {
       lastMcpActionAt: agent.lastMcpActionAt,
       lastSyncAt: agent.lastSyncAt,
       syncedContextRevision: agent.syncedContextRevision,
+      syncedContextBrief: agent.syncedContextBrief,
       contextVersionsBehind: agent.contextVersionsBehind,
       lastTool: agent.lastTool,
       lastKind: agent.lastKind as ActivityKind | null,

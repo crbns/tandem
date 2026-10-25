@@ -339,6 +339,8 @@ export interface NetworkAgent {
   lastSyncAt: number | null;
   /** The approved-context version its last sync_workspace returned; null if it never synced. */
   syncedContextRevision: number | null;
+  /** That version arrived only as a brief sync: no constraints or ownership. */
+  syncedContextBrief: boolean;
   contextVersionsBehind: number | null;
   lastTool: string | null;
   lastKind: ActivityKind | null;
@@ -375,13 +377,13 @@ export interface TimelineItem {
 export interface TimelinePage {
   /** Newest first. */
   items: TimelineItem[];
-  /** Pass as `before` for the next older page; null when there's none. */
-  nextBefore: number | null;
+  /** Pass as `before` for the next older page (opaque); null when there's none. */
+  nextBefore: string | null;
 }
 
 export interface TimelineQuery {
-  /** createdAt, exclusive. */
-  before?: number;
+  /** A previous page's nextBefore, exclusive. */
+  before?: string;
   /** At most 100; the backend defaults to 50. */
   limit?: number;
   connectionId?: string;

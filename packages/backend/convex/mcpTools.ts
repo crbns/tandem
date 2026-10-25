@@ -497,12 +497,17 @@ export const readFile = internalMutation({
     }
     const row = toFileRow(file, await filePath(ctx, file));
     const readVersion = args.version ?? file.version;
-    await recordActivity(ctx, session, {
-      tool: "read_file",
-      kind: "read",
-      summary: `Read ${row.path} v${readVersion}`,
-      resource: fileResource(row),
-    });
+    // A head with no text and no upload makes read_file fail with a ToolError
+    // after this commits; mcp.ts run() records that call as an error instead.
+    const headless =
+      readVersion === file.version && !file.storageId && file.content === undefined;
+    if (!headless)
+      await recordActivity(ctx, session, {
+        tool: "read_file",
+        kind: "read",
+        summary: `Read ${row.path} v${readVersion}`,
+        resource: fileResource(row),
+      });
     if (args.version !== undefined && args.version !== file.version) {
       const revision = Number.isSafeInteger(args.version)
         ? await ctx.db
@@ -769,6 +774,8 @@ export const syncWorkspace = internalMutation({
     /** From the MCP cursor; omit both for a snapshot. */
     sinceSeq: v.optional(v.number()),
     cursorWorkspaceId: v.optional(v.string()),
+    /** The MCP detail the result is shaped to; brief drops part of the context. */
+    detail: v.optional(v.union(v.literal("brief"), v.literal("full"))),
   },
   returns: v.object({
     workspace: v.object({ id: v.id("workspaces"), name: v.string() }),
@@ -843,18 +850,27 @@ export const syncWorkspace = internalMutation({
         updatedAt: now,
       });
     }
-    // Every sync result carries the full approved context, so this is what
-    // the connection has now received; reads never advance it.
+    // What the connection has now received; reads never advance it. A brief
+    // result leaves out constraints and ownership, so it only counts as a
+    // brief of this version, unless the full version had already arrived.
     const contextRevision = result.context.revision;
     const previous = session.connection.syncedContextRevision;
-    await recordAgentAction(ctx, session, { sync: true, syncedContextRevision: contextRevision });
+    const brief =
+      args.detail === "brief" &&
+      !(previous === contextRevision && session.connection.syncedContextBrief !== true);
+    await recordAgentAction(ctx, session, {
+      sync: true,
+      syncedContextRevision: contextRevision,
+      syncedContextBrief: brief,
+    });
+    const received = brief ? `a brief of context v${contextRevision}` : `context v${contextRevision}`;
     await recordActivity(ctx, session, {
       tool: "sync_workspace",
       kind: "sync",
       summary:
         previous !== undefined && previous < contextRevision
-          ? `Synced context v${contextRevision} (was v${previous})`
-          : `Synced context v${contextRevision}`,
+          ? `Synced ${received} (was v${previous})`
+          : `Synced ${received}`,
       resource: { type: "context", id: workspaceId, label: `Context v${contextRevision}` },
       contextRevision,
       ...(previous !== undefined ? { previousSyncedContextRevision: previous } : {}),

@@ -31,15 +31,21 @@ export const STATUS_LABEL: Record<AgentStatus, string> = {
 };
 
 export type Propagation =
-  | { state: "current"; label: string }
+  /** `brief`: the version arrived only as a brief sync, without constraints or ownership. */
+  | { state: "current"; label: string; brief: boolean }
   | { state: "behind"; label: string; behind: number }
   | { state: "never"; label: string };
 
 /** Whether the assistant has received the latest approved context through sync_workspace. */
-export function propagation(agent: Pick<NetworkAgent, "syncedContextRevision" | "contextVersionsBehind">): Propagation {
+export function propagation(
+  agent: Pick<NetworkAgent, "syncedContextRevision" | "syncedContextBrief" | "contextVersionsBehind">,
+): Propagation {
   if (agent.syncedContextRevision === null) return { state: "never", label: "Never synchronized" };
   const behind = Math.max(0, agent.contextVersionsBehind ?? 0);
-  if (behind === 0) return { state: "current", label: "Up to date" };
+  if (behind === 0)
+    return agent.syncedContextBrief
+      ? { state: "current", label: "Up to date (brief)", brief: true }
+      : { state: "current", label: "Up to date", brief: false };
   return { state: "behind", behind, label: `Behind by ${behind} ${behind === 1 ? "version" : "versions"}` };
 }
 
@@ -130,13 +136,34 @@ export function resourceHref(workspaceId: string, resource: TimelineItem["resour
   }
 }
 
+/** What a head-page subscription has already shown: ids and the newest createdAt. */
+export interface ArrivalLog {
+  ids: Set<string>;
+  newest: number;
+}
+
+// Calls that commit at about the same time can land slightly out of
+// createdAt order; anything older than this behind the newest is history.
+const ARRIVAL_SLACK_MS = 5_000;
+
+export function arrivalLog(items: readonly TimelineItem[]): ArrivalLog {
+  const log: ArrivalLog = { ids: new Set(), newest: -Infinity };
+  takeArrivals(log, items);
+  return log;
+}
+
 /**
- * Items in `next` that `seen` doesn't hold yet, oldest first, so pulses play
- * in the order the calls happened. `seen` is updated in place.
+ * Items in `next` the log hasn't seen, oldest first, so pulses play in the
+ * order the calls happened. An unseen item that is much older than what's
+ * already shown (one re-entering the head page after a newer row left it)
+ * isn't an arrival. The log is updated in place.
  */
-export function takeArrivals(seen: Set<string>, next: readonly TimelineItem[]): TimelineItem[] {
-  const fresh = next.filter((item) => !seen.has(item.id));
-  for (const item of next) seen.add(item.id);
+export function takeArrivals(log: ArrivalLog, next: readonly TimelineItem[]): TimelineItem[] {
+  const fresh = next.filter((item) => !log.ids.has(item.id) && item.createdAt >= log.newest - ARRIVAL_SLACK_MS);
+  for (const item of next) {
+    log.ids.add(item.id);
+    log.newest = Math.max(log.newest, item.createdAt);
+  }
   return fresh.reverse();
 }
 
