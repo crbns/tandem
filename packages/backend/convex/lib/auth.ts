@@ -2,6 +2,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
+import { mirrorWorkspaceEvent } from "./activityLog";
 
 type ReadCtx = QueryCtx | MutationCtx;
 
@@ -123,5 +124,7 @@ export async function recordWorkspaceEvent(
     createdAt: now,
     updatedAt: now,
   });
+  // File changes and context decisions also feed the context manager.
+  await mirrorWorkspaceEvent(ctx, eventId, args);
   return eventId;
 }

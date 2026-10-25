@@ -697,6 +697,11 @@ async function deleteWorkspace(ctx: MutationCtx, workspaceId: Id<"workspaces">) 
   // Each index here starts with workspaceId.
   const rest = [
     () => ctx.db.query("agent_activity").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
+    () => ctx.db.query("activity_events").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
+    () => ctx.db.query("context_entry_revisions").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
+    () => ctx.db.query("context_entries").withIndex("by_workspace_and_key", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
+    () => ctx.db.query("context_intel_runs").withIndex("by_workspace_and_started_at", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
+    () => ctx.db.query("context_intel_state").withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
     () => ctx.db.query("file_revisions").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
     () => ctx.db.query("folders").withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),
     () => ctx.db.query("context_proposals").withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", workspaceId)).take(DELETE_BATCH),

@@ -426,7 +426,10 @@ export const listTimeline = query({
   },
 });
 
-/** Daily (crons.ts): deletes activity older than 14 days, a batch per run. */
+/**
+ * Daily (crons.ts): deletes agent_activity and activity_events older than 14
+ * days, a batch of each per run.
+ */
 export const pruneActivity = internalMutation({
   args: {},
   returns: v.null(),
@@ -437,7 +440,12 @@ export const pruneActivity = internalMutation({
       .withIndex("by_creation_time", (q) => q.lt("_creationTime", cutoff))
       .take(PRUNE_BATCH);
     for (const row of old) await ctx.db.delete(row._id);
-    if (old.length === PRUNE_BATCH)
+    const oldEvents = await ctx.db
+      .query("activity_events")
+      .withIndex("by_creation_time", (q) => q.lt("_creationTime", cutoff))
+      .take(PRUNE_BATCH);
+    for (const row of oldEvents) await ctx.db.delete(row._id);
+    if (old.length === PRUNE_BATCH || oldEvents.length === PRUNE_BATCH)
       await ctx.scheduler.runAfter(0, internal.activity.pruneActivity, {});
     return null;
   },

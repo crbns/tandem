@@ -38,6 +38,7 @@ import {
   toToolError,
   type ErrorHint,
 } from "./lib/mcpContract";
+import { CONFLICT_CODES } from "./lib/agent";
 import { MCP_PATH, MCP_SCOPES, mcpConsentUrl } from "./lib/mcpConfig";
 import {
   MCP_INSTRUCTIONS,
@@ -46,6 +47,7 @@ import {
   savedNextSteps,
   syncNextSteps,
 } from "./lib/mcpLoop";
+import { redactPayload } from "./lib/redact";
 
 const tool = createTool<string>();
 
@@ -129,16 +131,22 @@ async function run(
   ctx: ToolCtx,
   principal: McpUser<string>,
   toolName: string,
+  args: object,
   fn: () => Promise<object>,
   hint: ErrorHint = {},
 ) {
+  const startedAt = Date.now();
   try {
     const result = await fn();
+    await logCall(ctx, principal, toolName, args, startedAt, hint, { result });
     return callToolResult({
       content: [{ type: "text", text: JSON.stringify(result) }],
       structuredContent: result as Record<string, unknown>,
     });
   } catch (raw) {
+    // Every failure past the credential check goes to activity_events too.
+    if (!(raw instanceof ConvexError && isUnauthenticated(raw)))
+      await logCall(ctx, principal, toolName, args, startedAt, hint, { error: raw });
     // A failed tool mutation rolls back its own presence touch and activity
     // row, so record both separately, never fatally: for errors Convex raised
     // past the credential check, and for the handler's own ToolErrors (bad
@@ -175,6 +183,113 @@ async function run(
       structuredContent: { error: { ...details, code, message } },
     });
   }
+}
+
+/**
+ * Records the call in activity_events (docs/context-intelligence.md): redacted
+ * arguments, a digest of the result and the outcome. Telemetry is best
+ * effort: it never throws and never changes what the caller gets back.
+ */
+async function logCall(
+  ctx: ToolCtx,
+  principal: McpUser<string>,
+  toolName: string,
+  args: object,
+  startedAt: number,
+  hint: ErrorHint,
+  done: { result: object } | { error: unknown },
+) {
+  try {
+    let outcome: "ok" | "conflict" | "error" = "ok";
+    let errorCode: string | undefined;
+    if ("error" in done) {
+      const err = done.error;
+      errorCode = err instanceof ConvexError || err instanceof ToolError ? activityErrorCode(err) : "ERROR";
+      outcome = CONFLICT_CODES.has(errorCode) ? "conflict" : "error";
+    }
+    const digest = "result" in done ? digestResult(done.result) : undefined;
+    const resources = callResources(toolName, digest, hint);
+    await ctx.runMutation(internal.activityLog.ingestMcpCall, {
+      principal: p(principal),
+      tool: toolName,
+      args: redactPayload(args),
+      result: redactPayload(digest),
+      outcome,
+      errorCode,
+      durationMs: Date.now() - startedAt,
+      correlationId: crypto.randomUUID(),
+      ...(resources.length ? { resources } : {}),
+    });
+  } catch (err) {
+    console.warn("activity log failed", err instanceof Error ? err.message : err);
+  }
+}
+
+// Result keys that hold bodies or prose, never ids or counts.
+const DIGEST_DROP = new Set(["content", "next_steps", "summary", "description", "text", "instructions"]);
+const DIGEST_STRING_MAX = 200;
+
+function digestValue(value: unknown, nested: boolean): unknown {
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return value.length <= DIGEST_STRING_MAX ? value : undefined;
+  if (Array.isArray(value)) return { count: value.length };
+  if (typeof value === "object" && !nested) {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (DIGEST_DROP.has(key)) continue;
+      const kept = digestValue(item, true);
+      if (kept !== undefined) out[key] = kept;
+    }
+    return out;
+  }
+  return undefined;
+}
+
+/**
+ * The shape of a tool result without its substance: top-level scalars (ids,
+ * names, versions, statuses), the scalars of each nested object, and arrays
+ * as counts. Document content and long text are dropped.
+ */
+function digestResult(result: object): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(result)) {
+    if (DIGEST_DROP.has(key)) continue;
+    const kept = digestValue(value, false);
+    if (kept !== undefined) out[key] = kept;
+  }
+  return out;
+}
+
+type CallResource = { type: "file" | "folder" | "proposal" | "task" | "published_work"; id: string; label?: string };
+
+// Where each tool's result names what it acted on: [type, key or top level].
+const RESULT_RESOURCES: Record<string, [CallResource["type"], string | null]> = {
+  create_document: ["file", null],
+  update_document: ["file", null],
+  move_file: ["file", null],
+  read_file: ["file", "file"],
+  get_file_versions: ["file", "file"],
+  create_folder: ["folder", "folder"],
+  move_folder: ["folder", null],
+  propose_context_change: ["proposal", "proposal"],
+  manage_task: ["task", "task"],
+  publish_work: ["published_work", "published"],
+};
+
+/** What the call acted on: from the result digest, else the failed call's hint. */
+function callResources(toolName: string, digest: Record<string, unknown> | undefined, hint: ErrorHint): CallResource[] {
+  const where = RESULT_RESOURCES[toolName];
+  if (digest && where) {
+    const [type, key] = where;
+    const row = key === null ? digest : digest[key];
+    if (row && typeof row === "object") {
+      const { id, path, name, title, field } = row as Record<string, unknown>;
+      const label = [path, title, name, field].find((value) => typeof value === "string");
+      if (typeof id === "string") return [{ type, id, ...(typeof label === "string" ? { label } : {}) }];
+    }
+  }
+  const failed = activityResource(toolName, hint).resource;
+  return failed ? [failed] : [];
 }
 
 /** A ConvexError's or ToolError's code for the activity feed; anything else is "ERROR". */
@@ -237,8 +352,8 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
         "For project state (goal, decisions, blockers, changes) call sync_workspace.",
       annotations: readOnly,
       scope: READ,
-      handler: (ctx, _args, user) =>
-        run(ctx, user, "get_workspace_info", async () => {
+      handler: (ctx, args, user) =>
+        run(ctx, user, "get_workspace_info", args, async () => {
           const r = await ctx.runMutation(internal.mcpTools.getWorkspaceInfo, { principal: p(user) });
           return {
             user: { id: r.userId },
@@ -299,7 +414,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "sync_workspace", async () => {
+        run(ctx, user, "sync_workspace", args, async () => {
           const since = args.since === undefined ? undefined : parseCursor(args.since);
           const r = await ctx.runMutation(internal.mcpTools.syncWorkspace, {
             principal: p(user),
@@ -341,7 +456,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "list_files", async () => {
+        run(ctx, user, "list_files", args, async () => {
           oneOf(args.folder_id, args.path, ["folder_id", "path"], false);
           const r = await ctx.runMutation(internal.mcpTools.listFiles, {
             principal: p(user),
@@ -375,7 +490,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "search_files", async () => {
+        run(ctx, user, "search_files", args, async () => {
           const rows = await ctx.runMutation(internal.mcpTools.searchFiles, {
             principal: p(user),
             workspaceId: args.workspace_id,
@@ -401,7 +516,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "read_file", async () => {
+        run(ctx, user, "read_file", args, async () => {
           oneOf(args.file_id, args.path, ["file_id", "path"], true);
           const { file, content, version } = await ctx.runMutation(internal.mcpTools.readFile, {
             principal: p(user),
@@ -432,7 +547,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "get_file_versions", async () => {
+        run(ctx, user, "get_file_versions", args, async () => {
           const r = await ctx.runMutation(internal.mcpTools.getFileVersions, {
             principal: p(user),
             fileId: id(args.file_id, "file_id"),
@@ -477,7 +592,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(false),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "create_document", async () => {
+        run(ctx, user, "create_document", args, async () => {
           oneOf(args.parent_id, args.folder_path, ["parent_id", "folder_path"], false);
           const file = await ctx.runMutation(internal.mcpTools.createDocument, {
             principal: p(user),
@@ -506,7 +621,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "update_document", async () => {
+        run(ctx, user, "update_document", args, async () => {
           if (!Number.isInteger(args.expected_version) || args.expected_version < 1)
             throw invalidInput("expected_version must be a positive integer.", { field: "expected_version" });
           const file = await ctx.runMutation(internal.mcpTools.updateDocument, {
@@ -533,7 +648,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "create_folder", async () => {
+        run(ctx, user, "create_folder", args, async () => {
           const r = await ctx.runMutation(internal.mcpTools.createFolder, {
             principal: p(user),
             workspaceId: args.workspace_id,
@@ -563,7 +678,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "move_file", async () => {
+        run(ctx, user, "move_file", args, async () => {
           oneOf(args.to_folder_id, args.to_folder_path, ["to_folder_id", "to_folder_path"], true, ' ("/" for the workspace root)');
           const file = await ctx.runMutation(internal.mcpTools.moveFile, {
             principal: p(user),
@@ -602,7 +717,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(true),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "move_folder", async () => {
+        run(ctx, user, "move_folder", args, async () => {
           oneOf(args.to_folder_id, args.to_folder_path, ["to_folder_id", "to_folder_path"], true, ' ("/" for the workspace root)');
           const folder = await ctx.runMutation(internal.mcpTools.moveFolder, {
             principal: p(user),
@@ -657,7 +772,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(false),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "propose_context_change", async () => {
+        run(ctx, user, "propose_context_change", args, async () => {
           const operation = args.operation ?? "add";
           if (operation !== "add" && (!args.entry_id || !Number.isSafeInteger(args.expected_version) || args.expected_version! < 0))
             throw invalidInput("entry_id and expected_version are required for resolve/remove.");
@@ -726,7 +841,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: readOnly,
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "get_approvals", async () => {
+        run(ctx, user, "get_approvals", args, async () => {
           const status = args.status ?? "pending";
           const rows = await ctx.runMutation(internal.mcpTools.getApprovals, {
             principal: p(user),
@@ -773,7 +888,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       // requires write scope for every other operation.
       scope: READ,
       handler: (ctx, args, user) =>
-        run(ctx, user, "manage_task", async () => {
+        run(ctx, user, "manage_task", args, async () => {
           const { operation } = args;
           const description = (value: string | undefined) => {
             if (value !== undefined && value.trim().length > 4000)
@@ -845,7 +960,7 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       annotations: write(false),
       scope: WRITE,
       handler: (ctx, args, user) =>
-        run(ctx, user, "publish_work", async () => {
+        run(ctx, user, "publish_work", args, async () => {
           const work = await ctx.runMutation(internal.mcpTools.publishWork, {
             principal: p(user),
             workspaceId: args.workspace_id,
