@@ -1030,7 +1030,7 @@ export function createMockApi({
       await delay();
       requireMember(workspaceId);
       memberNames.set(signedInUser(), getActor().userName ?? "Workspace member");
-      return [...membersFor(workspaceId).keys()].map((userId) => ({ userId, name: memberNames.get(userId) ?? "Workspace member" }));
+      return [...membersFor(workspaceId)].map(([userId, role]) => ({ userId, name: memberNames.get(userId) ?? "Workspace member", role }));
     },
 
     async updateContextField(workspaceId, input) {

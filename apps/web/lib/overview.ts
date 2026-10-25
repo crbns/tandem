@@ -1,4 +1,12 @@
-import type { AgentActivity, ContextDetails, ContextEntry, ContextField, FileSummary, FolderSummary } from "./api/types";
+import type {
+  AgentActivity,
+  ContextDetails,
+  ContextEntry,
+  ContextField,
+  FileSummary,
+  FolderSummary,
+  WorkspaceMember,
+} from "./api/types";
 import { contextSections } from "./context";
 import { treeOrder } from "./folders";
 
@@ -102,6 +110,13 @@ export function condenseTree(
 /** The most recently changed files anywhere in the workspace. */
 export function recentFiles(files: readonly FileSummary[], limit = 5): FileSummary[] {
   return [...files].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+}
+
+const ROLE_ORDER: Record<WorkspaceMember["role"], number> = { owner: 0, admin: 1, member: 2 };
+
+/** Owners, then admins, then members; by name within each role. */
+export function sortMembers(members: readonly WorkspaceMember[]): WorkspaceMember[] {
+  return [...members].sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.name.localeCompare(b.name));
 }
 
 export interface ContextDigestSection {

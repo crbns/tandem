@@ -514,7 +514,7 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
     }))),
     listWorkspaceMembers: (workspaceId) => call(async () => {
       const info = await convex.query(api.workspaces.getWorkspaceInfo, { workspaceId: workspaceId as Id<"workspaces"> });
-      return info.members.map((m) => ({ userId: m.userId, name: m.name ?? "Workspace member" }));
+      return info.members.map((m) => ({ userId: m.userId, name: m.name ?? "Workspace member", role: m.role }));
     }),
     updateContextField: (workspaceId, { ownerUserId, ...input }) => call(() => convex.mutation(api.context.updateContextField, {
       ...input, workspaceId: workspaceId as Id<"workspaces">,

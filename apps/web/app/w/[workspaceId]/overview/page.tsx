@@ -9,10 +9,10 @@ import { useResource, type Resource } from "@/lib/api/useResource";
 import { useArrivedFiles, useWorkspaceFiles, useWorkspaceRefresh } from "@/lib/api/useWorkspace";
 import { clientName } from "@/lib/actors";
 import { folderHref, plural } from "@/lib/folders";
-import { condenseTree, contextDigest, recentFiles, summarizeAgents, RECENT_ACTIVITY_MS } from "@/lib/overview";
+import { condenseTree, contextDigest, recentFiles, sortMembers, summarizeAgents, RECENT_ACTIVITY_MS } from "@/lib/overview";
 import { formatAbsolute, formatRelative } from "@/lib/time";
 import { useNow } from "@/lib/useNow";
-import type { AgentActivity, ContextDetails, FileSummary, FolderSummary } from "@/lib/api/types";
+import type { AgentActivity, ContextDetails, FileSummary, FolderSummary, WorkspaceMember } from "@/lib/api/types";
 import { CustodyMark } from "@/components/common/CustodyMark";
 import { ErrorState } from "@/components/common/ErrorState";
 import { InviteDialog } from "@/components/common/InviteDialog";
@@ -44,6 +44,8 @@ export default function OverviewPage() {
   );
   const loadContext = useCallback(() => api.getContextDetails(workspaceId), [api, workspaceId]);
   const context = useResource(loadContext);
+  const loadMembers = useCallback(() => api.listWorkspaceMembers(workspaceId), [api, workspaceId]);
+  const members = useResource(loadMembers);
 
   const { reload: reloadAgents } = agents;
   const { reload: reloadFolders } = folders;
@@ -53,15 +55,17 @@ export default function OverviewPage() {
     reloadWorkspaceFiles();
   }, [reloadFolders, reloadWorkspaceFiles]);
   const { reload: reloadContext } = context;
+  const { reload: reloadMembers } = members;
   const reloadAll = useCallback(() => {
     reloadAgents();
     reloadFiles();
     reloadContext();
-  }, [reloadAgents, reloadFiles, reloadContext]);
-  // MCP writes, connects and approvals record workspace events. Read-only MCP
-  // calls only bump connection times, which show on focus or Refresh.
+    reloadMembers();
+  }, [reloadAgents, reloadFiles, reloadContext, reloadMembers]);
+  // MCP writes, connects, approvals and invite joins record workspace events.
+  // Read-only MCP calls only bump connection times, which show on focus or Refresh.
   useWorkspaceRefresh(workspaceId, reloadAll);
-  const refreshing = agents.refreshing || files.refreshing || context.refreshing;
+  const refreshing = agents.refreshing || files.refreshing || context.refreshing || members.refreshing;
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-5">
@@ -77,6 +81,8 @@ export default function OverviewPage() {
       </div>
 
       <AgentsPanel workspaceId={workspaceId} resource={agents.resource} onRetry={agents.reload} retrying={agents.refreshing} />
+
+      <MembersPanel resource={members.resource} onRetry={members.reload} retrying={members.refreshing} />
 
       <div className="grid items-start gap-5 lg:grid-cols-2">
         <FilesPanel workspaceId={workspaceId} resource={files.resource} onRetry={reloadFiles} retrying={files.refreshing} />
@@ -103,8 +109,9 @@ function Panel({
 }: {
   id: string;
   title: string;
-  href: string;
-  linkLabel: string;
+  /** Omit both for a panel with no page of its own. */
+  href?: string;
+  linkLabel?: string;
   children: ReactNode;
 }) {
   return (
@@ -113,13 +120,15 @@ function Panel({
         <h2 id={id} className="text-base font-semibold">
           {title}
         </h2>
-        <Link
-          href={href}
-          className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-        >
-          {linkLabel}
-          <ArrowRightIcon className="size-3.5" />
-        </Link>
+        {href && (
+          <Link
+            href={href}
+            className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            {linkLabel}
+            <ArrowRightIcon className="size-3.5" />
+          </Link>
+        )}
       </div>
       {children}
     </section>
@@ -175,6 +184,31 @@ function AgentsPanel({ workspaceId, resource, onRetry, retrying }: PanelProps<Ag
             </p>
           </div>
         </div>
+      )}
+    </Panel>
+  );
+}
+
+const ROLE_LABEL: Record<WorkspaceMember["role"], string> = { owner: "Owner", admin: "Admin", member: "Member" };
+
+function MembersPanel({ resource, onRetry, retrying }: Omit<PanelProps<WorkspaceMember[]>, "workspaceId">) {
+  return (
+    <Panel id="overview-members" title="Members">
+      {resource.status === "loading" && <Skeleton className="h-10" aria-label="Loading members" />}
+      {resource.status === "error" && <ErrorState error={resource.error} onRetry={onRetry} retrying={retrying} />}
+      {resource.status === "ready" && (
+        <>
+          <p className="label-caps text-muted-foreground">{plural(resource.data.length, "member")}</p>
+          <ul aria-label="Workspace members" className="flex flex-wrap gap-1.5 text-sm">
+            {sortMembers(resource.data).map((member) => (
+              <li key={member.userId} className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5">
+                <CustodyMark kind="human" />
+                <span className="font-medium">{member.name}</span>
+                <span className="text-xs text-muted-foreground">{ROLE_LABEL[member.role]}</span>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </Panel>
   );
