@@ -30,6 +30,19 @@ describe("workspace invites", () => {
     expect((await api.listInvites(MOCK_WORKSPACE_ID))[0]?.acceptedBy).toBe(teammate.userId);
   });
 
+  it("notifies workspace watchers when someone joins, and lists them with their role", async () => {
+    const { token } = await api.createInvite(MOCK_WORKSPACE_ID, "member");
+    let changes = 0;
+    api.watchWorkspace(MOCK_WORKSPACE_ID, () => changes++);
+    actor = teammate;
+    await api.acceptInvite(token);
+    await Promise.resolve();
+    expect(changes).toBe(1);
+    expect(await api.listWorkspaceMembers(MOCK_WORKSPACE_ID)).toContainEqual(
+      expect.objectContaining({ userId: teammate.userId, role: "member" }),
+    );
+  });
+
   it("accepts a code typed in lowercase or with dashes and spaces", async () => {
     const lower = await api.createInvite(MOCK_WORKSPACE_ID, "member");
     const dashed = await api.createInvite(MOCK_WORKSPACE_ID, "member");

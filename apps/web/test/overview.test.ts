@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createMockApi, MOCK_WORKSPACE_ID } from "@/lib/api/mock";
 import type { Actor, ContextDetails, ContextEntry, FileSummary, FolderSummary } from "@/lib/api/types";
-import { condenseTree, contextDigest, recentFiles, RECENT_ACTIVITY_MS, summarizeAgents } from "@/lib/overview";
+import { condenseTree, contextDigest, recentFiles, RECENT_ACTIVITY_MS, sortMembers, summarizeAgents } from "@/lib/overview";
 
 const human: Actor = { actorType: "human", userId: "user_demo", userName: "Demo Human" };
 const NOW = 1_000_000_000;
@@ -156,5 +156,28 @@ describe("mock listAgentActivity", () => {
     }
     await api.revokeAgentConnection(created.connectionId);
     expect(await api.listAgentActivity(MOCK_WORKSPACE_ID)).toHaveLength(before.length);
+  });
+});
+
+describe("sortMembers", () => {
+  it("orders owners, admins, then members, by name within a role", () => {
+    const sorted = sortMembers([
+      { userId: "u1", name: "Zed", role: "member" },
+      { userId: "u2", name: "Bea", role: "admin" },
+      { userId: "u3", name: "Ana", role: "member" },
+      { userId: "u4", name: "Cal", role: "owner" },
+    ]);
+    expect(sorted.map((m) => m.name)).toEqual(["Cal", "Bea", "Ana", "Zed"]);
+  });
+});
+
+describe("mock listWorkspaceMembers", () => {
+  it("includes each member's role", async () => {
+    const api = createMockApi({ latencyMs: [0, 0], getActor: () => human });
+    expect(await api.listWorkspaceMembers(MOCK_WORKSPACE_ID)).toContainEqual({
+      userId: human.userId,
+      name: "Demo Human",
+      role: "owner",
+    });
   });
 });

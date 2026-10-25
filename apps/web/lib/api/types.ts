@@ -357,6 +357,7 @@ export interface Task {
 export interface WorkspaceMember {
   userId: string;
   name: string;
+  role: NonNullable<Workspace["role"]>;
 }
 
 export interface ContextProposalInput extends Omit<ContextChangeInput, "proposedValue"> {

@@ -512,9 +512,11 @@ export function createConvexApi(convex: ConvexReactClient, getToken: () => strin
     getContextDetails: (workspaceId) => call(async () => toContextDetails(await convex.query(api.context.getDetails, {
       workspaceId: workspaceId as Id<"workspaces">,
     }))),
+    // While watchWorkspace subscribes to getWorkspaceInfo, convex.query answers
+    // from that subscription's local result instead of fetching again.
     listWorkspaceMembers: (workspaceId) => call(async () => {
       const info = await convex.query(api.workspaces.getWorkspaceInfo, { workspaceId: workspaceId as Id<"workspaces"> });
-      return info.members.map((m) => ({ userId: m.userId, name: m.name ?? "Workspace member" }));
+      return info.members.map((m) => ({ userId: m.userId, name: m.name ?? "Workspace member", role: m.role }));
     }),
     updateContextField: (workspaceId, { ownerUserId, ...input }) => call(() => convex.mutation(api.context.updateContextField, {
       ...input, workspaceId: workspaceId as Id<"workspaces">,

@@ -142,8 +142,8 @@ describe("project context mapping", () => {
       },
       "workspaces:getWorkspaceInfo": {
         members: [
-          { userId, name: "Owner" },
-          { userId: "u2", name: null },
+          { userId, name: "Owner", role: "owner" },
+          { userId: "u2", name: null, role: "member" },
         ],
       },
     });
@@ -174,8 +174,8 @@ describe("project context mapping", () => {
       agentClient: "claude",
     });
     expect(await adapter.listWorkspaceMembers("ws")).toEqual([
-      { userId, name: "Owner" },
-      { userId: "u2", name: "Workspace member" },
+      { userId, name: "Owner", role: "owner" },
+      { userId: "u2", name: "Workspace member", role: "member" },
     ]);
     expect(fake.calls).toEqual([
       { name: "context:getDetails", args: { workspaceId: "ws" } },
