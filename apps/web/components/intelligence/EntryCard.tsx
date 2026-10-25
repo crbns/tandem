@@ -231,9 +231,17 @@ export function EntryCard({
 
 function IconAction({ icon: Icon, label, onClick, disabled }: { icon: typeof CheckIcon; label: string; onClick: () => void; disabled?: boolean }) {
   return (
-    <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-1.5 text-xs text-muted-foreground hover:text-foreground [&_svg]:size-3.5" onClick={onClick} disabled={disabled}>
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      aria-label={label}
+      title={label}
+      className="size-7 text-muted-foreground hover:text-foreground [&_svg]:size-3.5"
+      onClick={onClick}
+      disabled={disabled}
+    >
       <Icon aria-hidden />
-      {label}
     </Button>
   );
 }
@@ -258,7 +266,7 @@ function FormFooter({ busy, error, submit, destructive, onCancel }: { busy: bool
           <p className="text-muted-foreground">{correctionError(error).description}</p>
         </div>
       )}
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={busy}>Cancel</Button>
         <Button type="submit" variant={destructive ? "destructive" : "default"} size="sm" disabled={busy}>
           {busy && <Loader2Icon className="animate-spin" />}
