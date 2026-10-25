@@ -11,6 +11,7 @@
 import type * as activity from "../activity.js";
 import type * as agentConnections from "../agentConnections.js";
 import type * as auth from "../auth.js";
+import type * as conflicts from "../conflicts.js";
 import type * as context from "../context.js";
 import type * as contextMigrations from "../contextMigrations.js";
 import type * as crons from "../crons.js";
@@ -20,6 +21,7 @@ import type * as http from "../http.js";
 import type * as lib_agent from "../lib/agent.js";
 import type * as lib_auth from "../lib/auth.js";
 import type * as lib_binaries from "../lib/binaries.js";
+import type * as lib_conflicts from "../lib/conflicts.js";
 import type * as lib_diff from "../lib/diff.js";
 import type * as lib_fs from "../lib/fs.js";
 import type * as lib_mcpConfig from "../lib/mcpConfig.js";
@@ -45,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   activity: typeof activity;
   agentConnections: typeof agentConnections;
   auth: typeof auth;
+  conflicts: typeof conflicts;
   context: typeof context;
   contextMigrations: typeof contextMigrations;
   crons: typeof crons;
@@ -54,6 +57,7 @@ declare const fullApi: ApiFromModules<{
   "lib/agent": typeof lib_agent;
   "lib/auth": typeof lib_auth;
   "lib/binaries": typeof lib_binaries;
+  "lib/conflicts": typeof lib_conflicts;
   "lib/diff": typeof lib_diff;
   "lib/fs": typeof lib_fs;
   "lib/mcpConfig": typeof lib_mcpConfig;

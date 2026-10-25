@@ -11,6 +11,50 @@ const actor = v.object({
   userName: v.optional(v.string()),
 });
 
+// docs/conflict-resolution.md: why a proposal is held for a person.
+const conflictItem = v.object({
+  kind: v.union(v.literal("replaces"), v.literal("contradicts"), v.literal("competing")),
+  // The model was unsure; human review required.
+  uncertain: v.optional(v.boolean()),
+  targetType: v.union(
+    v.literal("decision"),
+    v.literal("constraint"),
+    v.literal("goal"),
+    v.literal("scope"),
+    v.literal("proposal"),
+  ),
+  // Context entry id, "goal"/"scope", or a proposal id.
+  targetId: v.string(),
+  // Snapshot of the target's value at detection.
+  targetText: v.string(),
+  targetBy: actor,
+  targetAt: v.number(),
+  contextVersion: v.number(),
+  explanation: v.string(),
+  confidence: v.optional(v.number()),
+});
+
+const conflict = v.object({
+  status: v.union(
+    v.literal("checking"),
+    v.literal("clear"),
+    v.literal("conflict"),
+    v.literal("uncertain"),
+  ),
+  method: v.union(v.literal("structural"), v.literal("semantic"), v.literal("heuristic")),
+  checkedAt: v.optional(v.number()),
+  model: v.optional(v.string()),
+  reason: v.optional(v.string()),
+  items: v.array(conflictItem),
+});
+
+const resolution = v.union(
+  v.literal("accepted"),
+  v.literal("kept_both"),
+  v.literal("retained_current"),
+  v.literal("rejected"),
+);
+
 const contextValue = v.object({
   id: v.optional(v.string()),
   status: v.optional(
@@ -294,12 +338,25 @@ export default defineSchema({
     createdAt: v.number(),
     decidedBy: v.optional(actor),
     decidedAt: v.optional(v.number()),
+    // Conflict detection and resolution (docs/conflict-resolution.md).
+    conflict: v.optional(conflict),
+    // True once the conflict status was conflict or uncertain; indexed for history.
+    hasConflict: v.optional(v.boolean()),
+    resolution: v.optional(resolution),
+    decisionNote: v.optional(v.string()),
+    // The context entry this proposal added when it applied.
+    appliedEntryId: v.optional(v.string()),
     updatedBy: actor,
     revision: v.number(),
     updatedAt: v.number(),
   })
     .index("by_workspace_and_status", ["workspaceId", "status"])
-    .index("by_workspace_and_created", ["workspaceId", "createdAt"]),
+    .index("by_workspace_and_created", ["workspaceId", "createdAt"])
+    .index("by_workspace_and_has_conflict_and_created", [
+      "workspaceId",
+      "hasConflict",
+      "createdAt",
+    ]),
 
   approvals: defineTable({
     workspaceId: v.id("workspaces"),
@@ -307,6 +364,8 @@ export default defineSchema({
     decision: v.union(v.literal("approved"), v.literal("rejected")),
     decidedBy: actor,
     decidedAt: v.number(),
+    resolution: v.optional(resolution),
+    note: v.optional(v.string()),
   })
     .index("by_workspace_and_decided", ["workspaceId", "decidedAt"])
     .index("by_proposal", ["proposalId"]),

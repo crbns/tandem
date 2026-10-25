@@ -1980,8 +1980,9 @@ describe("context approval setting", () => {
       workspaceId, field: "constraint" as const, operation: "remove" as const, entryId: context.constraints[0]!.id,
       expectedVersion: context.revision, rationale: "Obsolete", sourceFileIds: [],
     };
+    // Two creators: the same creator's repeat is deduplicated (docs/conflict-resolution.md).
     const first = await sam.mutation(api.context.proposeContextChange, input);
-    const second = await sam.mutation(api.context.proposeContextChange, input);
+    const second = await alex.mutation(api.context.proposeContextChange, input);
     expect([first.status, second.status]).toEqual(["pending", "pending"]);
     await alex.mutation(api.context.decideContextProposal, { proposalId: first.id, decision: "approved" });
     expect((await alex.query(api.context.getDetails, { workspaceId })).constraints).toEqual([]);
@@ -3019,7 +3020,7 @@ describe("sync brief and server instructions", () => {
     const { brief, next_steps, ...rest } = sync;
     expect(Object.keys(sync).at(-1)).toBe("next_steps");
     expect(next_steps).toEqual(syncNextSteps({ contextEmpty: false }));
-    expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "pending_proposals", "changed_files", "files_truncated", "folders", "folders_truncated",
+    expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "pending_proposals", "resolved_conflicts", "changed_files", "files_truncated", "folders", "folders_truncated",
       "recent_work", "work_truncated", "tasks", "tasks_truncated", "events", "events_truncated", "cursor"]);
     const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
     expect(rest.workspace).toEqual({ id: workspaceId, name: "Demo" });
@@ -3029,7 +3030,8 @@ describe("sync brief and server instructions", () => {
       .toEqual(raw.context.decisions.map((e) => [e.id, e.text, e.status]));
     expect(rest.context.open_questions.map((e: { id: string; text: string; status: string }) => [e.id, e.text, e.status]))
       .toEqual(raw.context.openQuestions.map((e) => [e.id, e.text, e.status]));
-    const { source_ids: _sourceIds, base_context_version: _base, workspace_id: _workspace, ...pendingGoal } = goal;
+    // Pending proposals have no resolution yet, so sync leaves those two fields out.
+    const { source_ids: _sourceIds, base_context_version: _base, workspace_id: _workspace, resolution: _resolution, decision_note: _note, ...pendingGoal } = goal;
     expect(rest.pending_proposals).toEqual([pendingGoal]);
     expect(rest.changed_files).toEqual((await tool("list_files")).files);
     expect(rest.files_truncated).toBe(false);
@@ -3046,6 +3048,7 @@ describe("sync brief and server instructions", () => {
     expect(brief.blockers).toEqual({
       open_questions: [{ id: expect.any(String), text: "Who signs off on launch?" }],
       pending_approvals: [{ id: goal.id, field: "goal", proposed_value: "Ship the beta" }],
+      conflicts: [],
     });
     expect(blocker.status).toBe("applied");
     expect(brief.goal).toBe("");
@@ -3070,7 +3073,7 @@ describe("sync brief and server instructions", () => {
     const compact = await tool("sync_workspace", { detail: "brief" });
     const full = await tool("sync_workspace");
     expect(Object.keys(compact)).toEqual(["brief", "workspace", "context_version", "changed_files", "deleted_file_ids", "files_truncated",
-      "recent_work", "work_truncated", "tasks", "tasks_truncated", "events_truncated", "cursor", "next_steps"]);
+      "recent_work", "work_truncated", "tasks", "tasks_truncated", "resolved_conflicts", "events_truncated", "cursor", "next_steps"]);
     expect(compact).not.toHaveProperty("context");
     expect(compact).not.toHaveProperty("events");
     expect(compact).not.toHaveProperty("pending_proposals");
@@ -3108,6 +3111,10 @@ describe("sync brief and server instructions", () => {
     expect(empty).toEqual(syncNextSteps({ contextEmpty: true }));
     expect(empty[0]).toMatch(/context is empty.*files you read or save.*propose_context_change.*source_ids.*no pending proposal/);
     expect(syncNextSteps({ contextEmpty: false })).toEqual(empty.slice(1));
+    const at = (prefix: string) => syncNextSteps({ contextEmpty: false }).findIndex((step) => step.startsWith(prefix));
+    expect(at("Record before working")).toBeGreaterThan(at("Keep the cursor"));
+    expect(at("Record before working")).toBeGreaterThan(at("Read before working"));
+    expect(at("Record before working")).toBeLessThan(at("Write back after working"));
     expect(empty.join(" ")).toMatch(/publish_work, even if no file changed/);
 
     const created = await tool("create_document", { name: "loop.md", content: "v1" });
@@ -3118,6 +3125,8 @@ describe("sync brief and server instructions", () => {
     expect(savedSteps[1]).toContain(`["${created.id}"]`);
     expect(savedSteps[2]).toMatch(/propose_context_change.*approved context lacks and no pending proposal/);
     expect(savedSteps[2]).toContain(`source_ids ["${created.id}"]`);
+    // Tandem holds the shared copy; the chat still gets the document itself.
+    expect(savedSteps[3]).toMatch(/show the user the document.*in full.*doesn't replace your reply/);
 
     const updated = await tool("update_document", { file_id: created.id, content: "v2", expected_version: 1 });
     expect(updated.next_steps[0]).toBe("Saved as version 2; pass expected_version=2 for your next edit of this file.");
@@ -3179,7 +3188,10 @@ describe("sync brief and server instructions", () => {
     const { MCP_INSTRUCTIONS } = await import("./mcp");
     for (const term of ["sync_workspace", "since", "cursor", "read_file", "update_document", "publish_work", "propose_context_change",
       "expected_version", "open_questions", "best effort", "without waiting to be asked", "private conversation history", "untrusted",
-      "even if no file changed", "create or edit", "that context lacks", "no pending proposal covers", "read brief first"])
+      "even if no file changed", "create or edit", "that context lacks", "no pending proposal covers", "read brief first",
+      "Record before the work", "manage_task", "complete claimed tasks", "Record after",
+      // Documents go to the chat as well as to Tandem.
+      "Reply as usual", "showing docs you write", "long edit"])
       expect(MCP_INSTRUCTIONS).toContain(term);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);

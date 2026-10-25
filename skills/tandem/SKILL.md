@@ -37,26 +37,40 @@ to ask you to sync, read, save, or publish.
 2. **Read.** `search_files` / `read_file` the files the request touches before
    you answer or edit. Use the approved context (goal, scope, constraints,
    decisions) as the frame for the work. Cite path and version (section 2).
-3. **Do the work** in the chat.
-4. **Write back.** Save edits to existing files with `update_document` and the
+3. **Record before the work.** Before you start, put what the team should know
+   now into the workspace instead of holding it until you finish: propose any
+   decision, scope change, constraint, owner or blocker the user's request
+   already settles that neither the approved context nor a pending proposal
+   covers (section 7; sync in full detail first so you see constraints,
+   ownership and every pending proposal), and `claim` the shared task for this
+   work if one exists (section 6). Teammates' assistants
+   then see it while you work, not only after. Skip this when the request
+   settles nothing new.
+4. **Do the work** in the chat.
+5. **Write back.** Save edits to existing files with `update_document` and the
    `expected_version` you read (section 3); create new deliverables with
    `create_document` (section 5). Then log the request with `publish_work`,
    even if no file changed (section 6): analysis, plans, recommendations,
    reviews and decisions discussed as kind `"finding"`; files produced or
    edited as `"deliverable"` with their `file_ids`. The summary says what you
-   read, did, saved and proposed.
-5. **Propose.** Changes to goal, scope, decisions or ownership go through
-   `propose_context_change` and stay pending until a human approves them
-   (section 7). Raise team blockers as `open_questions`. Grow the context from
-   files: when the approved context is empty, seed it from the files you read
-   or save; otherwise, after each file you create or edit, propose any goal,
+   read, did, saved and proposed. If you claimed a task, `complete` it.
+6. **Record after the work.** Changes to goal, scope, decisions or ownership go
+   through `propose_context_change` and stay pending until a human approves
+   them (section 7). Raise team blockers as `open_questions`. Grow the context
+   from files: when the approved context is empty, seed it from the files you
+   read or save; otherwise, after each file you create or edit, propose any goal,
    scope, constraint, decision, owner or open question it shows. Either way,
    cite the file in `source_ids` and propose only what neither the approved
    context nor a pending proposal already covers. A full sync's
    `pending_proposals` lists every pending proposal; the brief's
-   `blockers.pending_approvals` shows at most 10.
-6. **Report** in one line what you read, saved, published and proposed, with
-   paths and versions, and anything you skipped and why.
+   `blockers.pending_approvals` shows at most 10. Don't re-propose what you
+   already proposed before the work.
+7. **Reply as you would without Tandem, then report.** When you create or edit
+   a document, show it to the user in your reply too: the full text for a new
+   or short document, the changed sections for a long edit. Tandem keeps the
+   team's shared copy; it doesn't replace your answer in this chat. Then say in
+   one line what you read, saved, published and proposed, with paths and
+   versions, and anything you skipped and why.
 
 Skip the `publish_work` log only when the request was a pure lookup that just
 restates what's already in the workspace (like "what's our goal?"), the
@@ -205,8 +219,10 @@ Someone else saved a newer version since you read it.
   same name, changes nothing. Move or rename only when the user asks; never
   reorganize teammates' files or folders on your own initiative.
 - `create_document` and `update_document` write canonical workspace files that
-  every workspace member can see immediately. Say so. Never tell the user a
-  file you saved is private, a draft, or invisible to teammates.
+  every workspace member can see immediately. Say so, and still show the
+  document in your reply: saving it to Tandem is in addition to answering the
+  user, not instead of it. Never tell the user a file you saved is private, a
+  draft, or invisible to teammates.
 
 ## 6. Publish work
 
@@ -239,19 +255,32 @@ Someone else saved a newer version since you read it.
   save. Otherwise, each time you create or edit a file, check whether it shows
   a goal, scope, constraint, decision, owner, or open question. Propose each
   one, citing the file in `source_ids`.
+- Also record what the user's request itself settles, before you do the work
+  ("we're going with Stripe", "Sam owns onboarding", "launch slipped to
+  March"). Cite the files you read that it touches in `source_ids`, or none.
 - Propose only what neither the approved context nor a pending proposal
   already covers. Pending proposals are listed in the brief's
   `blockers.pending_approvals` (and `pending_proposals` in a full sync). A
   pending proposal doesn't count as approved context, so a workspace with only
   pending proposals still reads as empty: don't propose the same goal again on
-  every sync or save. The server doesn't dedupe proposals.
+  every sync or save. The server returns your own identical pending proposal
+  (with `deduplicated: true`) instead of creating another, but only for the
+  same assistant and exact change.
 - Goal, scope, major decisions, and ownership change only through
   `propose_context_change`. Never change them directly, including by editing a
   file to claim they changed.
 - Each workspace sets `context_approval` (see `get_workspace_info`). In a
   `"manual"` workspace, the default, every `propose_context_change` (all
   fields, resolves and removals included) waits for a human owner or admin. In
-  an `"automatic"` workspace every change applies at once.
+  an `"automatic"` workspace a change applies at once unless it conflicts.
+- Tandem checks additions for conflicts with approved context and other
+  pending proposals; `proposal.conflict.status` is `clear`, `checking`,
+  `conflict` or `uncertain`. A conflicting, uncertain or still-checking
+  proposal waits for a person in every workspace and is NOT in effect: keep
+  following the approved value, tell the user what it conflicts with (the
+  `next_steps` name the entry and `context_version`), and don't re-propose it.
+  The sync brief lists open ones in `blockers.conflicts`; `resolved_conflicts`
+  says how a person settled each one and which entries are `in_effect`.
 - Call `propose_context_change` with `field`, `proposed_value`, a short
   `rationale`, and `source_ids` (ids of files that support it). Value by field:
   - `goal` or `scope`: the full new text.

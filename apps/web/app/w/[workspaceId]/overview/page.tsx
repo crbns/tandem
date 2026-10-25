@@ -15,6 +15,7 @@ import { useNow } from "@/lib/useNow";
 import type { AgentActivity, ContextDetails, FileSummary, FolderSummary } from "@/lib/api/types";
 import { CustodyMark } from "@/components/common/CustodyMark";
 import { ErrorState } from "@/components/common/ErrorState";
+import { InviteDialog } from "@/components/common/InviteDialog";
 import { ArrivalGlow } from "@/components/files/ArrivalGlow";
 import { FileIcon } from "@/components/files/FileIcon";
 import { Button } from "@/components/ui/button";
@@ -66,11 +67,12 @@ export default function OverviewPage() {
     <div className="mx-auto flex max-w-6xl flex-col gap-5">
       <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
         <h1 className="text-2xl font-bold leading-8 tracking-[-0.01em]">Overview</h1>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={reloadAll} disabled={refreshing} aria-label="Refresh overview">
             <RotateCwIcon className={cn(refreshing && "animate-spin")} />
             Refresh
           </Button>
+          <InviteDialog workspaceId={workspaceId} />
         </div>
       </div>
 

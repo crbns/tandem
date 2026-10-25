@@ -44,6 +44,10 @@ const PROPOSAL: BackendProposal = {
   decidedAt: null,
   ownerUserId: null,
   ownerArea: null,
+  conflict: null,
+  resolution: null,
+  decisionNote: null,
+  revision: 1,
 };
 
 /** Answers by function name, records calls, and serves one controllable watch. */
@@ -131,6 +135,10 @@ describe("Convex adapter: approvals", () => {
         createdAt: 10,
         decidedBy: { actorType: "human", userId: "users_alex", userName: "Alex" },
         decidedAt: 20,
+        conflict: null,
+        resolution: null,
+        decisionNote: null,
+        revision: 1,
       },
     ]);
     await tandem.listProposals("workspaces_1");
@@ -160,6 +168,38 @@ describe("Convex adapter: approvals", () => {
     });
   });
 
+  it("maps a conflict's target author, and lists conflicts", async () => {
+    const conflicted: BackendProposal = {
+      ...PROPOSAL,
+      field: "decision",
+      revision: 2,
+      conflict: {
+        status: "conflict",
+        method: "semantic",
+        model: "claude-haiku-5-5",
+        items: [{
+          kind: "contradicts", targetType: "decision", targetId: "entry_1", targetText: "Use Convex Auth", targetBy: ALEX,
+          targetAt: 5, contextVersion: 7, explanation: "Both pick the auth provider.", confidence: 0.93,
+        }],
+      },
+    };
+    const settled: BackendProposal = { ...conflicted, status: "rejected", resolution: "retained_current", decisionNote: "Stay put", decidedBy: ALEX, decidedAt: 30 };
+    const { client, calls } = fakeConvex({ "context:listConflicts": { pending: [conflicted], resolved: [settled] } });
+    const { pending, resolved } = await createConvexApi(client).listConflicts("workspaces_1");
+    expect(calls).toEqual([{ name: "context:listConflicts", args: { workspaceId: "workspaces_1" } }]);
+    expect(pending[0]?.conflict?.items[0]).toMatchObject({ targetText: "Use Convex Auth", targetBy: { actorType: "human", userName: "Alex" }, confidence: 0.93 });
+    expect(resolved[0]).toMatchObject({ resolution: "retained_current", decisionNote: "Stay put", revision: 2 });
+  });
+
+  it("sends a resolution, note and expected revision only when given", async () => {
+    const { client, calls } = fakeConvex({ "context:decideContextProposal": null });
+    await createConvexApi(client).decideProposal(PROPOSAL, "rejected", { resolution: "retained_current", note: "Keep it", expectedRevision: 3 });
+    expect(calls).toEqual([{
+      name: "context:decideContextProposal",
+      args: { proposalId: PROPOSAL.id, decision: "rejected", resolution: "retained_current", note: "Keep it", expectedRevision: 3 },
+    }]);
+  });
+
   it("rejects without a stale check, and maps already-decided", async () => {
     const ok = fakeConvex({ "context:decideContextProposal": null });
     await createConvexApi(ok.client).decideProposal(PROPOSAL, "rejected");
@@ -175,6 +215,7 @@ describe("Convex adapter: approvals", () => {
     ["PROPOSAL_ALREADY_DECIDED", "PROPOSAL_DECIDED"],
     ["PROPOSAL_NOT_FOUND", "PROPOSAL_DECIDED"],
     ["PROPOSAL_STALE", "VERSION_CONFLICT"],
+    ["PROPOSAL_CHANGED", "PROPOSAL_CHANGED"],
     ["VERSION_CONFLICT", "VERSION_CONFLICT"],
     ["APPROVAL_REQUIRED", "APPROVAL_REQUIRED"],
   ])("maps %s to %s", (backendCode, code) => {

@@ -270,7 +270,8 @@ export function createMcpServer(
         "Check list_files first so you don't create a duplicate of an existing file; " +
         "a name already used by a file or folder in the same folder (case-insensitive, surrounding whitespace ignored) fails with NAME_EXISTS. " +
         'Names can\'t contain "/". ' +
-        "If you haven't called sync_workspace in this conversation, do that first.",
+        "If you haven't called sync_workspace in this conversation, do that first. " +
+        "Also show the user the document in full in your reply: Tandem keeps the team's shared copy, it doesn't replace your answer.",
       inputSchema: {
         name: z
           .string()
@@ -320,7 +321,8 @@ export function createMcpServer(
         "Replace a document's full content, creating version N+1. expected_version must equal the version you last read; " +
         "if someone else changed the file since, this fails with VERSION_CONFLICT and nothing is written. " +
         "On conflict, re-read with read_file, merge your changes into the latest content, and retry with the new version. " +
-        "If you haven't called sync_workspace in this conversation, do that first.",
+        "If you haven't called sync_workspace in this conversation, do that first. " +
+        "Also show the user the document in your reply (in full, or the changed sections of a long edit): Tandem keeps the team's shared copy, it doesn't replace your answer.",
       inputSchema: {
         file_id: z
           .string()

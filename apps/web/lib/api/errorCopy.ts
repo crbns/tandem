@@ -38,6 +38,20 @@ export const DECIDE_ERROR_COPY: Partial<Record<ApiErrorCode, { title: string; de
     title: "Only owners and admins can decide",
     description: "You can read proposals, but a workspace owner or admin has to approve or reject them.",
   },
+  PROPOSAL_CHANGED: {
+    title: "This proposal changed while you were looking",
+    description:
+      "A conflict check finished or the proposal was updated after you opened it. Nothing was decided; review the refreshed card and decide again.",
+  },
+  CONFLICT_CHECK_PENDING: {
+    title: "The conflict check isn't done yet",
+    description:
+      "Tandem is still comparing this proposal with the approved context. Wait for the verdict, or check again if it seems stuck. You can reject it now.",
+  },
+  PROPOSAL_DECIDED: {
+    title: "Someone already decided this",
+    description: "Another owner or admin settled it first, so your choice wasn't applied. The list shows where it stands now.",
+  },
 };
 
 /** User-facing copy for each error code. Components never show raw messages. */
@@ -94,6 +108,18 @@ export const ERROR_COPY: Record<ApiErrorCode, { title: string; description: stri
   PROPOSAL_DECIDED: {
     title: "Already decided",
     description: "Someone decided this proposal before you did, or it was withdrawn. The list shows where it stands now.",
+  },
+  PROPOSAL_CHANGED: {
+    title: "Proposal changed",
+    description: "It was updated after you opened it. Review the latest version and try again.",
+  },
+  CONFLICT_CHECK_PENDING: {
+    title: "Still checking for conflicts",
+    description: "Wait for the conflict check to finish before approving.",
+  },
+  ALREADY_IN_CONTEXT: {
+    title: "Already in the context",
+    description: "This exact entry is already approved, so there's nothing to add.",
   },
   REQUEST_EXPIRED: {
     title: "This request expired",

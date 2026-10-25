@@ -2,11 +2,11 @@
 
 import { useCallback } from "react";
 import Link from "next/link";
-import { ArrowRightIcon } from "lucide-react";
+import { AlertTriangleIcon, ArrowRightIcon } from "lucide-react";
 import { useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
 import { useWorkspaceRefresh } from "@/lib/api/useWorkspace";
-import { FIELD_LABELS } from "@/lib/proposals";
+import { FIELD_LABELS, needsConflictReview } from "@/lib/proposals";
 import { ActorBadge } from "@/components/common/ActorBadge";
 
 const SHOWN = 3;
@@ -24,7 +24,9 @@ export function PendingApprovals({ workspaceId }: { workspaceId: string }) {
   useWorkspaceRefresh(workspaceId, reload);
 
   if (resource.status !== "ready" || resource.data.length === 0) return null;
-  const pending = resource.data;
+  // Conflicts first: they need a judgment call, not just a yes.
+  const pending = [...resource.data].sort((a, b) => Number(needsConflictReview(b)) - Number(needsConflictReview(a)));
+  const conflicts = pending.filter(needsConflictReview).length;
 
   return (
     <section aria-labelledby="pending-approvals-heading" className="rounded-md border border-warn-rule bg-card px-5 py-4">
@@ -40,9 +42,16 @@ export function PendingApprovals({ workspaceId }: { workspaceId: string }) {
           <ArrowRightIcon className="size-3.5" aria-hidden />
         </Link>
       </div>
+      {conflicts > 0 && (
+        <p className="mt-1 flex items-center gap-1.5 text-sm font-medium text-warn">
+          <AlertTriangleIcon className="size-3.5" aria-hidden />
+          {conflicts === 1 ? "1 conflict needs a decision" : `${conflicts} conflicts need a decision`}
+        </p>
+      )}
       <ul className="mt-2 flex flex-col gap-1.5 text-sm">
         {pending.slice(0, SHOWN).map((p) => (
           <li key={p.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+            {needsConflictReview(p) && <span className="label-caps text-warn">Conflict</span>}
             <span className="label-caps text-muted-foreground">{FIELD_LABELS[p.field]}</span>
             <span className="min-w-0 flex-1 truncate">{p.proposedValue}</span>
             <ActorBadge actor={p.createdBy} className="text-xs" />

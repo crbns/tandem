@@ -4,7 +4,7 @@ import Link from "next/link";
 import { CheckIcon, Loader2Icon, XIcon } from "lucide-react";
 import type { ContextProposal } from "@/lib/api";
 import { displayId } from "@/lib/files";
-import { FIELD_LABELS, replacesValue } from "@/lib/proposals";
+import { FIELD_LABELS, proposalStatusLabel, replacesValue, type StatusTone } from "@/lib/proposals";
 import { formatAbsolute, formatRelative } from "@/lib/time";
 import { useNow } from "@/lib/useNow";
 import { ActorBadge } from "@/components/common/ActorBadge";
@@ -106,23 +106,27 @@ export function ProposalCard({ proposal, current, approvedScope, canDecide, deci
   );
 }
 
-const STATUS_STYLE: Record<ContextProposal["status"], { label: string; className: string }> = {
-  pending: { label: "Pending", className: "text-muted-foreground" },
-  applied: { label: "Recorded", className: "text-archive" },
-  approved: { label: "Approved", className: "text-archive" },
-  rejected: { label: "Rejected", className: "text-muted-foreground" },
-  stale: { label: "Stale", className: "text-warn" },
+const TONE_CLASS: Record<StatusTone, string> = {
+  muted: "text-muted-foreground",
+  archive: "text-archive",
+  warn: "text-warn",
 };
 
 /** A decided proposal, one row in the record. */
 export function DecidedProposal({ proposal }: { proposal: ContextProposal }) {
   const now = useNow();
-  const status = STATUS_STYLE[proposal.status];
+  const status = proposalStatusLabel(proposal);
   const at = proposal.decidedAt ?? proposal.createdAt;
   return (
     <li className="flex flex-col gap-1 border-b px-4 py-3 text-sm last:border-b-0">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className={cn("label-caps w-18 shrink-0", status.className)}>{status.label}</span>
+        <span className={cn("label-caps w-18 shrink-0", TONE_CLASS[status.tone])}>{status.label}</span>
+        {status.detail && <span className="label-caps text-muted-foreground">{status.detail}</span>}
+        {proposal.conflict && proposal.conflict.items.length > 0 && (
+          <span className="label-caps text-warn" title={proposal.conflict.items.map((item) => item.targetText).join("\n")}>
+            Conflict
+          </span>
+        )}
         <span className="label-caps text-muted-foreground">
           {proposal.operation === "add" ? FIELD_LABELS[proposal.field] : `${proposal.operation === "resolve" ? "Resolve" : "Remove"} ${FIELD_LABELS[proposal.field].toLowerCase()}`}
         </span>
@@ -136,7 +140,7 @@ export function DecidedProposal({ proposal }: { proposal: ContextProposal }) {
         <ActorBadge actor={proposal.createdBy} />
         {proposal.decidedBy ? (
           <>
-            <span>· {proposal.status === "applied" ? "recorded" : proposal.status === "approved" ? "approved" : "rejected"} by</span>
+            <span>· {proposal.status === "applied" ? "recorded" : proposal.status === "approved" ? "accepted" : "rejected"} by</span>
             <ActorBadge actor={proposal.decidedBy} />
           </>
         ) : (
@@ -145,6 +149,7 @@ export function DecidedProposal({ proposal }: { proposal: ContextProposal }) {
           )
         )}
       </p>
+      {proposal.decisionNote && <p className="text-xs text-muted-foreground italic break-words">&ldquo;{proposal.decisionNote}&rdquo;</p>}
     </li>
   );
 }

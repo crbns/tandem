@@ -66,6 +66,7 @@ import {
 import { matchesQuery, queryTerms } from "./lib/names";
 import {
   actorValidator,
+  conflictValidator,
   contextApprovalValidator,
   contextFieldValidator,
   contextValidator,
@@ -73,6 +74,7 @@ import {
   proposalStatusValidator,
   proposalValidator,
   publishedWorkValidator,
+  resolutionValidator,
   roleValidator,
   taskStatusValidator,
   taskValidator,
@@ -791,6 +793,21 @@ export const syncWorkspace = internalMutation({
         status: v.literal("pending"),
         createdBy: actorValidator,
         createdAt: v.number(),
+        conflict: v.union(conflictValidator, v.null()),
+      }),
+    ),
+    /** lib/ops.ts toResolvedConflict. */
+    resolvedConflicts: v.array(
+      v.object({
+        proposalId: v.id("context_proposals"),
+        field: contextFieldValidator,
+        proposedValue: v.string(),
+        outcome: resolutionValidator,
+        note: v.union(v.string(), v.null()),
+        resolvedBy: actorValidator,
+        resolvedAt: v.number(),
+        inEffect: v.array(v.object({ id: v.string(), text: v.string() })),
+        notInEffect: v.array(v.string()),
       }),
     ),
     changedFiles: v.array(fileRowValidator),
@@ -902,6 +919,8 @@ export const proposeContextChange = internalMutation({
   returns: v.object({
     proposal: proposalValidator,
     contextRevision: v.number(),
+    /** The same change was already pending or just applied; no new row. */
+    deduplicated: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal, { write: true });
@@ -921,6 +940,7 @@ export const proposeContextChange = internalMutation({
       ownerUserId: args.ownerUserId,
       actor: session.actor,
     });
+    const { deduplicated, ...row } = proposal;
     // An applied change by an agent that already had the previous version
     // leaves it holding the new one: it wrote the only difference. Pending
     // proposals don't count; the agent receives the approval when it syncs.
@@ -937,15 +957,17 @@ export const proposeContextChange = internalMutation({
     await recordActivity(ctx, session, {
       tool: "propose_context_change",
       kind: "propose",
-      summary:
-        proposal.status === "applied"
+      summary: deduplicated
+        ? `Proposed a ${field} change that was already ${proposal.status === "applied" ? "applied" : "pending"}`
+        : proposal.status === "applied"
           ? `Applied a ${field} change`
           : `Proposed a ${field} change (pending approval)`,
       resource: { type: "proposal", id: proposal._id, label: field },
     });
     return {
-      proposal: toProposal(proposal),
+      proposal: toProposal(row),
       contextRevision: proposal.contextRevision ?? 0,
+      deduplicated,
     };
   },
 });
