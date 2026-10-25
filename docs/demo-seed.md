@@ -14,9 +14,9 @@ pnpm demo:reset
 | Workspace | "Onboarding refresh" |
 | Files | `brief.md` v1 (Alex); `research/support-tickets.md` v1 (Casey); `research/interview-notes.md` v2 (Blake: v1 had five interviews, v2 adds a sixth and a quotes section, so there is a real diff to ask about); `requirements/setup-checklist.md` v1 (Blake) |
 | Approved context | Goal: "Cut new-customer time-to-first-value from 9 days to 3 by the end of Q1." Scope: welcome emails, setup checklist and three how-to guides are in; pricing, a new help center and localization are out. Both are sourced from `brief.md` and approved by Alex. They go through the normal propose-and-approve path, so the Approvals page and event log show them. |
-| Working context | Decision: first value means "first project created". Ownership: Blake owns the welcome email sequence. Constraint: launch before the January 15 billing cycle. Open question: do the guides live in the app or the existing help center? All approved by Alex. |
+| Working context | Decision: first value means "first project created". Ownership: Blake owns the welcome email sequence. Constraints: launch before the January 15 billing cycle; no new help-center platform (the guides live in the existing help center or the app). Open question: do the guides live in the app or the existing help center? All approved by Alex. |
 | Tasks | "Draft the welcome email sequence" (in progress, Blake), "Write the three how-to guides" (open), "Pull the top setup questions from support" (done, Casey) |
-| Pending proposal | Casey's Gemini proposes moving the guides to a new help-center platform. It contradicts the approved scope on purpose, so the Approvals page has something to reject live. |
+| Pending proposal | Casey's Gemini proposes moving the guides to a new help-center platform. It contradicts the approved scope and the help-center constraint on purpose, so the Approvals page has something to reject live. Conflict detection checks it against that constraint: with `ANTHROPIC_API_KEY` set on the deployment, the card shows it as a conflict with an explanation; without a key, the word-overlap fallback marks it "uncertain" against the same constraint. |
 | Agent connections | Alex's Claude, Blake's Claude, Casey's Gemini (one token each) |
 
 `proposal.md` is deliberately missing. In the demo, Alex's Claude creates it live.
