@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { analyze, rates } from "./run.mjs";
+import { analyze, rates, renderLoopTable, summarizeLoop } from "./run.mjs";
 
 const context = {
   prompt: { id: "synthetic", kind: "project" },
@@ -465,4 +465,162 @@ test("folder prompts target the seeded tree", async () => {
     assert.ok(FOLDER_SEED.folders.includes(f.folder_path), f.name);
     if (f.marker) assert.ok(f.content.includes(f.marker), f.name);
   }
+});
+
+const edit = {
+  require: ["sync", "read", "save"],
+  forbid: ["publish", "propose"],
+};
+const loopTrial = (loop, events) =>
+  analyze(
+    {
+      stdout: [init, ...events, final].map((e) => JSON.stringify(e)).join("\n"),
+      stderr: "",
+      code: 0,
+      timedOut: false,
+    },
+    { ...context, prompt: { id: "l", kind: "project", loop } },
+  );
+
+test("loop grader: sync, read and save with no publish or propose passes an edit", () => {
+  const t = loopTrial(edit, [
+    toolUse("s", "sync_workspace"),
+    toolResult("s"),
+    toolUse("r", "read_file"),
+    toolResult("r"),
+    // A conflict then a successful retry still counts as a save.
+    toolUse("u1", "update_document"),
+    toolResult("u1", true, "VERSION_CONFLICT"),
+    toolUse("u2", "update_document"),
+    toolResult("u2"),
+  ]);
+  assert.deepEqual(t.loop, {
+    require: edit.require,
+    forbid: edit.forbid,
+    missing: [],
+    unwanted: [],
+    passed: true,
+    write_calls: 2,
+    publish_calls: 0,
+    propose_calls: 0,
+  });
+});
+
+test("loop grader: an unprompted publish or propose fails an edit, even when it errors", () => {
+  const t = loopTrial(edit, [
+    toolUse("s", "sync_workspace"),
+    toolResult("s"),
+    toolUse("r", "search_files"),
+    toolResult("r"),
+    toolUse("c", "create_document"),
+    toolResult("c"),
+    toolUse("p", "publish_work"),
+    toolResult("p"),
+    toolUse("q", "propose_context_change"),
+    toolResult("q", true, "INVALID_INPUT"),
+  ]).loop;
+  assert.equal(t.passed, false);
+  assert.deepEqual(t.missing, []);
+  assert.deepEqual(t.unwanted, ["publish", "propose"]);
+  assert.equal(t.write_calls, 3);
+});
+
+test("loop grader: a failed save or a missing sync is missing; a directed proposal passes", () => {
+  const failed = loopTrial(edit, [
+    toolUse("r", "read_file"),
+    toolResult("r"),
+    toolUse("u", "update_document"),
+    toolResult("u", true, "VERSION_CONFLICT"),
+  ]).loop;
+  assert.deepEqual(failed.missing, ["sync", "save"]);
+  assert.equal(failed.passed, false);
+  const directed = loopTrial(
+    { require: ["sync", "propose"], forbid: ["publish"] },
+    [
+      toolUse("s", "sync_workspace"),
+      toolResult("s"),
+      toolUse("q", "propose_context_change"),
+      toolResult("q"),
+    ],
+  ).loop;
+  assert.equal(directed.passed, true);
+  assert.throws(
+    () => loopTrial({ require: ["dance"], forbid: [] }, []),
+    /Unknown loop step dance/,
+  );
+});
+
+test("loop summary tallies trials per step and sums calls", () => {
+  const pass = loopTrial(edit, [
+    toolUse("s", "sync_workspace"),
+    toolResult("s"),
+    toolUse("r", "read_file"),
+    toolResult("r"),
+    toolUse("u", "update_document"),
+    toolResult("u"),
+  ]);
+  const fail = loopTrial(edit, [
+    toolUse("s", "sync_workspace"),
+    toolResult("s"),
+    toolUse("p", "publish_work"),
+    toolResult("p"),
+  ]);
+  const rows = summarizeLoop(
+    [pass, fail].map((t) => ({ ...t, prompt_id: "l" })),
+    [{ id: "l", loop: edit }, { id: "x" }],
+    ["WITH_SKILL", "NO_SKILL"],
+  );
+  assert.deepEqual(rows, [
+    {
+      prompt_id: "l",
+      condition: "WITH_SKILL",
+      n: 2,
+      passed: 1,
+      missing: { read: 1, save: 1 },
+      unwanted: { publish: 1 },
+      write_calls: 2,
+      publish_calls: 1,
+      propose_calls: 0,
+    },
+  ]);
+  assert.match(
+    renderLoopTable(rows),
+    /\| `l` \| WITH_SKILL \| 2 \| 1\/2 \| read 1, save 1 \| publish 1 \| 2 \| 1 \| 0 \|/,
+  );
+});
+
+test("loop prompts: ordinary edits and drafts need a save and forbid publish and propose", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { prompts } = JSON.parse(
+    readFileSync(new URL("./prompts.json", import.meta.url), "utf8"),
+  );
+  for (const p of prompts.filter((x) => x.kind !== "control"))
+    assert.ok(p.loop, `${p.id} has a loop spec`);
+  for (const id of [
+    "p1-launch-brief",
+    "p3-status-update",
+    "p6-conflict-edit",
+    "p7-create-document",
+    "p8-folder-existing",
+    "p9-folder-new",
+  ]) {
+    const { loop } = prompts.find((p) => p.id === id);
+    assert.ok(loop.require.includes("save"), id);
+    assert.deepEqual(
+      loop.forbid.filter((s) => s !== "save"),
+      ["publish", "propose"],
+      id,
+    );
+  }
+  // p5 has no spec to edit in the bare env, so it forbids the same writes
+  // without requiring a save.
+  assert.deepEqual(
+    prompts.find((p) => p.id === "p5-tighten-intro").loop.forbid,
+    ["publish", "propose"],
+  );
+  // Only a request that directs a context change expects a proposal.
+  assert.deepEqual(
+    prompts.filter((p) => p.loop?.require.includes("propose")).map((p) => p.id),
+    ["p4-cut-mobile"],
+  );
 });
