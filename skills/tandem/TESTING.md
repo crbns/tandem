@@ -8,7 +8,7 @@ result is implied by these instructions. Claude Code measurements are separate i
 ## Prepare a disposable workspace
 
 Use a team-approved test deployment and workspace with two human members, a
-canonical `brief.md`, and an approved goal and ownership. Do not reset the shared
+canonical `brief.md`, and a recorded goal and ownership. Do not reset the shared
 demo or mutate production to prepare a test. A remote web connector needs a
 publicly reachable HTTPS `/mcp` endpoint; `127.0.0.1` from the CLI measurement is
 not reachable from hosted clients. Obtain the URL from the Assistants page:
@@ -19,7 +19,7 @@ https://<approved-test-deployment>.convex.site/mcp
 
 Record date, tester, client name/version, exact subscription plan, organization
 settings, model, deployment, workspace, and installed skill revision. Capture the
-approved goal and original brief revision for comparison. Redact API keys,
+project goal and original brief revision for comparison. Redact API keys,
 passwords, OAuth codes and private conversation content from artifacts.
 
 Build the skill from the repository root:
@@ -200,41 +200,37 @@ Expected, per turn (record each as yes / no / prompted):
 
 | Turn | Read before                                                      | Write back after                                                                  |
 | ---- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| 1    | `sync_workspace` (brief); answer cites the approved goal         | none (question only)                                                              |
+| 1    | `sync_workspace` (brief); answer cites the project goal          | none (question only)                                                              |
 | 2    | `sync_workspace` with `since` (sees the teammate edit), `read_file` of `brief.md` | `update_document` with the version read (keeping the teammate's edit; on `VERSION_CONFLICT`, re-read and merge), then `publish_work`; one-line report |
 | 3    | `sync_workspace` with `since`                                    | `create_document`, then `publish_work`; one-line report                           |
 | 4    | `sync_workspace` with `since`, `read_file` of `brief.md`         | no file change; still `publish_work` kind `"finding"` with the recommendation     |
-| 5    | `sync_workspace` with `since`                                    | `propose_context_change` (`decisions`), reported as pending, then `publish_work` kind `"finding"`; no file edit claims it |
+| 5    | `sync_workspace` with `since`                                    | `update_context` (`decisions`), reported as applied; no file edit claims it      |
 
 Also check in the dashboard: the new revisions, the published work, and the
-pending proposal, each attributed to the assistant. Check that no published
+recorded decision, each attributed to the assistant. Check that no published
 summary quotes the chat beyond the work itself. Note every client
 write-confirmation prompt; "Always allow" on Tandem's tools removes them.
 
-| Client         | Run | T1 read | T2 read/write | T3 read/write | T4 finding | T5 propose | Prompted? | Notes |
+| Client         | Run | T1 read | T2 read/write | T3 read/write | T4 finding | T5 context | Prompted? | Notes |
 | -------------- | --- | ------- | ------------- | ------------- | ---------- | ---------- | --------- | ----- |
 | Claude web     |     | PENDING | PENDING       | PENDING       | PENDING    | PENDING    |           |       |
 | Claude desktop |     | PENDING | PENDING       | PENDING       | PENDING    | PENDING    |           |       |
 
 **Empty-context run.** Send turns 1 to 3 once per client in a fresh chat on a
-workspace with no approved goal, scope or entries, after seeding `brief.md`
-with a goal, an owner and an open question in its text (turn 1 then finds no
-approved goal). Expected: the first
-`sync_workspace` result's `next_steps` starts with the "context is empty" step,
-and the assistant seeds the context from the files it reads or saves: after
-reading `brief.md` and after each `create_document` / `update_document` it
-calls `propose_context_change` for what the file shows (goal, scope,
-constraints, decisions, owners, open questions) with that file's id in
-`source_ids`. The proposals stay pending (manual workspace), so later syncs
-still show the "context is empty" step; the assistant must not re-propose what
-is already pending (the brief's `blockers.pending_approvals`). Check in the
-dashboard that the proposals are pending, cite the file, and that each item
-was proposed once. Record yes / no / prompted per client.
+workspace with no goal, scope or entries, after seeding `brief.md` with a
+goal, an owner and an open question in its text (turn 1 then finds no
+recorded goal). Expected: the assistant reads and saves files but makes no
+`update_context` call for what they show. Within a minute or two of the saves,
+Tandem's context manager records the brief's goal (only because none is set),
+decisions and owner in project context, attributed to "Context manager" and
+citing the file, and a later `sync_workspace` shows them. Check in the
+dashboard that each item was recorded once. Record yes / no / prompted per
+client.
 
-| Client         | Run | Empty-context step seen | Proposals after read/save | Cite file in `source_ids` | No duplicate proposals | Notes |
-| -------------- | --- | ----------------------- | ------------------------- | ------------------------- | ---------------------- | ----- |
-| Claude web     |     | PENDING                 | PENDING                   | PENDING                   | PENDING                |       |
-| Claude desktop |     | PENDING                 | PENDING                   | PENDING                   | PENDING                |       |
+| Client         | Run | No unprompted `update_context` | Context manager recorded goal/owner | Cites the file | No duplicates | Notes |
+| -------------- | --- | ------------------------------ | ----------------------------------- | -------------- | ------------- | ----- |
+| Claude web     |     | PENDING                        | PENDING                             | PENDING        | PENDING       |       |
+| Claude desktop |     | PENDING                        | PENDING                             | PENDING        | PENDING       |       |
 
 ## Record and replay
 

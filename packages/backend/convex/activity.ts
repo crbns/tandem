@@ -1,5 +1,5 @@
 // The dashboard's Live view: which assistants touched the workspace, what each
-// MCP call did, and whether each connection has received the latest approved
+// MCP call did, and whether each connection has received the latest project
 // context. Rows come from agent_activity (one per MCP call, written by
 // mcpTools.ts) merged with the human decisions and edits in workspace_events.
 // Queries only read; recording happens in the tool mutations themselves.
@@ -80,7 +80,8 @@ function activityKind(row: Doc<"agent_activity">): TimelineKind {
 function workspaceKind(kind: string): TimelineKind | null {
   if (kind === "context.approved") return "approve";
   if (kind === "context.rejected") return "reject";
-  // Direct dashboard edits and proposals that applied at once.
+  // Context changes; the approve/reject kinds and these older kinds are
+  // history from the removed proposal flow.
   if (
     kind === "context.updated" ||
     kind === "context.recorded" ||
@@ -151,7 +152,7 @@ function fromEvent(event: Doc<"workspace_events">, kind: TimelineKind): Timeline
 }
 
 /**
- * Every live connection with its presence and propagation: how many approved
+ * Every live connection with its presence and propagation: how many project
  * context versions it has not yet received through sync_workspace. Any member sees every assistant, like listAgentActivity.
  */
 export const getAgentNetwork = query({

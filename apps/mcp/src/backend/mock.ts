@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   TandemError,
-  approvalRequired,
   fileNotFound,
   folderNameExists,
   folderNotFound,
@@ -28,11 +27,10 @@ import type {
   Actor,
   AgentConnection,
   WorkspaceMember,
-  ApplyContextChangeInput,
   Attribution,
   ContextEntry,
   ContextField,
-  ContextProposal,
+  ContextValue,
   CreateDocumentInput,
   CreateFolderInput,
   CreateFolderResult,
@@ -40,14 +38,11 @@ import type {
   FolderMetadata,
   FileVersions,
   FileWithContent,
-  GetApprovalsInput,
   ListFilesInput,
   ListFilesResult,
   MoveFileInput,
   MoveFolderInput,
   Ownership,
-  ProposeContextChangeInput,
-  ProposedValue,
   PublishWorkInput,
   PublishedWork,
   ReadFileInput,
@@ -57,6 +52,8 @@ import type {
   SyncInput,
   SyncResult,
   TandemBackend,
+  UpdateContextInput,
+  UpdateContextResult,
   UpdateDocumentInput,
   WorkspaceEvent,
   WorkspaceEventType,
@@ -148,8 +145,6 @@ export class MockBackend implements TandemBackend {
   private readonly workspaces = new Map<string, StoredWorkspace>();
   private readonly files = new Map<string, StoredFile>();
   private readonly folders = new Map<string, StoredFolder>();
-  // Insertion order is creation order, so reversing gives newest first.
-  private readonly proposals = new Map<string, ContextProposal>();
   private readonly published = new Map<string, PublishedWork>();
   /** Keyed by user id and client. */
   private readonly connections = new Map<string, AgentConnection>();
@@ -174,7 +169,7 @@ export class MockBackend implements TandemBackend {
       context: {
         goal: "Ship a working Tandem demo at Cal Hacks 13.0: two teammates, each in their own assistant, editing one canonical brief without losing work.",
         scope:
-          "One shared workspace with files, revisions, approvals, and a remote MCP server for Claude and ChatGPT. No real-time co-editing and no agent-to-agent messaging.",
+          "One shared workspace with files, revisions, project context, and a remote MCP server for Claude and ChatGPT. No real-time co-editing and no agent-to-agent messaging.",
         constraints: [
           contextEntry("Submissions are due Oct 25, 9 AM PT."),
           contextEntry(
@@ -691,28 +686,6 @@ export class MockBackend implements TandemBackend {
       workspace: { id: workspaceId, name: ws.name },
       context: structuredClone(ws.context),
       context_version: ws.context_version,
-      pending_proposals: this.proposalsIn(workspaceId)
-        .filter((p) => p.status === "pending")
-        .map(
-          ({
-            id,
-            field,
-            proposed_value,
-            supersedes,
-            rationale,
-            proposed_by,
-            created_at,
-          }) => ({
-            proposed_value: structuredClone(proposed_value),
-            supersedes,
-            status: "pending" as const,
-            id,
-            field,
-            rationale,
-            proposed_by,
-            created_at,
-          }),
-        ),
       changed_files: changed.slice(0, SYNC_LIMIT),
       files_truncated: changed.length > SYNC_LIMIT,
       folders: folders.slice(0, SYNC_FOLDER_LIMIT),
@@ -725,38 +698,50 @@ export class MockBackend implements TandemBackend {
     };
   }
 
-  async proposeContextChange(
+  async updateContext(
     actor: Actor,
-    input: ProposeContextChangeInput,
-  ): Promise<ContextProposal> {
+    input: UpdateContextInput,
+  ): Promise<UpdateContextResult> {
     const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
     const ws = this.workspaces.get(workspaceId)!;
+    const { field } = input;
     const operation = input.operation ?? "add";
-    const working =
-      input.field === "constraints" || input.field === "open_questions";
+    const working = field === "constraints" || field === "open_questions";
     if (!["add", "resolve", "remove"].includes(operation))
       throw new TandemError("INVALID_INPUT", "Invalid operation.");
-    if (operation !== "add") {
+    if (
+      (operation === "resolve" && field !== "open_questions") ||
+      (operation === "remove" && !working)
+    )
+      throw new TandemError(
+        "INVALID_INPUT",
+        "Only open questions can be resolved; only constraints and open questions can be removed.",
+      );
+    if (operation !== "add" && !input.entry_id)
+      throw new TandemError(
+        "INVALID_INPUT",
+        "entry_id is required for resolve/remove.",
+      );
+    if (operation === "add" && input.entry_id !== undefined)
+      throw new TandemError(
+        "INVALID_INPUT",
+        "entry_id is only valid for resolve/remove.",
+      );
+    if (
+      input.supersedes !== undefined &&
+      (operation !== "add" || field !== "decisions")
+    )
+      throw new TandemError(
+        "INVALID_INPUT",
+        "supersedes is only valid when adding a decision.",
+      );
+    // After the dedupe checks, like the real server: a retry of a change that
+    // already applied is deduplicated, not a conflict with its own write.
+    const checkVersion = () => {
       if (
-        !input.entry_id ||
-        !Number.isSafeInteger(input.expected_version) ||
-        input.expected_version! < 0
+        input.expected_version !== undefined &&
+        input.expected_version !== ws.context_version
       )
-        throw new TandemError(
-          "INVALID_INPUT",
-          "entry_id and expected_version are required for resolve/remove.",
-        );
-      if (operation === "remove" && actor.actor_type !== "human")
-        throw forbidden(workspaceId);
-      if (
-        !working ||
-        (operation === "resolve" && input.field !== "open_questions")
-      )
-        throw new TandemError(
-          "INVALID_INPUT",
-          "Only open questions can be resolved; only working entries can be removed.",
-        );
-      if (input.expected_version !== ws.context_version)
         throw new TandemError(
           "VERSION_CONFLICT",
           "Sync and reconcile the latest context.",
@@ -765,115 +750,111 @@ export class MockBackend implements TandemBackend {
             expected_version: input.expected_version,
           },
         );
+    };
+    const label = CONTEXT_LABEL[field];
+    const done = (entryId: string, deduplicated: boolean) => {
+      this.touch(actor, "last_action_at");
+      return {
+        field,
+        operation,
+        entry_id: entryId,
+        context_version: ws.context_version,
+        deduplicated,
+      };
+    };
+
+    if (operation !== "add") {
+      const entries =
+        field === "open_questions"
+          ? ws.context.open_questions
+          : ws.context.constraints;
+      const target = entries.find((e) => e.id === input.entry_id);
+      if (!target)
+        throw new TandemError("INVALID_INPUT", "Context entry not found.", {
+          entry_id: input.entry_id,
+        });
+      // Already resolved: a retried resolve changes nothing.
+      if (operation === "resolve" && target.status === "resolved")
+        return done(target.id, true);
+      checkVersion();
+      if (operation === "remove") entries.splice(entries.indexOf(target), 1);
+      else
+        Object.assign(target, {
+          status: "resolved",
+          resolved_by: attribution(actor),
+          resolved_at: Date.now(),
+        });
+      ws.context_version += 1;
+      ws.context.updated_at = new Date().toISOString();
+      ws.context.updated_by = attribution(actor);
+      this.appendEvent(
+        workspaceId,
+        "context.updated",
+        workspaceId,
+        attribution(actor),
+        `${operation === "resolve" ? "Resolved" : "Removed"} ${label}`,
+      );
+      return done(target.id, false);
     }
+
+    const value = input.value;
+    this.checkValue(workspaceId, field, value);
+    const existing = this.existingEntry(ws.context, field, value);
+    if (existing !== null && input.supersedes === undefined)
+      return done(existing, true);
+    checkVersion();
     if (
-      input.supersedes &&
-      (operation !== "add" ||
-        input.field !== "decisions" ||
-        !ws.context.decisions.some(
-          (e) => e.id === input.supersedes && e.status === "active",
-        ))
+      input.supersedes !== undefined &&
+      !ws.context.decisions.some(
+        (e) => e.id === input.supersedes && e.status === "active",
+      )
     )
       throw new TandemError(
         "INVALID_INPUT",
         "supersedes must name an active decision in this workspace.",
       );
-    if (operation === "add" && input.entry_id !== undefined)
-      throw new TandemError(
-        "INVALID_INPUT",
-        "entry_id is only valid for resolve/remove.",
-      );
-    if (
-      input.expected_version !== undefined &&
-      input.expected_version !== ws.context_version
-    )
-      throw new TandemError(
-        "VERSION_CONFLICT",
-        "Sync and reconcile the latest context.",
-        {
-          current_version: ws.context_version,
-          expected_version: input.expected_version,
-        },
-      );
-    const entries =
-      input.field === "open_questions"
-        ? ws.context.open_questions
-        : ws.context.constraints;
-    const target =
-      operation !== "add"
-        ? entries.find(
-            (e) =>
-              e.id === input.entry_id &&
-              (operation === "remove" || e.status === "active"),
-          )
-        : undefined;
-    if (operation !== "add" && !target)
-      throw new TandemError("INVALID_INPUT", "Active context entry not found.");
-    const proposedValue =
-      operation === "add" ? input.proposed_value : target!.text;
-    this.checkValue(workspaceId, input.field, proposedValue);
-    const proposal: ContextProposal = {
-      base_context_version: this.workspaces.get(workspaceId)!.context_version,
-      id: `prop_${randomUUID()}`,
-      workspace_id: workspaceId,
-      field: input.field,
-      proposed_value: structuredClone(proposedValue),
-      rationale: input.rationale,
-      source_ids: this.checkFileIds(workspaceId, input.source_ids),
-      status: working ? "applied" : "pending",
-      supersedes: input.supersedes ?? null,
-      proposed_by: attribution(actor),
-      created_at: new Date().toISOString(),
-    };
-    if (working) {
-      if (operation === "add") {
-        this.applyToContext(
-          workspaceId,
-          input.field,
-          proposedValue,
-          actor,
-          proposal.source_ids,
-        );
-      } else {
-        if (operation === "remove") entries.splice(entries.indexOf(target!), 1);
-        else
-          Object.assign(target!, {
-            status: "resolved",
-            resolved_by: attribution(actor),
-            resolved_at: Date.now(),
-          });
-        ws.context_version += 1;
-        ws.context.updated_at = new Date().toISOString();
-        ws.context.updated_by = attribution(actor);
-      }
-    }
-    this.proposals.set(proposal.id, proposal);
+    const entryId = this.applyToContext(
+      workspaceId,
+      field,
+      value,
+      actor,
+      this.checkFileIds(workspaceId, input.source_ids),
+      input.supersedes ?? null,
+    );
     this.appendEvent(
       workspaceId,
-      working
-        ? operation === "resolve"
-          ? "context.resolved"
-          : operation === "remove"
-            ? "context.removed"
-            : "context.recorded"
-        : "context.proposed",
-      proposal.id,
-      proposal.proposed_by,
-      `${proposal.field} change proposed`,
+      "context.updated",
+      workspaceId,
+      attribution(actor),
+      `Updated ${label}`,
     );
-    this.touch(actor, "last_action_at");
-    return structuredClone(proposal);
+    return done(entryId, false);
   }
 
-  async getApprovals(
-    actor: Actor,
-    input: GetApprovalsInput,
-  ): Promise<ContextProposal[]> {
-    const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
-    return structuredClone(
-      this.proposalsIn(workspaceId)
-        .filter((p) => input.status === "all" || p.status === input.status)
-        .slice(0, input.limit),
+  /** The active entry that already says `value`, or null (goal/scope: the field name). */
+  private existingEntry(
+    context: StructuredContext,
+    field: ContextField,
+    value: ContextValue,
+  ): string | null {
+    if (field === "goal" || field === "scope")
+      return sameText(context[field], value as string) ? field : null;
+    if (field === "ownership") {
+      const { area, owner_user_id } = value as Ownership;
+      return (
+        context.ownership.find(
+          (o) =>
+            o.status === "active" &&
+            o.owner_user_id === owner_user_id &&
+            nameKey(o.area) === nameKey(area),
+        )?.id ?? null
+      );
+    }
+    const entries: ContextEntry[] = context[field];
+    return (
+      entries.find(
+        (e) => e.status === "active" && sameText(e.text, value as string),
+      )?.id ?? null
     );
   }
 
@@ -904,108 +885,15 @@ export class MockBackend implements TandemBackend {
     return structuredClone(work);
   }
 
-  async decideProposal(
-    actor: Actor,
-    proposalId: string,
-    decision: "approve" | "reject",
-    note?: string,
-  ): Promise<ContextProposal> {
-    if (actor.actor_type !== "human") {
-      throw new TandemError(
-        "FORBIDDEN",
-        "Only a human workspace owner or admin can approve or reject proposals, in the Tandem dashboard.",
-        { proposal_id: proposalId },
-      );
-    }
-    const proposal = this.proposals.get(proposalId);
-    if (!proposal || !this.isMember(actor, proposal.workspace_id)) {
-      throw new TandemError(
-        "INVALID_INPUT",
-        `No proposal with id ${proposalId}.`,
-        {
-          proposal_id: proposalId,
-        },
-      );
-    }
-    this.requireContextManager(actor, proposal.workspace_id);
-    if (proposal.status !== "pending") {
-      throw new TandemError(
-        "INVALID_INPUT",
-        `Proposal ${proposalId} was already ${proposal.status}.`,
-        { proposal_id: proposalId, status: proposal.status },
-      );
-    }
-    const now = new Date().toISOString();
-    if (decision === "approve") {
-      const currentVersion = this.workspaces.get(
-        proposal.workspace_id,
-      )!.context_version;
-      if (proposal.base_context_version !== currentVersion) {
-        throw new TandemError(
-          "VERSION_CONFLICT",
-          "The approved context changed since this proposal was created. Sync the workspace and propose a reconciled change for human approval.",
-          {
-            proposal_id: proposalId,
-            base_context_version: proposal.base_context_version,
-            context_version: currentVersion,
-          },
-        );
-      }
-      this.applyToContext(
-        proposal.workspace_id,
-        proposal.field,
-        proposal.proposed_value,
-        actor,
-        proposal.source_ids,
-        proposal.supersedes,
-      );
-    }
-    proposal.status = decision === "approve" ? "approved" : "rejected";
-    proposal.decided_by = { user_id: actor.user_id, actor_type: "human" };
-    proposal.decided_at = now;
-    if (note !== undefined) proposal.decision_note = note;
-    this.appendEvent(
-      proposal.workspace_id,
-      decision === "approve" ? "context.approved" : "context.rejected",
-      proposal.id,
-      attribution(actor),
-      `${proposal.field} change ${proposal.status}`,
-    );
-    return structuredClone(proposal);
-  }
-
-  async applyContextChange(
-    actor: Actor,
-    input: ApplyContextChangeInput,
-  ): Promise<{ context: StructuredContext; context_version: number }> {
-    if (actor.actor_type !== "human") throw approvalRequired(input.field);
-    const workspaceId = this.resolveWorkspace(actor, input.workspace_id);
-    this.requireContextManager(actor, workspaceId);
-    this.applyToContext(workspaceId, input.field, input.value, actor, []);
-    this.appendEvent(
-      workspaceId,
-      "context.approved",
-      workspaceId,
-      attribution(actor),
-      `${input.field} changed by human`,
-    );
-    const ws = this.workspaces.get(workspaceId)!;
-    return {
-      context: structuredClone(ws.context),
-      context_version: ws.context_version,
-    };
-  }
-
+  /** Applies an addition and returns its entry id ("goal"/"scope" for those). */
   private applyToContext(
     workspaceId: string,
     field: ContextField,
-    value: ProposedValue,
+    value: ContextValue,
     actor: Actor,
     sourceIds: string[],
     supersedes: string | null = null,
-  ): void {
-    // Re-checked at apply time: e.g. a proposed owner may have left since.
-    this.checkValue(workspaceId, field, value);
+  ): string {
     const ws = this.workspaces.get(workspaceId)!;
     const context = ws.context;
     const now = new Date().toISOString();
@@ -1022,7 +910,7 @@ export class MockBackend implements TandemBackend {
     switch (field) {
       case "goal":
       case "scope":
-        context[field] = value as string;
+        context[field] = (value as string).trim();
         break;
       case "constraints":
         context.constraints.push(
@@ -1078,18 +966,20 @@ export class MockBackend implements TandemBackend {
     context.updated_at = now;
     context.updated_by = attribution(actor);
     ws.context_version += 1;
+    if (field === "goal" || field === "scope") return field;
+    return context[field].at(-1)!.id;
   }
 
-  /** Throws INVALID_INPUT unless `value` has the shape `field` needs (see ProposedValue). */
+  /** Throws INVALID_INPUT unless `value` has the shape `field` needs (see ContextValue). */
   private checkValue(
     workspaceId: string,
     field: ContextField,
-    value: ProposedValue | undefined,
-  ): asserts value is ProposedValue {
+    value: ContextValue | undefined,
+  ): asserts value is ContextValue {
     const fail = (expected: string) =>
       new TandemError(
         "INVALID_INPUT",
-        `proposed_value for ${field} must be ${expected}.`,
+        `value for ${field} must be ${expected}.`,
         { field },
       );
     switch (field) {
@@ -1099,16 +989,17 @@ export class MockBackend implements TandemBackend {
           throw fail("the full new text, as a non-empty string");
         return;
       case "open_questions":
+        if (!isNonEmptyString(value))
+          throw fail("question text, as a non-empty string");
+        return;
       case "decisions":
         if (!isNonEmptyString(value))
           throw fail("the decision text, as a non-empty string");
         return;
       case "constraints":
-        if (!isNonEmptyString(value)) {
-          throw fail(
-            "one new constraint, as a non-empty string: approval appends it, and existing constraints can't be removed through a proposal",
-          );
-        }
+        // Adds one constraint; remove an old one with operation remove.
+        if (!isNonEmptyString(value))
+          throw fail("one new constraint, as a non-empty string");
         return;
       case "ownership":
         if (
@@ -1146,13 +1037,6 @@ export class MockBackend implements TandemBackend {
     return unique;
   }
 
-  /** Newest first. */
-  private proposalsIn(workspaceId: string): ContextProposal[] {
-    return [...this.proposals.values()]
-      .filter((p) => p.workspace_id === workspaceId)
-      .reverse();
-  }
-
   private appendEvent(
     workspaceId: string,
     type: WorkspaceEventType,
@@ -1183,17 +1067,6 @@ export class MockBackend implements TandemBackend {
     };
     connection[key] = new Date().toISOString();
     this.connections.set(k, connection);
-  }
-
-  private requireContextManager(actor: Actor, workspaceId: string): void {
-    const role = this.workspaces.get(workspaceId)?.members.get(actor.user_id);
-    if (role !== "owner" && role !== "admin") {
-      throw new TandemError(
-        "FORBIDDEN",
-        "Only a workspace owner or admin can change the approved context.",
-        { workspace_id: workspaceId },
-      );
-    }
   }
 
   private resolveWorkspace(
@@ -1462,6 +1335,22 @@ function snippet(content: string, at: number, length: number): string {
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
+
+/** Context text matches ignoring case and runs of whitespace, as in Convex. */
+function sameText(a: string, b: string): boolean {
+  const norm = (t: string) => t.trim().replace(/\s+/g, " ").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** How event summaries name each field, as in Convex. */
+const CONTEXT_LABEL: Record<ContextField, string> = {
+  goal: "goal",
+  scope: "scope",
+  constraints: "constraint",
+  decisions: "decision",
+  ownership: "ownership",
+  open_questions: "open question",
+};
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;

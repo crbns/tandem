@@ -59,7 +59,7 @@ describe.runIf(optedIn)("demo seed: P0 slice on the seeded workspace", () => {
     await blake?.close();
   });
 
-  it("1. reset gives one workspace: brief.md v1 by Alex, approved goal and scope, three members, Casey's pending proposal", async () => {
+  it("1. reset gives one workspace: brief.md v1 by Alex, goal and scope, three members, Casey's decision", async () => {
     demo = resetDemo();
     alex = demo.members.find((m) => m.key === "alex")!;
     expect(demo.members.map((m) => [m.key, m.role])).toEqual([
@@ -71,15 +71,14 @@ describe.runIf(optedIn)("demo seed: P0 slice on the seeded workspace", () => {
     agent = await Agent.connect(mcpUrl, alex.token);
     const sync = await agent.ok<{
       workspace: { id: string };
-      context: { goal: string; scope: string };
-      pending_proposals: { field: string; status: string; proposed_by: Attribution }[];
+      context: { goal: string; scope: string; decisions: { text: string; updated_by: Attribution }[] };
     }>("sync_workspace");
     expect(sync.workspace.id).toBe(demo.workspaceId);
     expect(sync.context.goal).toBeTruthy();
     expect(sync.context.scope).toBeTruthy();
-    // The seed leaves exactly one decision for a person to reject on stage.
-    expect(sync.pending_proposals).toMatchObject([
-      { field: "decisions", status: "pending", proposed_by: { actor_type: "agent", client: "gemini" } },
+    // Casey's Gemini recorded one decision, contradicting the scope, for the team to see.
+    expect(sync.context.decisions.filter((d) => d.updated_by.actor_type === "agent")).toMatchObject([
+      { updated_by: { actor_type: "agent", client: "gemini" } },
     ]);
 
     const { files } = await agent.ok<{ files: McpFile[] }>("list_files");
@@ -88,7 +87,7 @@ describe.runIf(optedIn)("demo seed: P0 slice on the seeded workspace", () => {
       file_id: demo.briefFileId,
     });
     expect(brief.file).toMatchObject({ version: 1, updated_by: { actor_type: "human", user_id: alex.userId } });
-    // The approved goal is the one in the brief it came from.
+    // The goal is the one in the brief it came from.
     expect(brief.content).toContain(sync.context.goal);
   });
 

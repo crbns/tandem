@@ -50,7 +50,7 @@ function WorkspaceRedirect() {
 
   useEffect(() => {
     if (resource.status === "ready" && resource.data && !joining)
-      // Overview first: assistants, files and approved context on one screen.
+      // Overview first: assistants, files and project context on one screen.
       router.replace(`/w/${resource.data}/overview`);
   }, [resource, router, joining]);
 

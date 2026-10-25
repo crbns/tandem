@@ -216,13 +216,13 @@ describe("createConvexApi", () => {
     expect(await tandem.getRevision("files_1", 9)).toBeNull();
   });
 
-  it("is null without an approved goal, and credits the approver when there is one", async () => {
+  it("is null without a goal, and credits whoever set it when there is one", async () => {
     const empty = fakeConvex({ "workspaces:getWorkspaceContext": EMPTY_CONTEXT });
     expect(await createConvexApi(empty.client).getContext("workspaces_1")).toBeNull();
     const none = fakeConvex({ "workspaces:getWorkspaceContext": null });
     expect(await createConvexApi(none.client).getContext("workspaces_1")).toBeNull();
 
-    const approved = fakeConvex({
+    const withGoal = fakeConvex({
       "workspaces:getWorkspaceContext": {
         ...EMPTY_CONTEXT,
         goal: entry("Ship the demo", 5),
@@ -231,14 +231,14 @@ describe("createConvexApi", () => {
         revision: 4,
       },
     });
-    expect(await createConvexApi(approved.client).getContext("workspaces_1")).toEqual({
+    expect(await createConvexApi(withGoal.client).getContext("workspaces_1")).toEqual({
       goal: "Ship the demo",
       scope: "",
       constraints: ["No CRDT"],
       decisions: ["Use Convex"],
       version: 4,
-      approvedBy: { actorType: "human", userId: "users_alex", userName: "Alex" },
-      approvedAt: 5,
+      updatedBy: { actorType: "human", userId: "users_alex", userName: "Alex" },
+      updatedAt: 5,
     });
   });
 

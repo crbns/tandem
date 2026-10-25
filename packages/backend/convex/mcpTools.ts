@@ -4,8 +4,8 @@
 // (lib/agent.ts requireAgent) and then runs the same core operations as the
 // dashboard (lib/ops.ts) with agent attribution. They are internal, so only
 // the MCP endpoint can call them, and mutations even for reads, because every
-// agent call records lastMcpActionAt. There is deliberately no way to decide
-// a proposal or change the approved context from here.
+// agent call records lastMcpActionAt. Context changes (update_context) apply
+// at once, like a member's dashboard edit.
 import { lineChanges } from "./lib/diff";
 import { vMcpUser } from "@convex-dev/mcp";
 import { ConvexError, v } from "convex/values";
@@ -32,14 +32,12 @@ import {
   createTaskCore,
   getFileInWorkspace,
   getTaskInWorkspace,
-  listProposals,
+  changeContextCore,
   listTasks,
-  proposeContextChangeCore,
   publishWorkCore,
   searchFilesCore,
   syncCore,
   toPublishedWork,
-  toProposal,
   toTask,
   updateDocumentCore,
   updateTaskCore,
@@ -67,15 +65,10 @@ import { matchesQuery, queryTerms } from "./lib/names";
 import { observedValidator } from "./lib/observed";
 import {
   actorValidator,
-  conflictValidator,
-  contextApprovalValidator,
   contextFieldValidator,
   contextValidator,
   eventValidator,
-  proposalStatusValidator,
-  proposalValidator,
   publishedWorkValidator,
-  resolutionValidator,
   roleValidator,
   taskStatusValidator,
   taskValidator,
@@ -254,7 +247,6 @@ export const getWorkspaceInfo = internalMutation({
         id: v.id("workspaces"),
         name: v.string(),
         role: roleValidator,
-        contextApproval: contextApprovalValidator,
         memberCount: v.number(),
         isDefault: v.boolean(),
       }),
@@ -282,7 +274,7 @@ export const getWorkspaceInfo = internalMutation({
         q.eq("workspaceId", session.workspaceId),
       )
       .take(1000);
-    // Members are listed for ownership proposals: ids, names and roles only,
+    // Members are listed for ownership changes: ids, names and roles only,
     // never emails, and never another workspace's members.
     const members = [];
     for (const row of rows.slice(0, MEMBER_LIMIT)) {
@@ -309,7 +301,6 @@ export const getWorkspaceInfo = internalMutation({
               id: workspace._id,
               name: workspace.name,
               role: session.membership.role,
-              contextApproval: workspace.contextApproval ?? "manual",
               memberCount: rows.length,
               isDefault: true,
             },
@@ -783,34 +774,6 @@ export const syncWorkspace = internalMutation({
   returns: v.object({
     workspace: v.object({ id: v.id("workspaces"), name: v.string() }),
     context: contextValidator,
-    pendingProposals: v.array(
-      v.object({
-        id: v.id("context_proposals"),
-        field: contextFieldValidator,
-        operation: v.union(v.literal("add"), v.literal("resolve"), v.literal("remove")),
-        rationale: v.string(),
-        proposedValue: v.string(),
-        supersedes: v.union(v.string(), v.null()),
-        status: v.literal("pending"),
-        createdBy: actorValidator,
-        createdAt: v.number(),
-        conflict: v.union(conflictValidator, v.null()),
-      }),
-    ),
-    /** lib/ops.ts toResolvedConflict. */
-    resolvedConflicts: v.array(
-      v.object({
-        proposalId: v.id("context_proposals"),
-        field: contextFieldValidator,
-        proposedValue: v.string(),
-        outcome: resolutionValidator,
-        note: v.union(v.string(), v.null()),
-        resolvedBy: actorValidator,
-        resolvedAt: v.number(),
-        inEffect: v.array(v.object({ id: v.string(), text: v.string() })),
-        notInEffect: v.array(v.string()),
-      }),
-    ),
     changedFiles: v.array(fileRowValidator),
     filesTruncated: v.boolean(),
     /** Every live folder, sorted by path, on every sync. */
@@ -820,7 +783,7 @@ export const syncWorkspace = internalMutation({
     workTruncated: v.boolean(),
     tasks: v.array(taskValidator),
     tasksTruncated: v.boolean(),
-    /** lib/observed.ts: derived, not approved, context; null with since when this page didn't change it. */
+    /** lib/observed.ts: derived (not project) context; null with since when this page didn't change it. */
     observed: v.union(observedValidator, v.null()),
     /** context_intel_state.entriesRevision, also when observed is null. */
     observedRevision: v.number(),
@@ -906,7 +869,7 @@ export const syncWorkspace = internalMutation({
   },
 });
 
-export const proposeContextChange = internalMutation({
+export const updateContext = internalMutation({
   args: {
     principal,
     workspaceId: v.optional(v.string()),
@@ -915,96 +878,62 @@ export const proposeContextChange = internalMutation({
     supersedes: v.optional(v.string()),
     expectedVersion: v.optional(v.number()),
     field: contextFieldValidator,
-    proposedValue: v.optional(v.string()),
-    rationale: v.string(),
+    value: v.optional(v.string()),
     sourceFileIds: v.array(v.string()),
-    /** Required for ownership (proposedValue is then the area); else omitted. */
+    /** Required for ownership (value is then the area); else omitted. */
     ownerUserId: v.optional(v.string()),
   },
   returns: v.object({
-    proposal: proposalValidator,
     contextRevision: v.number(),
-    /** The same change was already pending or just applied; no new row. */
+    /** The added, resolved or removed entry ("goal"/"scope" for those). */
+    entryId: v.union(v.string(), v.null()),
+    /** The context already said this; nothing was written. */
     deduplicated: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal, { write: true });
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
     const revisionBefore = await currentContextRevision(ctx, workspaceId);
-    const proposal = await proposeContextChangeCore(ctx, {
+    const result = await changeContextCore(ctx, {
       workspaceId,
       field: args.field,
       operation: args.operation,
       entryId: args.entryId,
       supersedes: args.supersedes,
       expectedVersion: args.expectedVersion,
-      proposedValue: (args.operation ?? "add") === "add"
-        ? boundedText(args.proposedValue ?? "", 2000, "proposedValue") : undefined,
-      rationale: boundedText(args.rationale, 2000, "rationale"),
+      value: (args.operation ?? "add") === "add"
+        ? boundedText(args.value ?? "", 2000, "value") : undefined,
       sourceFileIds: args.sourceFileIds,
       ownerUserId: args.ownerUserId,
       actor: session.actor,
     });
-    const { deduplicated, ...row } = proposal;
-    // An applied change by an agent that already had the previous version
-    // leaves it holding the new one: it wrote the only difference. Pending
-    // proposals don't count; the agent receives the approval when it syncs.
+    // An agent that already had the previous version now holds the new one:
+    // it wrote the only difference.
     if (
-      proposal.status === "applied" &&
-      session.connection.syncedContextRevision === revisionBefore
-    ) {
-      const revisionAfter = await currentContextRevision(ctx, workspaceId);
-      if (revisionAfter === revisionBefore + 1)
-        await ctx.db.patch(session.connection._id, { syncedContextRevision: revisionAfter });
-    }
-    // Field and status only: never the proposed text or the rationale.
-    const field = proposal.field.replaceAll("_", " ");
+      !result.deduplicated &&
+      session.connection.syncedContextRevision === revisionBefore &&
+      result.version === revisionBefore + 1
+    )
+      await ctx.db.patch(session.connection._id, { syncedContextRevision: result.version });
+    // Field and operation only: never the text.
+    const field = args.field.replaceAll("_", " ");
+    const operation = args.operation ?? "add";
     await recordActivity(ctx, session, {
-      tool: "propose_context_change",
-      kind: "propose",
-      summary: deduplicated
-        ? `Proposed a ${field} change that was already ${proposal.status === "applied" ? "applied" : "pending"}`
-        : proposal.status === "applied"
-          ? `Applied a ${field} change`
-          : `Proposed a ${field} change (pending approval)`,
-      resource: { type: "proposal", id: proposal._id, label: field },
+      tool: "update_context",
+      kind: "write",
+      summary: result.deduplicated
+        ? `Context already had this ${field}`
+        : operation === "add"
+          ? `Updated ${field}`
+          : `${operation === "resolve" ? "Resolved" : "Removed"} ${field}`,
+      resource: { type: "context", id: workspaceId, label: `Context v${result.version}` },
+      contextRevision: result.version,
     });
     return {
-      proposal: toProposal(row),
-      contextRevision: proposal.contextRevision ?? 0,
-      deduplicated,
+      contextRevision: result.version,
+      entryId: result.entryId,
+      deduplicated: result.deduplicated,
     };
-  },
-});
-
-export const getApprovals = internalMutation({
-  args: {
-    principal,
-    workspaceId: v.optional(v.string()),
-    /** Omit for every status. */
-    status: v.optional(proposalStatusValidator),
-    limit: v.number(),
-  },
-  returns: v.array(
-    v.object({
-      proposal: proposalValidator,
-      contextRevision: v.number(),
-    }),
-  ),
-  handler: async (ctx, args) => {
-    const session = await agentCall(ctx, args.principal);
-    const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
-    const limit = boundedInt(args.limit, 1, 50);
-    const proposals = await listProposals(ctx, workspaceId, args.status, limit);
-    await recordActivity(ctx, session, {
-      tool: "get_approvals",
-      kind: "read",
-      summary: `Checked ${args.status ?? "all"} proposals (${proposals.length})`,
-    });
-    return proposals.map((proposal) => ({
-      proposal: toProposal(proposal),
-      contextRevision: proposal.contextRevision ?? 0,
-    }));
   },
 });
 

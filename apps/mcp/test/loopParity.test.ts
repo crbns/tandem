@@ -21,9 +21,9 @@ describe("loop guidance parity with Convex", () => {
     expect(mock.syncNextSteps()).toEqual(convex.syncNextSteps());
     expect(mock.savedNextSteps(file)).toEqual(convex.savedNextSteps(file));
     expect(mock.publishedNextSteps()).toEqual(convex.publishedNextSteps());
-    for (const status of ["pending", "applied", "stale"])
-      expect(mock.proposedNextSteps(status)).toEqual(
-        convex.proposedNextSteps(status),
+    for (const deduplicated of [false, true])
+      expect(mock.contextNextSteps(deduplicated)).toEqual(
+        convex.contextNextSteps(deduplicated),
       );
   });
 });

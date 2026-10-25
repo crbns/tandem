@@ -2,7 +2,7 @@
 
 The dashboard calls Convex directly through the `TandemApi` boundary (`lib/api/tandemApi.ts`). `lib/api/convex.ts` maps each method to a generated `@repo/backend` function reference; `lib/api/mock.ts` implements the same interface in memory. Components never import Convex.
 
-All arguments use camelCase; timestamps are epoch milliseconds; Record IDs are Convex IDs; context entry IDs are opaque stable strings returned by the backend. Fixtures in `test/convexAdapter.test.ts` and `test/approvalsAndConnections.test.ts` are typed from the generated function types, so a backend shape change fails `check-types`.
+All arguments use camelCase; timestamps are epoch milliseconds; Record IDs are Convex IDs; context entry IDs are opaque stable strings returned by the backend. Fixtures in `test/convexAdapter.test.ts` and `test/agentConnections.test.ts` are typed from the generated function types, so a backend shape change fails `check-types`.
 
 ## Function map
 
@@ -20,12 +20,10 @@ All arguments use camelCase; timestamps are epoch milliseconds; Record IDs are C
 | `updateFileContent(fileId, update)` | `files:updateDocument` | `{ fileId, expectedVersion, content }` → file metadata, or `VERSION_CONFLICT` |
 | `listRevisions(fileId)` | `files:getFileVersions` | `{ fileId, limit: 100 }` → newest-first metadata, no bodies |
 | `getRevision(fileId, version)` | `files:getFileRevision` | `{ fileId, version }` → revision with content, or null |
-| `getContext(workspaceId)` | `workspaces:getWorkspaceContext` | `{ workspaceId }` → approved context or null |
+| `getContext(workspaceId)` | `workspaces:getWorkspaceContext` | `{ workspaceId }` → compact project context or null |
 | `getContextDetails(workspaceId)` | `context:getDetails` | `{ workspaceId }` → entries with stable `id`, lifecycle status and attribution |
-| `updateContextField(workspaceId, input)` | `context:updateContextField` | `{ workspaceId, field, proposedValue, sourceFileIds, expectedVersion, entryId?, entryIndex?, ownerUserId? }` → `{ version }`; UI edits use `entryId` |
-| `proposeContextChange(workspaceId, input)` | `context:proposeContextChange` | `{ workspaceId, field, proposedValue?, rationale, sourceFileIds, operation?, entryId?, supersedes?, expectedVersion?, ownerUserId? }` → `{ id, status: "pending" \| "applied" }` |
-| `listProposals(workspaceId, status?)` | `context:getApprovals` | `{ workspaceId, status? }` → newest 100 proposals; any member |
-| `decideProposal(proposal, decision)` | `context:decideContextProposal` (+ `context:getApprovals` with `status: "stale"` after an approval) | `{ proposalId, decision }` → null |
+| `updateContextField(workspaceId, input)` | `context:updateContextField` | `{ workspaceId, field, proposedValue, sourceFileIds, expectedVersion, entryId?, entryIndex?, ownerUserId? }` → `{ version }`; any member; UI edits use `entryId` |
+| `changeContext(workspaceId, input)` | `context:changeContext` | `{ workspaceId, field, operation?, value?, ownerUserId?, entryId?, supersedes?, expectedVersion?, sourceFileIds }` → `{ version, entryId, deduplicated }`; any member |
 | `createAgentConnection(workspaceId, input)` | `agentConnections:createAgentConnection` | `{ workspaceId, client, displayName? }` → `{ connectionId, token, createdAt, mcpUrl }` |
 | `listAgentConnections(workspaceId)` | `agentConnections:listAgentConnections` | `{ workspaceId }` → caller's own; owner/admin see all. Never a token or hash |
 | `revokeAgentConnection(connectionId)` | `agentConnections:revokeAgentConnection` | `{ connectionId }` → null; the connection's person or an owner/admin |
@@ -43,18 +41,18 @@ Convex stores actors as `{ type: "human" | "agent" | "system", userId?, agentCon
 
 The identity plate (`components/common/ActorBadge.tsx`) renders an agent write as **"Alex via Claude"**: the person, then the client's product name (`lib/actors.ts` maps `claude`/`chatgpt`/`gemini`; other clients fall back to the label). Human writes show the person only. This applies to the file register, custody record, file header, save bar, conflict panel and revision history.
 
-## Approvals
+## Context changes
 
-- Every member can read proposals; only owner/admin humans see Approve/Reject (`lib/proposals.ts` `canDecideProposals`). The backend enforces this independently: `decideContextProposal` calls `requireHumanSession` (agent-bound identities get `APPROVAL_REQUIRED`) and rejects non-owner/admin members with `FORBIDDEN`.
-- **Revision checks.** Proposals store `contextRevision`. Approval rejects missing revision metadata as stale; legacy goal/scope proposals without `baseValue` compare the current revision. New goal/scope proposals compare the field value, so unrelated context edits do not invalidate them (`convex/context.ts`, `decideProposalCore`).
-- **Stale approvals.** Goal/scope proposals record the value they were based on. When that field changed since, the backend marks the proposal `stale` and returns `null` instead of throwing. The adapter therefore re-reads `getApprovals({ status: "stale" })` after an approval and rejects with `VERSION_CONFLICT` if the proposal is there; the approvals screen shows it as contested (ochre) with an explanation. If the backend later throws `VERSION_CONFLICT` or `PROPOSAL_STALE` directly, that maps to the same code and the extra read becomes a no-op. A decision proposal with `supersedes` also becomes stale when its target is no longer active.
-- `PROPOSAL_ALREADY_DECIDED` and `PROPOSAL_NOT_FOUND` map to the dashboard's `PROPOSAL_DECIDED` ("Already decided").
+There is no approval step. Every change to project context applies at once and is attributed to whoever made it: a member on the Project context page, an assistant over MCP (`update_context`), or Tandem's context manager. Both mutations need a human session (an agent-bound identity gets `APPROVAL_REQUIRED`) and accept any member, whatever their role.
 
-## Context lifecycle
+- `changeContext` adds a value (`operation` "add", the default; `value` required, and for ownership `value` is the area plus a member's `ownerUserId`). Goal and scope replace the current value; ownership replaces the owner of an equal area; a decision may `supersedes` an active decision, which then shows **Superseded**. An addition the context already holds (same text, or same owner and area) writes nothing and returns `deduplicated: true`, which the panel reports as "Already in project context".
+- `operation` "resolve" (open questions) and "remove" (constraints and open questions) need `entryId` and omit `value`. A repeated resolve is deduplicated.
+- `expectedVersion` is the context revision the person saw; a stale one fails with `VERSION_CONFLICT` and the panel asks them to reopen the editor.
+- `updateContextField` edits a value in place (goal/scope, or one active entry by `entryId`).
 
-Each workspace's `contextApproval` setting (the dropdown on the Approvals page; owners and admins change it with `workspaces.setContextApproval`) decides what happens to proposals. `"manual"`, the default, holds every proposal for human approval: every field, plus resolve and remove (stored with `operation` and `entryId`, and marked stale on approval if the entry is gone). `"automatic"` applies every proposal at once, and it appears as **Recorded**. Owner/admin direct edits (`updateContextField`) always apply.
+Entries keep backend IDs through list edits. Resolved entries stay visible with resolver attribution and can be removed; compact context summaries include active entries only.
 
-Entries retain backend IDs through list edits. Open questions can be resolved with resolver attribution and time; resolved entries remain visible and can be removed by a human. Humans can remove constraints and open questions; both resolve and remove send `entryId` and `expectedVersion`, and conflicts refresh the page for review. Decision replacement uses `supersedes` and waits for approval before the old entry shows **Superseded**; compact context summaries include active entries only.
+Every change records a `context.updated` workspace event ("Updated decision", "Resolved open question", "Removed constraint"), shown on Live as a context change. Older history may still hold `context.proposed`, `context.approved`, `context.rejected` and similar kinds, and `proposal` resources: Live renders them generically and links them to the Project context page.
 
 ## Agent connections
 
@@ -64,7 +62,7 @@ Entries retain backend IDs through list edits. Open questions can be resolved wi
 
 ## Freshness
 
-`watchWorkspace` holds one bounded reactive subscription (`getWorkspaceInfo`, newest 20 events) per mounted list. Every commit, proposal, decision and connect/revoke records a workspace event, so an assistant's new file or save shows up in the file list, approved goal and pending approvals without a reload. Lists also refetch on window focus. Read-only MCP calls update `lastMcpActionAt` without an event, so those times refresh on focus or Refresh.
+`watchWorkspace` holds one bounded reactive subscription (`getWorkspaceInfo`, newest 20 events) per mounted list. Every commit, context change and connect/revoke records a workspace event, so an assistant's new file, save or context change shows up in the file list, goal card and Project context page without a reload. Lists also refetch on window focus. Read-only MCP calls update `lastMcpActionAt` without an event, so those times refresh on focus or Refresh.
 
 ## Errors
 
@@ -77,5 +75,3 @@ The Password provider sends no verification email. Owners/admins create single-u
 ## Paginated file lists
 
 The adapter follows every `files:listFiles` cursor and rejects with `LIST_LIMIT_EXCEEDED` past 10,000 files / 100 pages (or on a repeated or empty nonterminal cursor), so it never returns a silently partial list.
-
-For context proposals, `proposedValue` is required only for `add`. Resolve/remove load the entry by ID and ignore any supplied value; send `entryId` and `expectedVersion` instead.

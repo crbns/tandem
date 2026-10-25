@@ -37,8 +37,7 @@ const TOOL_SURFACE = [
   "move_file",
   "move_folder",
   "publish_work",
-  "propose_context_change",
-  "get_approvals",
+  "update_context",
   "get_file_versions",
   "get_workspace_info",
   "manage_task",
@@ -46,7 +45,7 @@ const TOOL_SURFACE = [
 
 const INITIAL_GOAL = `Ship the Tandem P0 slice (${run})`;
 const NEW_GOAL = `Ship the P0 slice with two native clients (${run})`;
-const NEW_SCOPE = `Shared text documents and human-approved context (${run})`;
+const NEW_SCOPE = `Shared text documents and project context (${run})`;
 const V1 = `# Proposal\n\nDrafted by A's assistant (${run}).\n`;
 const V2 = `# Proposal\n\nDrafted by A's assistant, edited by B in the dashboard (${run}).\n`;
 
@@ -69,6 +68,7 @@ type McpEvent = {
   type: string;
   actor: Attribution;
   subject_id: string;
+  summary: string;
 };
 type McpSync = {
   workspace: { id: string };
@@ -90,7 +90,6 @@ type McpSync = {
     }[];
   };
   context_version: number;
-  pending_proposals: { id: string }[];
   recent_work: {
     kind: string;
     title: string;
@@ -128,9 +127,8 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
   let connectionId: string;
   let agent: Agent;
   let fileId: string;
-  let cursorBeforeProposal: string;
+  let cursorBeforeChange: string;
   let teammateConnectionId: string;
-  let proposalId: string;
 
   beforeAll(async () => {
     a = await signUp(convexUrl, person("a", "Avery"));
@@ -172,25 +170,16 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     expect(isAccountExistsError(dup)).toBe(true);
   });
 
-  it("1. A creates a workspace with an approved goal and invites B; C has their own workspace", async () => {
+  it("1. A creates a workspace with a goal and invites B; C has their own workspace", async () => {
     workspaceId = await a.dashboard.createWorkspace(`E2E ${run}`);
-    const goalProposal = await a.http.mutation(
-      api.context.proposeContextChange,
-      {
-        workspaceId: workspaceId as Id<"workspaces">,
-        field: "goal",
-        proposedValue: INITIAL_GOAL,
-        rationale: "Kickoff",
-        sourceFileIds: [],
-      },
-    );
-    await a.dashboard.decideProposal(
-      { id: goalProposal.id, workspaceId },
-      "approved",
-    );
+    await a.dashboard.changeContext(workspaceId, {
+      field: "goal",
+      value: INITIAL_GOAL,
+      sourceFileIds: [],
+    });
     const context = await a.dashboard.getContext(workspaceId);
     expect(context?.goal).toBe(INITIAL_GOAL);
-    expect(context?.approvedBy).toMatchObject({
+    expect(context?.updatedBy).toMatchObject({
       actorType: "human",
       userName: a.name,
     });
@@ -234,7 +223,7 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     evidence.step2 = { connectionId, server: agent.client.getServerVersion() };
   });
 
-  it("3. agent: full tool surface, sync shows the approved goal, create_document → v1", async () => {
+  it("3. agent: full tool surface, sync shows the goal, create_document → v1", async () => {
     const { tools } = await agent.client.listTools();
     const names = tools.map((t) => t.name);
     expect([...names].sort()).toEqual([...TOOL_SURFACE].sort());
@@ -378,82 +367,55 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     evidence.step6 = { mcp: history.versions, dashboard: revisions };
   });
 
-  it("7. approval loop: agent proposes, cannot decide; member B is forbidden; A approves; agent syncs", async () => {
-    cursorBeforeProposal = (await agent.ok<McpSync>("sync_workspace")).cursor;
+  it("7. context loop: the agent's goal change applies at once; member B edits too; the other side syncs it", async () => {
+    cursorBeforeChange = (await agent.ok<McpSync>("sync_workspace")).cursor;
 
-    const { proposal } = await agent.ok<{
-      proposal: { id: string; status: string; field: string };
-    }>("propose_context_change", {
-      field: "goal",
-      proposed_value: NEW_GOAL,
-      rationale: "Scope agreed in proposal.md",
-      source_ids: [fileId],
-    });
-    expect(proposal).toMatchObject({
-      status: "pending",
-      field: "goal",
-      proposed_value: NEW_GOAL,
-      proposed_by: { actor_type: "agent", client: "claude" },
-    });
-    proposalId = proposal.id;
-    const pending = await a.dashboard.listProposals(workspaceId, "pending");
-    expect(pending.find((p) => p.id === proposalId)).toMatchObject({
-      createdBy: { actorType: "agent", userName: a.name },
-      sourceFileIds: [fileId],
-    });
-
-    // The agent has no way to decide: no tool for it, and Convex refuses the
-    // decide mutation without a human session (the agent token isn't one).
+    const changed = await agent.ok<{ field: string; entry_id: string; context_version: number; deduplicated: boolean }>(
+      "update_context",
+      { field: "goal", value: NEW_GOAL, source_ids: [fileId] },
+    );
+    expect(changed).toMatchObject({ field: "goal", entry_id: "goal", deduplicated: false });
+    const context = await a.dashboard.getContext(workspaceId);
+    expect(context?.goal).toBe(NEW_GOAL);
+    expect(context?.updatedBy).toMatchObject({ actorType: "agent", userName: a.name });
+    // The same change again writes nothing.
+    expect(
+      (await agent.ok<{ deduplicated: boolean }>("update_context", { field: "goal", value: NEW_GOAL })).deduplicated,
+    ).toBe(true);
+    // No approval tools exist, and the dashboard mutation still needs a human session.
     const toolNames = (await agent.client.listTools()).tools.map((t) => t.name);
-    expect(toolNames.filter((n) => /approve|decide/.test(n))).toEqual([]);
-    // Calling one anyway is a JSON-RPC "unknown tool" error, not a tool result.
-    await expect(
-      agent.client.callTool({ name: "decide_context_proposal", arguments: { proposal_id: proposalId } }),
-    ).rejects.toMatchObject({ code: -32602 });
-    const withAgentToken = new ConvexHttpClient(convexUrl, { logger: false });
-    withAgentToken.setAuth(token);
-    await expect(
-      withAgentToken.mutation(api.context.decideContextProposal, {
-        proposalId: proposalId as Id<"context_proposals">,
-        decision: "approved",
-      }),
-    ).rejects.toThrow();
+    expect(toolNames.filter((n) => /approv|decide|propose/.test(n))).toEqual([]);
     const anonymous = new ConvexHttpClient(convexUrl, { logger: false });
     await expect(
-      anonymous.mutation(api.context.decideContextProposal, {
-        proposalId: proposalId as Id<"context_proposals">,
-        decision: "approved",
+      anonymous.mutation(api.context.changeContext, {
+        workspaceId: workspaceId as Id<"workspaces">,
+        field: "goal",
+        value: "x",
+        sourceFileIds: [],
       }),
     ).rejects.toThrow(/UNAUTHENTICATED/);
 
-    // B is a member, not an admin.
-    expect(
-      await dashboardCode(
-        b.dashboard.decideProposal({ id: proposalId, workspaceId }, "approved"),
-      ),
-    ).toBe("FORBIDDEN");
-    expect((await a.dashboard.getContext(workspaceId))?.goal).toBe(
-      INITIAL_GOAL,
-    );
-
-    await a.dashboard.decideProposal(
-      { id: proposalId, workspaceId },
-      "approved",
-    );
-    expect((await a.dashboard.getContext(workspaceId))?.goal).toBe(NEW_GOAL);
+    // B is a member, not an admin, and edits context directly too.
+    const question = await b.dashboard.changeContext(workspaceId, {
+      field: "open_question",
+      value: `Who demos on stage? (${run})`,
+      sourceFileIds: [],
+    });
+    expect(question.deduplicated).toBe(false);
 
     const sync = await agent.ok<McpSync>("sync_workspace", {
-      since: cursorBeforeProposal,
+      since: cursorBeforeChange,
     });
     expect(sync.context.goal).toBe(NEW_GOAL);
-    expect(sync.pending_proposals.map((p) => p.id)).not.toContain(proposalId);
+    expect(sync.context_version).toBe(changed.context_version + 1);
     const seqs = sync.events.map((e) => e.seq);
     expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
     expect(seqs.every((s, i) => i === 0 || s === seqs[i - 1]! + 1)).toBe(true);
-    const about = sync.events.filter((e) => e.subject_id === proposalId);
-    expect(about.map((e) => [e.type, e.actor.actor_type])).toEqual([
-      ["context.proposed", "agent"],
-      ["context.approved", "human"],
+    expect(
+      sync.events.filter((e) => e.type === "context.updated").map((e) => [e.summary, e.actor.actor_type]),
+    ).toEqual([
+      ["Updated goal", "agent"],
+      ["Updated open question", "human"],
     ]);
     expect(sync.events_truncated).toBe(false);
 
@@ -463,45 +425,32 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     });
     expect(again.events).toEqual([]);
     evidence.step7 = {
-      proposalId,
+      contextVersion: sync.context_version,
       eventsSinceCursor: sync.events.map(
         (e) => `${e.seq}:${e.type}:${e.actor.actor_type}`,
       ),
     };
   });
 
-  it("7-scope. agent proposes scope; human approves in dashboard; next MCP sync returns it", async () => {
+  it("7-scope. agent changes scope; the dashboard and the next MCP sync both show it", async () => {
     const before = await agent.ok<McpSync>("sync_workspace");
-    const { proposal } = await agent.ok<{
-      proposal: { id: string; status: string; field: string };
-    }>("propose_context_change", {
+    const changed = await agent.ok<{ field: string; context_version: number }>("update_context", {
       field: "scope",
-      proposed_value: NEW_SCOPE,
-      rationale: "Demo step 6: limit the shared workspace scope",
+      value: NEW_SCOPE,
       source_ids: [fileId],
     });
-    expect(proposal).toMatchObject({
-      field: "scope",
-      status: "pending",
-      proposed_value: NEW_SCOPE,
-      proposed_by: { actor_type: "agent", client: "claude" },
-    });
-    expect((await a.dashboard.getContext(workspaceId))?.scope).toBe(before.context.scope);
-    await a.dashboard.decideProposal({ id: proposal.id, workspaceId }, "approved");
+    expect(changed).toMatchObject({ field: "scope", context_version: before.context_version + 1 });
+    expect((await a.dashboard.getContext(workspaceId))?.scope).toBe(NEW_SCOPE);
 
-    // This is the first MCP sync after human approval, through the real endpoint.
     const sync = await agent.ok<McpSync>("sync_workspace", { since: before.cursor });
     expect(sync.context.scope).toBe(NEW_SCOPE);
     expect(sync.context.goal).toBe(NEW_GOAL);
     expect(sync.context_version).toBe(before.context_version + 1);
-    expect(sync.pending_proposals.map((p) => p.id)).not.toContain(proposal.id);
-    expect(sync.events.filter((e) => e.subject_id === proposal.id)
-      .map((e) => [e.type, e.actor.actor_type])).toEqual([
-      ["context.proposed", "agent"],
-      ["context.approved", "human"],
+    expect(sync.events.map((e) => [e.type, e.summary, e.actor.actor_type])).toEqual([
+      ["context.updated", "Updated scope", "agent"],
     ]);
     evidence.step7Scope = {
-      workspaceId, proposalId: proposal.id, scope: sync.context.scope,
+      workspaceId, scope: sync.context.scope,
       contextVersion: sync.context_version,
     };
   });
@@ -566,63 +515,30 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     }
   });
 
-  it("7b. a goal proposal based on an older goal goes stale instead of overwriting the newer one", async () => {
-    const propose = async (value: string) =>
-      (
-        await agent.ok<{ proposal: { id: string } }>("propose_context_change", {
-          field: "goal",
-          proposed_value: value,
-          rationale: "Competing goal",
-        })
-      ).proposal.id;
-    const first = await propose(`First competing goal (${run})`);
-    const second = await propose(`Second competing goal (${run})`);
-    await a.dashboard.decideProposal({ id: first, workspaceId }, "approved");
-    // The backend marks the second stale (and keeps that record); the adapter surfaces VERSION_CONFLICT.
+  it("7b. a goal change based on an older context version fails with VERSION_CONFLICT instead of overwriting", async () => {
+    const before = await agent.ok<McpSync>("sync_workspace");
+    await agent.ok("update_context", {
+      field: "goal", value: `First competing goal (${run})`, expected_version: before.context_version,
+    });
     expect(
-      await dashboardCode(
-        a.dashboard.decideProposal({ id: second, workspaceId }, "approved"),
-      ),
-    ).toBe("VERSION_CONFLICT");
+      await agent.fails("update_context", {
+        field: "goal", value: `Second competing goal (${run})`, expected_version: before.context_version,
+      }),
+    ).toMatchObject({ code: "VERSION_CONFLICT", current_version: before.context_version + 1 });
     expect((await a.dashboard.getContext(workspaceId))?.goal).toBe(
       `First competing goal (${run})`,
     );
-    expect(
-      (await a.dashboard.listProposals(workspaceId, "stale")).map((p) => p.id),
-    ).toContain(second);
-    const fromAgent = await agent.ok<{
-      proposals: { id: string; status: string }[];
-    }>("get_approvals", {
-      status: "stale",
-    });
-    expect(fromAgent.proposals.map((p) => [p.id, p.status])).toContainEqual([
-      second,
-      "stale",
-    ]);
-    // Deciding it again says it's already decided.
-    expect(
-      await dashboardCode(
-        a.dashboard.decideProposal({ id: second, workspaceId }, "approved"),
-      ),
-    ).toBe("PROPOSAL_DECIDED");
-    evidence.step7b = { approved: first, stale: second };
+    evidence.step7b = { contextVersion: before.context_version + 1 };
   });
 
   it("7c. an agent adds and resolves a working question immediately with retained history", async () => {
-    // Manual approval is the default; this step covers the automatic mode.
-    await a.dashboard.setContextApproval(workspaceId, "automatic");
     const before = await agent.ok<McpSync>("sync_workspace");
     const text = `Which native client should we demo first? (${run})`;
-    const added = await agent.ok<{ proposal: { id: string; status: string } }>(
-      "propose_context_change",
-      {
-        field: "open_questions",
-        proposed_value: text,
-        rationale: "Track demo planning",
-        source_ids: [fileId],
-      },
-    );
-    expect(added.proposal.status).toBe("applied");
+    const added = await agent.ok<{ entry_id: string; context_version: number }>("update_context", {
+      field: "open_questions",
+      value: text,
+      source_ids: [fileId],
+    });
     const active = await agent.ok<McpSync>("sync_workspace", {
       since: before.cursor,
     });
@@ -630,34 +546,26 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       (q) => q.text === text,
     )!;
     expect(question).toMatchObject({
-      id: expect.any(String),
+      id: added.entry_id,
       status: "active",
       resolved_by: null,
       resolved_at: null,
     });
-    expect(active.pending_proposals.map((p) => p.id)).not.toContain(
-      added.proposal.id,
-    );
     const resolve = {
       operation: "resolve",
       field: "open_questions",
       entry_id: question.id,
-      rationale: "Claude is the primary target",
       source_ids: [fileId],
     };
     expect(
       (
-        await agent.fails("propose_context_change", {
+        await agent.fails("update_context", {
           ...resolve,
           expected_version: before.context_version,
         })
       ).code,
     ).toBe("VERSION_CONFLICT");
-    const resolved = await agent.ok<{ proposal: { status: string } }>(
-      "propose_context_change",
-      { ...resolve, expected_version: active.context_version },
-    );
-    expect(resolved.proposal.status).toBe("applied");
+    await agent.ok("update_context", { ...resolve, expected_version: active.context_version });
     const after = await agent.ok<McpSync>("sync_workspace");
     expect(
       after.context.open_questions.find((q) => q.id === question.id),
@@ -667,53 +575,26 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       resolved_by: { actor_type: "agent", agent_connection_id: connectionId },
     });
     evidence.step7c = {
-      added: added.proposal,
+      added,
       questionId: question.id,
       resolved: after.context.open_questions.find((q) => q.id === question.id),
     };
-    await a.dashboard.setContextApproval(workspaceId, "manual");
   });
 
-  it("7d. a superseding decision stays pending until human approval and retains both IDs", async () => {
-    const proposeDecision = async (text: string, supersedes?: string) =>
-      (
-        await agent.ok<{
-          proposal: { id: string; status: string; supersedes: string | null };
-        }>("propose_context_change", {
-          field: "decisions",
-          proposed_value: text,
-          rationale: "Demo architecture",
-          source_ids: [fileId],
-          ...(supersedes ? { supersedes } : {}),
-        })
-      ).proposal;
+  it("7d. a superseding decision applies at once and retains both IDs", async () => {
+    const decide = async (text: string, supersedes?: string) =>
+      agent.ok<{ entry_id: string }>("update_context", {
+        field: "decisions",
+        value: text,
+        source_ids: [fileId],
+        ...(supersedes ? { supersedes } : {}),
+      });
     const originalText = `Demo Claude first (${run})`;
-    const original = await proposeDecision(originalText);
-    await a.dashboard.decideProposal(
-      { id: original.id, workspaceId },
-      "approved",
-    );
+    const original = await decide(originalText);
     const before = await agent.ok<McpSync>("sync_workspace");
     const d1 = before.context.decisions.find((d) => d.text === originalText)!;
-    expect(d1).toMatchObject({ id: expect.any(String), status: "active" });
-    const replacement = await proposeDecision(
-      `Demo Claude then ChatGPT (${run})`,
-      d1.id,
-    );
-    expect(replacement).toMatchObject({ status: "pending", supersedes: d1.id });
-    const pending = await agent.ok<McpSync>("sync_workspace");
-    expect(pending.context.decisions.find((d) => d.id === d1.id)).toEqual(d1);
-    expect(pending.pending_proposals).toContainEqual(
-      expect.objectContaining({
-        id: replacement.id,
-        supersedes: d1.id,
-        status: "pending",
-      }),
-    );
-    await a.dashboard.decideProposal(
-      { id: replacement.id, workspaceId },
-      "approved",
-    );
+    expect(d1).toMatchObject({ id: original.entry_id, status: "active" });
+    const replacement = await decide(`Demo Claude then ChatGPT (${run})`, d1.id);
     const after = await agent.ok<McpSync>("sync_workspace");
     const old = after.context.decisions.find((d) => d.id === d1.id)!;
     const current = after.context.decisions.find(
@@ -721,17 +602,14 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     )!;
     expect(old.status).toBe("superseded");
     expect(current).toMatchObject({
+      id: replacement.entry_id,
       status: "active",
       text: `Demo Claude then ChatGPT (${run})`,
     });
-    expect(after.pending_proposals.map((p) => p.id)).not.toContain(
-      replacement.id,
-    );
-    evidence.step7d = { proposalId: replacement.id, old, current };
+    evidence.step7d = { old, current };
   });
 
-  it("7e. resolves a dashboard-created question longer than 2000 characters without proposed_value", async () => {
-    await a.dashboard.setContextApproval(workspaceId, "automatic");
+  it("7e. resolves a dashboard-created question longer than 2000 characters without a value", async () => {
     const before = await agent.ok<McpSync>("sync_workspace");
     const text = `Long dashboard question (${run}): ${"x".repeat(2100)}`;
     await a.http.mutation(api.context.updateContextField, {
@@ -744,16 +622,13 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
     const active = await agent.ok<McpSync>("sync_workspace");
     const question = active.context.open_questions.find((q) => q.text === text)!;
     expect(question).toMatchObject({ id: expect.any(String), status: "active" });
-    const { proposal } = await agent.ok<{
-      proposal: { status: string; proposed_value: string };
-    }>("propose_context_change", {
+    const resolved = await agent.ok<{ entry_id: string }>("update_context", {
       field: "open_questions",
       operation: "resolve",
       entry_id: question.id,
       expected_version: active.context_version,
-      rationale: "Answered in the dashboard planning session",
     });
-    expect(proposal).toMatchObject({ status: "applied", proposed_value: text });
+    expect(resolved.entry_id).toBe(question.id);
     const after = await agent.ok<McpSync>("sync_workspace");
     expect(after.context.open_questions.find((q) => q.id === question.id)).toMatchObject({
       text,
@@ -762,7 +637,6 @@ describe("P0 vertical slice: MCP + Convex + dashboard", () => {
       resolved_at: expect.any(Number),
     });
     evidence.step7e = { questionId: question.id, length: text.length, status: "resolved" };
-    await a.dashboard.setContextApproval(workspaceId, "manual");
   });
 
   it("8. tenant boundaries: C's token and session can't touch A's workspace; revoked and malformed tokens get 401", async () => {

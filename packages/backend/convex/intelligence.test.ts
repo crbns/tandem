@@ -131,7 +131,7 @@ async function seedIntel(
       summary: "Observed a test run",
       created: 1,
       updated: 0,
-      proposals: 0,
+      contextChanges: 0,
       entriesRevision: 1,
       startedAt: now,
       finishedAt: now,
@@ -229,7 +229,7 @@ describe("intelligence reads", () => {
         evidence: "verified",
         agents: [{ connectionId: a.connectionId, label: "Sam's claude assistant", client: "claude" }],
         files: [{ id: a.fileId, name: "Sam-notes.md", deleted: false }],
-        proposal: null,
+        contextEntryId: null,
       }),
     ]);
   });

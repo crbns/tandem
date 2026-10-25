@@ -119,7 +119,7 @@ function RunLane({ runs }: { runs: IntelRun[] }) {
                 <span className="block truncate">{run.error ?? run.summary ?? `${run.eventCount} events`}</span>
                 <span className="text-[0.6875rem] text-muted-foreground">
                   {run.method === "llm" ? (run.model ?? "model") : "heuristic"} · {run.eventCount} event{run.eventCount === 1 ? "" : "s"}
-                  {run.proposals > 0 && ` · ${run.proposals} proposal${run.proposals === 1 ? "" : "s"} for approval`}
+                  {run.contextChanges > 0 && ` · ${run.contextChanges} project context change${run.contextChanges === 1 ? "" : "s"}`}
                 </span>
               </span>
               <time dateTime={new Date(run.startedAt).toISOString()} title={formatAbsolute(run.startedAt)} className="whitespace-nowrap text-muted-foreground">

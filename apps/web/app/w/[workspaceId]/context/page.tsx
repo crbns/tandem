@@ -1,13 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useState } from "react";
 import { useParams } from "next/navigation";
 import { useTandemApi } from "@/lib/api";
 import { useResource } from "@/lib/api/useResource";
 import { useWorkspaceRefresh, useWorkspaceRole } from "@/lib/api/useWorkspace";
 import { contextSections, loadContextPage } from "@/lib/context";
-import { canDecideProposals } from "@/lib/proposals";
 import { orderTasks, TASK_STATUS_LABEL } from "@/lib/tasks";
 import { formatAbsolute } from "@/lib/time";
 import type { Task } from "@/lib/api/types";
@@ -42,7 +40,8 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
   const tasks = useResource(loadTasks);
   // Every task write records a workspace event, so this fires on task changes too.
   useWorkspaceRefresh(workspaceId, tasks.reload);
-  const canEdit = canDecideProposals(role);
+  // Any member edits directly; null role means not a member (or it failed to load).
+  const canEdit = Boolean(role);
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-5">
       <div className="flex items-center justify-between gap-3">
@@ -62,20 +61,9 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
         </Button>
       </div>
       <p className="-mt-2 text-sm text-muted-foreground">
-        The team&apos;s current shared understanding. Owners and admins can
-        edit entries directly. Every other change, including every
-        assistant&apos;s,{" "}
-        {resource.status === "ready" && resource.data.contextApproval === "automatic"
-          ? "applies as soon as it's proposed"
-          : "waits for approval"}
-        ; switch this in{" "}
-        <Link
-          href={`/w/${workspaceId}/approvals`}
-          className="underline underline-offset-2"
-        >
-          Approvals
-        </Link>
-        .
+        The team&apos;s current shared understanding. Every member can edit it,
+        assistants and Tandem&apos;s context manager update it too, and every
+        change applies at once with who made it.
       </p>
       {resource.status === "loading" && (
         <Skeleton className="h-64" aria-label="Loading project context" />
@@ -100,8 +88,6 @@ function WorkspaceContext({ workspaceId }: { workspaceId: string }) {
                 workspaceId={workspaceId}
                 version={resource.data.context.version}
                 canEdit={canEdit}
-                canPropose={role === "member"}
-                autoApply={resource.data.contextApproval === "automatic"}
                 files={resource.data.files}
                 members={resource.data.members}
                 onSaved={reload}

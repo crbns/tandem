@@ -18,8 +18,7 @@ import { NewFolderDialog } from "@/components/files/NewFolderDialog";
 import { ErrorState } from "@/components/common/ErrorState";
 import { TandemMark } from "@/components/common/TandemMark";
 import { CustodyMark } from "@/components/common/CustodyMark";
-import { ApprovedGoal } from "@/components/files/ApprovedGoal";
-import { PendingApprovals } from "@/components/approvals/PendingApprovals";
+import { ProjectGoal } from "@/components/files/ProjectGoal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -67,8 +66,7 @@ export default function FilesPage() {
         </div>
       </div>
 
-      <ApprovedGoal workspaceId={workspaceId} />
-      <PendingApprovals workspaceId={workspaceId} />
+      <ProjectGoal workspaceId={workspaceId} />
 
       {/* The rail carries the mark legend on wide screens; small screens get it here. */}
       <p className="flex items-center gap-3 text-xs text-muted-foreground md:hidden">

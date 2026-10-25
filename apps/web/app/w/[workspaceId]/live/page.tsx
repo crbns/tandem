@@ -20,7 +20,7 @@ import { EntryHistoryDialog } from "@/components/intelligence/EntryHistoryDialog
 
 type ActivityView = "tool_calls" | "all";
 const ACTIVITY_VIEWS: ReadonlyArray<{ value: ActivityView; label: string }> = [
-  { value: "tool_calls", label: "Tool calls & decisions" },
+  { value: "tool_calls", label: "Tool calls & edits" },
   { value: "all", label: "All activity" },
 ];
 
@@ -40,7 +40,7 @@ export default function LivePage() {
         <h1 className="text-2xl font-bold leading-8 tracking-[-0.01em]">Live</h1>
         <p className="max-w-3xl text-sm text-muted-foreground">
           Each assistant works in its own app and reaches this workspace only through Tandem. This page shows each
-          tool call as Tandem records it, which approved context each assistant has received, and what Tandem&apos;s
+          tool call as Tandem records it, which project context version each assistant has received, and what Tandem&apos;s
           context manager has observed the team doing.
         </p>
       </div>
@@ -135,7 +135,7 @@ function EmptyNetwork({ workspaceId, network }: { workspaceId: string; network: 
   return (
     <div className="flex flex-col items-center gap-2 rounded-md border border-dashed px-6 py-12 text-center text-sm text-muted-foreground">
       <p>
-        {network.contextRevision > 0 ? `Context v${network.contextRevision} is approved. ` : ""}
+        {network.contextRevision > 0 ? `Context is at v${network.contextRevision}. ` : ""}
         Connected assistants will appear here around Tandem.
       </p>
       <Link href={`/w/${workspaceId}/assistants`} className="font-medium text-primary hover:underline">
@@ -148,9 +148,9 @@ function EmptyNetwork({ workspaceId, network }: { workspaceId: string; network: 
 const PULSE_KEYS = [
   { kind: "sync", label: "Sync" },
   { kind: "read", label: "Read" },
-  { kind: "write", label: "Write or proposal" },
+  { kind: "write", label: "Write" },
   { kind: "conflict", label: "Conflict" },
-  { kind: "approve", label: "Person's decision" },
+  { kind: "context", label: "Person's context change" },
 ] as const;
 
 function Legend() {
@@ -172,8 +172,8 @@ function Legend() {
       <p className="max-w-3xl">
         Assistants receive updates when they call sync_workspace. Tandem can&apos;t push to native chats. Each call
         is recorded when it finishes, so work in progress isn&apos;t visible, and status comes from the last call:
-        it doesn&apos;t say whether a chat is open. An assistant whose proposal a person approves shows as behind
-        until its next sync, because it hasn&apos;t received the approved version yet.
+        it doesn&apos;t say whether a chat is open. When anyone changes the project context, every assistant shows as
+        behind until its next sync, because it hasn&apos;t received the new version yet.
       </p>
     </div>
   );

@@ -2,7 +2,7 @@
 
 Person 3's checklist from the build brief. `PASS` = verified in this repo; `PENDING (live)` = a live check still needs recorded evidence; backend functions already exist.
 
-> **Backend state (Oct 24):** `packages/backend/convex` ships files, workspaces/invites, context proposals/approvals and `agentConnections`, all with Convex Auth and coded `ConvexError`s. The dashboard's Convex adapter calls every one of them through `TandemApi` (see `CONTRACT_NOTES.md`); mock mode implements the same interface. Rows below marked PASS (mock / unit) were verified against the mock and adapter unit tests; live-deployment checks still need a seeded Convex deployment.
+> **Backend state (Oct 24; context approvals removed Oct 25):** `packages/backend/convex` ships files, workspaces/invites, project context and `agentConnections`, all with Convex Auth and coded `ConvexError`s. The dashboard's Convex adapter calls every one of them through `TandemApi` (see `CONTRACT_NOTES.md`); mock mode implements the same interface. Rows below marked PASS (mock / unit) were verified against the mock and adapter unit tests; live-deployment checks still need a seeded Convex deployment.
 
 ## Gate 1: shell, routing, auth
 
@@ -19,7 +19,7 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 |---|---|---|
 | Tests pass | PASS | `pnpm --filter web test`: errors + mock API suites |
 | Function mapping in `CONTRACT_NOTES.md` | PASS | rewritten Oct 24 to match the generated API (issue #12) |
-| Convex adapter mapping (fixtures typed from generated API) | PASS | `convexAdapter.test.ts`, `approvalsAndConnections.test.ts` |
+| Convex adapter mapping (fixtures typed from generated API) | PASS | `convexAdapter.test.ts`, `agentConnections.test.ts` |
 | Convex adapter against a live deployment | PENDING (live) | Adapter exists; live verification needs a seeded deployment + `.env.local` |
 
 ## Gate 3: file list
@@ -48,18 +48,18 @@ Person 3's checklist from the build brief. `PASS` = verified in this repo; `PEND
 | Check | Status | Notes |
 |---|---|---|
 | `brief.md` history: v1 agent, v2 human, labeled correctly | PASS | agent writes read "AGENT Alex via Claude", human writes "HUMAN Alex"; head marked Current |
-| `toActor` uses the actor's `client`/`label`/`userName`, never `agentConnectionId` | PASS | issue #12; `approvalsAndConnections.test.ts` |
+| `toActor` uses the actor's `client`/`label`/`userName`, never `agentConnectionId` | PASS | issue #12; `agentConnections.test.ts` |
 | A Phase 4 save appears with the signed-in human as author | PASS | proposal.md v2/v4 "Human · Demo Human" between Claude's v1/v3/v5 |
 | View prior version read-only (rendered/raw) + compare with current | PASS | no restore in P0 |
 
-## Gate 5b: approvals and assistant connections (P1)
+## Gate 5b: project context and assistant connections (P1)
+
+The approval step was removed on Oct 25: there is no Approvals page, and every context change applies at once.
 
 | Check | Status | Notes |
 |---|---|---|
-| `/w/<id>/approvals`: pending proposals with what they replace, why, sources | PASS (mock) | headless-Chrome check in mock mode |
-| Approve/Reject only for owner/admin; members read-only | PASS (unit + mock) | `canDecideProposals`; backend also enforces |
-| Stale approval shows VERSION_CONFLICT clearly, context untouched | PASS (mock / unit) | ochre alert; adapter re-reads stale proposals because the backend returns null |
-| Pending approvals listed on workspace home, linked to the screen | PASS (mock) | |
+| Any member edits, adds, resolves, removes and supersedes context entries directly | PASS (unit + mock) | `contextLifecycle.test.ts`, `projectContext.test.ts`; `context:changeContext` and `context:updateContextField` |
+| Repeated additions are deduplicated; stale edits show VERSION_CONFLICT, context untouched | PASS (unit + mock) | |
 | `/w/<id>/assistants`: create API key, key shown once + copy + Claude Code command | PASS (mock), relabeled 2026-10-24 | server URL now comes from the backend (`getMcpServerUrl`), no `NEXT_PUBLIC_MCP_URL` |
 | `/oauth/consent?request=`: sign-in round trip, pick workspace + assistant, Allow/Deny, refuses to render framed | PASS (mock, browser 2026-10-24) | sign-in returned to the page with `?request=` intact; Allow landed on Assistants. Framing refusal not exercised in a browser. Data layer: unit tests and e2e step 10 |
 | Connections list "Last MCP action / Last sync", never "online"; revoke with confirmation | PASS (mock) | |
@@ -78,7 +78,7 @@ Measured 2026-10-24 against `colorful-grouse-361` after the authorized deploymen
 | Signed-out `/w/*` redirects (real-mode proxy) | PASS | `colorful-grouse-361` + local, 2026-10-24: fresh browser context opening workspace redirected to sign-in and returned after authentication. |
 | Outsider gets the FORBIDDEN UI | PASS | `colorful-grouse-361`, 2026-10-24: generated outsider C saw “You don't have access” on A's workspace. Screenshot `30-cloud-forbidden.png`; e2e also verified FORBIDDEN. |
 | UNAUTHENTICATED on save stashes and restores the draft | PASS (fault injection) | `colorful-grouse-361` + local, 2026-10-24: injected coded UNAUTHENTICATED save response; real sign-out/sign-in preserved sessionStorage draft and restored exact text. Natural JWT expiry not induced. Screenshot `30-cloud-restored.png`. |
-| Agent proposes scope → human approves in dashboard → next sync | PASS | `colorful-grouse-361` + local, 2026-10-24: P0 `7-scope` now asserts real MCP scope proposal → authenticated human dashboard data-layer approval → first MCP sync returns exact scope; local/cloud **17/17 passed**. Correlated workspace/proposal IDs and scope values in D11 report; `30-cloud-approved.png` is earlier separate browser approval evidence. |
+| Agent proposes scope → human approves in dashboard → next sync (historical: the approval flow was removed Oct 25) | PASS | `colorful-grouse-361` + local, 2026-10-24: P0 `7-scope` now asserts real MCP scope proposal → authenticated human dashboard data-layer approval → first MCP sync returns exact scope; local/cloud **17/17 passed**. Correlated workspace/proposal IDs and scope values in D11 report; `30-cloud-approved.png` is earlier separate browser approval evidence. |
 
 ### Network/auth failure tests
 

@@ -469,7 +469,7 @@ test("folder prompts target the seeded tree", async () => {
 
 const edit = {
   require: ["sync", "read", "save"],
-  forbid: ["publish", "propose"],
+  forbid: ["publish", "context"],
 };
 const loopTrial = (loop, events) =>
   analyze(
@@ -482,7 +482,7 @@ const loopTrial = (loop, events) =>
     { ...context, prompt: { id: "l", kind: "project", loop } },
   );
 
-test("loop grader: sync, read and save with no publish or propose passes an edit", () => {
+test("loop grader: sync, read and save with no publish or context change passes an edit", () => {
   const t = loopTrial(edit, [
     toolUse("s", "sync_workspace"),
     toolResult("s"),
@@ -502,11 +502,11 @@ test("loop grader: sync, read and save with no publish or propose passes an edit
     passed: true,
     write_calls: 2,
     publish_calls: 0,
-    propose_calls: 0,
+    context_calls: 0,
   });
 });
 
-test("loop grader: an unprompted publish or propose fails an edit, even when it errors", () => {
+test("loop grader: an unprompted publish or context change fails an edit, even when it errors", () => {
   const t = loopTrial(edit, [
     toolUse("s", "sync_workspace"),
     toolResult("s"),
@@ -516,16 +516,16 @@ test("loop grader: an unprompted publish or propose fails an edit, even when it 
     toolResult("c"),
     toolUse("p", "publish_work"),
     toolResult("p"),
-    toolUse("q", "propose_context_change"),
+    toolUse("q", "update_context"),
     toolResult("q", true, "INVALID_INPUT"),
   ]).loop;
   assert.equal(t.passed, false);
   assert.deepEqual(t.missing, []);
-  assert.deepEqual(t.unwanted, ["publish", "propose"]);
+  assert.deepEqual(t.unwanted, ["publish", "context"]);
   assert.equal(t.write_calls, 3);
 });
 
-test("loop grader: a failed save or a missing sync is missing; a directed proposal passes", () => {
+test("loop grader: a failed save or a missing sync is missing; a directed context change passes", () => {
   const failed = loopTrial(edit, [
     toolUse("r", "read_file"),
     toolResult("r"),
@@ -535,11 +535,11 @@ test("loop grader: a failed save or a missing sync is missing; a directed propos
   assert.deepEqual(failed.missing, ["sync", "save"]);
   assert.equal(failed.passed, false);
   const directed = loopTrial(
-    { require: ["sync", "propose"], forbid: ["publish"] },
+    { require: ["sync", "context"], forbid: ["publish"] },
     [
       toolUse("s", "sync_workspace"),
       toolResult("s"),
-      toolUse("q", "propose_context_change"),
+      toolUse("q", "update_context"),
       toolResult("q"),
     ],
   ).loop;
@@ -580,7 +580,7 @@ test("loop summary tallies trials per step and sums calls", () => {
       unwanted: { publish: 1 },
       write_calls: 2,
       publish_calls: 1,
-      propose_calls: 0,
+      context_calls: 0,
     },
   ]);
   assert.match(
@@ -589,7 +589,7 @@ test("loop summary tallies trials per step and sums calls", () => {
   );
 });
 
-test("loop prompts: ordinary edits and drafts need a save and forbid publish and propose", async () => {
+test("loop prompts: ordinary edits and drafts need a save and forbid publish and context changes", async () => {
   const { readFileSync } = await import("node:fs");
   const { prompts } = JSON.parse(
     readFileSync(new URL("./prompts.json", import.meta.url), "utf8"),
@@ -608,7 +608,7 @@ test("loop prompts: ordinary edits and drafts need a save and forbid publish and
     assert.ok(loop.require.includes("save"), id);
     assert.deepEqual(
       loop.forbid.filter((s) => s !== "save"),
-      ["publish", "propose"],
+      ["publish", "context"],
       id,
     );
   }
@@ -616,11 +616,11 @@ test("loop prompts: ordinary edits and drafts need a save and forbid publish and
   // without requiring a save.
   assert.deepEqual(
     prompts.find((p) => p.id === "p5-tighten-intro").loop.forbid,
-    ["publish", "propose"],
+    ["publish", "context"],
   );
-  // Only a request that directs a context change expects a proposal.
+  // Only a request that directs a context change expects update_context.
   assert.deepEqual(
-    prompts.filter((p) => p.loop?.require.includes("propose")).map((p) => p.id),
+    prompts.filter((p) => p.loop?.require.includes("context")).map((p) => p.id),
     ["p4-cut-mobile"],
   );
 });

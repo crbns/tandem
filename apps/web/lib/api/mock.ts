@@ -17,18 +17,14 @@ import {
   type TimelinePage,
   type TimelineQuery,
   type ContextChangeInput,
+  type ContextChangeRequest,
   type ContextDetails,
   type ContextEntry,
   type PublishedWork,
   type Task,
   type Actor,
   type AgentConnection,
-  type ContextApproval,
   type ContextField,
-  type ContextProposal,
-  type ConflictItem,
-  type ConflictList,
-  type ProposalConflict,
   type FileDetail,
   type FileSummary,
   type FolderSummary,
@@ -101,15 +97,6 @@ const DEMO: Actor = {
   userId: "user_demo",
   userName: "Demo Human",
 };
-// A second assistant, so a conflict shows which agent proposed what.
-const DEMO_CHATGPT: Actor = {
-  actorType: "agent",
-  userId: "user_demo",
-  userName: "Demo Human",
-  agentClient: "chatgpt",
-  agentName: "ChatGPT",
-};
-
 const MINUTE = 60_000;
 
 function seed(now: number): Map<string, StoredFile> {
@@ -192,7 +179,7 @@ export function createMockApi({
   const workspaces: Workspace[] = [
     { id: MOCK_WORKSPACE_ID, name: "Cal Hacks Team" },
   ];
-  // Mock approved context, taken from the seeded proposal so it tells one story.
+  // Mock project context, taken from the seeded proposal.md so it tells one story.
   const context: ProjectContext = {
     goal: "Ship the Tandem P0 demo by Saturday night.",
     scope:
@@ -206,8 +193,8 @@ export function createMockApi({
       "Optimistic versioning on every write",
     ],
     version: 2,
-    approvedBy: ALEX,
-    approvedAt: Date.now() - 50 * MINUTE,
+    updatedBy: ALEX,
+    updatedAt: Date.now() - 50 * MINUTE,
   };
   const contexts = new Map<string, ProjectContext>([
     [MOCK_WORKSPACE_ID, context],
@@ -216,7 +203,7 @@ export function createMockApi({
   const entryIdentity = () => ({ id: `entry_${nextEntryId++}`, status: "active" as const, resolvedBy: null, resolvedAt: null, supersededBy: null });
   const seedEntry = (text: string): ContextEntry => ({
     ...entryIdentity(),
-    text, sourceFileIds: ["file_proposal"], updatedBy: { ...ALEX }, updatedAt: context.approvedAt,
+    text, sourceFileIds: ["file_proposal"], updatedBy: { ...ALEX }, updatedAt: context.updatedAt,
   });
   const details = new Map<string, ContextDetails>([[MOCK_WORKSPACE_ID, {
     goal: seedEntry(context.goal), scope: seedEntry(context.scope),
@@ -297,7 +284,7 @@ export function createMockApi({
       goal: ctx.goal?.text ?? "", scope: ctx.scope?.text ?? "",
       constraints: ctx.constraints.filter((e) => e.status === "active").map((e) => e.text),
       decisions: ctx.decisions.filter((e) => e.status === "active").map((e) => e.text), version: ctx.version,
-      approvedBy: ctx.goal?.updatedBy ?? actor, approvedAt: ctx.goal?.updatedAt ?? Date.now(),
+      updatedBy: ctx.goal?.updatedBy ?? actor, updatedAt: ctx.goal?.updatedAt ?? Date.now(),
     });
   };
   const applyChange = (workspaceId: string, input: ContextChangeInput, actor: Actor, entryIndex?: number) => {
@@ -341,14 +328,24 @@ export function createMockApi({
     refreshSummary(workspaceId, actor);
     return true;
   };
+  const sameText = (a: string, b: string) => a.trim().replace(/\s+/g, " ").toLowerCase() === b.trim().replace(/\s+/g, " ").toLowerCase();
+  /**
+   * The active entry that already says what an addition would add (the
+   * backend's existingEntry): "goal"/"scope" for those, else the entry id.
+   */
+  const existingEntry = (ctx: ContextDetails, change: ContextChangeInput): string | null => {
+    if (change.field === "goal" || change.field === "scope") {
+      const current = ctx[change.field];
+      return current && sameText(current.text, change.proposedValue) ? change.field : null;
+    }
+    const match = ctx[entryKey[change.field]].find((entry) =>
+      entry.status === "active" &&
+      (change.field === "ownership"
+        ? entry.ownerUserId === change.ownerUserId && sameText(entry.ownerArea ?? "", change.proposedValue)
+        : sameText(entry.text, change.proposedValue)));
+    return match?.id ?? null;
+  };
   const memberNames = new Map<string, string>();
-  // Proposals keep the value they were based on (goal/scope only), like the
-  // backend's baseValue, so a mock approval can go stale.
-  // hasConflict: the check ever found a conflict, like the backend's indexed flag.
-  type StoredProposal = ContextProposal & { baseValue?: string; ownerUserId?: string; ownerArea?: string; entryId?: string; hasConflict?: boolean };
-  const proposals: StoredProposal[] = seedProposals(Date.now(), context, details.get(MOCK_WORKSPACE_ID)!);
-  // Unset means "manual", like the backend's default.
-  const contextApprovals = new Map<string, ContextApproval>();
   type StoredConnection = AgentConnection & { workspaceId: string; syncedContextRevision?: number };
   const connections: StoredConnection[] = [
     {
@@ -375,44 +372,6 @@ export function createMockApi({
   const notify = (workspaceId: string) => {
     watchers.get(workspaceId)?.forEach((listener) => queueMicrotask(listener));
     pingLive(workspaceId);
-  };
-  const cloneProposal = ({ baseValue: _baseValue, ownerUserId: _ownerUserId, ownerArea: _ownerArea, entryId: _entryId, hasConflict: _hasConflict, ...p }: StoredProposal): ContextProposal => ({
-    ...p,
-    sourceFileIds: [...p.sourceFileIds],
-    createdBy: { ...p.createdBy },
-    decidedBy: p.decidedBy ? { ...p.decidedBy } : null,
-    conflict: p.conflict ? structuredClone(p.conflict) : null,
-  });
-  /**
-   * The backend's structural checks (docs/conflict-resolution.md): an explicit
-   * supersedes, or another pending proposal for the same goal/scope or the same
-   * superseded decision. The mock has no AI check; seeded proposals show one.
-   */
-  const detectConflict = (
-    workspaceId: string,
-    input: { field: ContextField; supersedes?: string },
-    ctx: ContextDetails,
-  ): ProposalConflict | null => {
-    const items: ConflictItem[] = [];
-    const target = input.supersedes ? ctx.decisions.find((entry) => entry.id === input.supersedes && entry.status === "active") : undefined;
-    if (target) {
-      items.push({
-        kind: "replaces", targetType: "decision", targetId: target.id, targetText: target.text, targetBy: { ...target.updatedBy },
-        targetAt: target.updatedAt, contextVersion: ctx.version, explanation: "This proposal explicitly supersedes the approved decision.",
-      });
-    }
-    for (const other of proposals) {
-      if (other.workspaceId !== workspaceId || other.status !== "pending" || other.operation !== "add") continue;
-      const sameField = (input.field === "goal" || input.field === "scope") && other.field === input.field;
-      const sameTarget = input.supersedes !== undefined && other.supersedes === input.supersedes;
-      if (!sameField && !sameTarget) continue;
-      items.push({
-        kind: "competing", targetType: "proposal", targetId: other.id, targetText: other.proposedValue, targetBy: { ...other.createdBy },
-        targetAt: other.createdAt, contextVersion: ctx.version,
-        explanation: sameField ? `Another pending proposal also changes the ${input.field}.` : "Another pending proposal supersedes the same decision.",
-      });
-    }
-    return items.length > 0 ? { status: "conflict", method: "structural", checkedAt: Date.now(), items } : null;
   };
   const cloneConnection = ({ workspaceId: _workspaceId, ...c }: StoredConnection): AgentConnection => ({ ...c });
 
@@ -461,6 +420,9 @@ export function createMockApi({
       contextRevision: input.contextRevision ?? contextVersion(workspaceId),
     });
   };
+  /** A person's context change, as the backend's "context.updated" event shows on Live. */
+  const recordContextChange = (workspaceId: string, summary: string) =>
+    recordHuman(workspaceId, getActor(), { kind: "context", summary, resource: { type: "context", id: workspaceId, label: null } });
   const fileResource = (f: StoredFile) => ({ type: "file", id: f.summary.id, label: f.summary.name });
   /** A save by anyone: people's become workspace events, an assistant's its connection's activity. */
   const recordSave = (f: StoredFile, actor: Actor, verb: "created" | "saved") => {
@@ -499,7 +461,7 @@ export function createMockApi({
         };
       });
     const ctx = details.get(workspaceId);
-    return { contextRevision, contextUpdatedAt: contexts.get(workspaceId)?.approvedAt ?? ctx?.goal?.updatedAt ?? null, agents };
+    return { contextRevision, contextUpdatedAt: contexts.get(workspaceId)?.updatedAt ?? ctx?.goal?.updatedAt ?? null, agents };
   };
   const timeline = (workspaceId: string, { before: cursor, limit = 50, connectionId, kinds }: TimelineQuery): TimelinePage => {
     const size = Math.min(Math.max(1, Math.floor(limit)), 100);
@@ -646,8 +608,8 @@ export function createMockApi({
     return version;
   };
 
-  // The Live history the seed implies: the assistants' saves and proposals, the
-  // seeded connection's last sync, people's saves and decisions.
+  // The Live history the seed implies: the assistants' saves and context
+  // changes, the seeded connection's last sync, people's saves.
   {
     const seeded: Array<{ at: number; record: () => void }> = [];
     for (const f of files.values()) {
@@ -665,15 +627,13 @@ export function createMockApi({
         });
       });
     }
-    for (const p of proposals) {
-      const c = p.createdBy.actorType === "agent" ? connectionFor(p.workspaceId, p.createdBy) : undefined;
-      const resource = { type: "proposal", id: p.id, label: null };
-      if (c) seeded.push({ at: p.createdAt, record: () => recordAgent(c, { kind: "propose", tool: "propose_context_change", summary: `Proposed a ${p.field.replace("_", " ")} change`, resource, createdAt: p.createdAt }) });
-      if (p.decidedBy && p.decidedAt !== null && (p.status === "approved" || p.status === "rejected")) {
-        const decidedAt = p.decidedAt;
-        seeded.push({ at: decidedAt, record: () => recordHuman(p.workspaceId, p.decidedBy!, { kind: p.status === "approved" ? "approve" : "reject", summary: `${p.status === "approved" ? "Approved" : "Rejected"} a ${p.field.replace("_", " ")} proposal`, resource, createdAt: decidedAt }) });
-      }
-    }
+    // Alex's Claude recorded one constraint through update_context (an MCP write).
+    const constraint = details.get(MOCK_WORKSPACE_ID)!.constraints.find((e) => e.text === "No agent-to-agent messaging")!;
+    constraint.updatedBy = { ...CLAUDE };
+    seeded.push({
+      at: constraint.updatedAt,
+      record: () => recordAgent(connections[0]!, { kind: "write", tool: "update_context", summary: "Updated constraint", resource: { type: "context", id: MOCK_WORKSPACE_ID, label: null }, createdAt: constraint.updatedAt }),
+    });
     for (const c of connections) {
       const at = c.lastSyncAt;
       if (at !== undefined)
@@ -698,7 +658,6 @@ export function createMockApi({
       const label = actor.userName ?? "A teammate";
       return { type: "human", label, client: null, userName: label };
     },
-    proposalStatus: (id) => proposals.find((p) => p.id === id)?.status ?? null,
     watchLive,
     pingLive,
   });
@@ -1039,9 +998,9 @@ export function createMockApi({
       await delay();
       if (!workspaces.some((w) => w.id === workspaceId))
         throw new TandemApiError("FORBIDDEN");
-      const approved = contexts.get(workspaceId);
-      return approved
-        ? { ...approved, approvedBy: { ...approved.approvedBy } }
+      const current = contexts.get(workspaceId);
+      return current
+        ? { ...current, updatedBy: { ...current.updatedBy } }
         : null;
     },
 
@@ -1061,7 +1020,7 @@ export function createMockApi({
     async updateContextField(workspaceId, input) {
       await delay();
       if (getActor().actorType === "agent") throw new TandemApiError("APPROVAL_REQUIRED");
-      requireAdmin(workspaceId);
+      requireMember(workspaceId);
       const ctx = details.get(workspaceId)!;
       if (input.expectedVersion !== ctx.version) throw new TandemApiError("VERSION_CONFLICT", { currentVersion: ctx.version });
       const key = { constraint: "constraints", decision: "decisions", ownership: "ownership", open_question: "openQuestions" } as const;
@@ -1081,65 +1040,52 @@ export function createMockApi({
       validateChange(workspaceId, input, existing?.sourceFileIds);
       applyChange(workspaceId, input, getActor(), index);
       notify(workspaceId);
-      recordHuman(workspaceId, getActor(), {
-        kind: "context", summary: `Edited the ${input.field.replace("_", " ")} in project context`,
-        resource: { type: "context", id: workspaceId, label: null },
-      });
+      recordContextChange(workspaceId, `Updated ${input.field.replace("_", " ")}`);
       return { version: ctx.version };
     },
 
-    async proposeContextChange(workspaceId, input) {
+    async changeContext(workspaceId, input: ContextChangeRequest) {
       await delay();
+      // Like the backend: a human session only, any member.
+      if (getActor().actorType === "agent") throw new TandemApiError("APPROVAL_REQUIRED");
+      requireMember(workspaceId);
       const actor = getActor();
-      // Agent proposals use the underlying person's existing membership.
-      const members = memberships.get(workspaceId);
-      if (actor.actorType === "agent") {
-        if (!members?.has(actor.userId)) throw new TandemApiError("FORBIDDEN");
-      } else requireMember(workspaceId);
       const ctx = details.get(workspaceId)!;
+      const { field } = input;
       const operation = input.operation ?? "add";
+      const working = field === "constraint" || field === "open_question";
+      if ((operation === "resolve" && field !== "open_question") || (operation === "remove" && !working) ||
+        (operation !== "add" && !input.entryId) || (operation === "add" && input.entryId !== undefined) ||
+        (input.supersedes !== undefined && (field !== "decision" || operation !== "add")))
+        throw new TandemApiError("INVALID_INPUT");
       if (input.expectedVersion !== undefined && input.expectedVersion !== ctx.version)
         throw new TandemApiError("VERSION_CONFLICT", { currentVersion: ctx.version });
-      let proposedValue = input.proposedValue ?? "";
-      const working = input.field === "constraint" || input.field === "open_question";
+      const label = field.replace("_", " ");
       if (operation !== "add") {
-        if (!working || (operation === "resolve" && input.field !== "open_question") || !input.entryId || input.expectedVersion === undefined || input.supersedes)
-          throw new TandemApiError("INVALID_INPUT");
-        if (operation === "remove" && actor.actorType !== "human") throw new TandemApiError("INVALID_INPUT");
-        const entries = input.field === "constraint" ? ctx.constraints : ctx.openQuestions;
-        const index = entries.findIndex((entry) => entry.id === input.entryId && (operation === "remove" || entry.status === "active"));
-        if (index < 0) throw new TandemApiError("INVALID_INPUT");
-        validateSources(workspaceId, input.sourceFileIds, entries[index]!.sourceFileIds);
-        proposedValue = entries[index]!.text;
-      } else {
-        const existing = input.field === "goal" || input.field === "scope" ? ctx[input.field] : undefined;
-        validateChange(workspaceId, { ...input, proposedValue }, existing?.sourceFileIds);
-        if (input.entryId !== undefined) throw new TandemApiError("INVALID_INPUT");
-        if (input.supersedes !== undefined && (input.field !== "decision" || !ctx.decisions.some((entry) => entry.id === input.supersedes && entry.status === "active")))
-          throw new TandemApiError("INVALID_INPUT");
+        if (input.ownerUserId !== undefined) throw new TandemApiError("INVALID_INPUT");
+        const entries = field === "constraint" ? ctx.constraints : ctx.openQuestions;
+        const target = entries.find((entry) => entry.id === input.entryId);
+        if (!target) throw new TandemApiError("INVALID_INPUT");
+        // Already resolved: a retried resolve changes nothing.
+        if (operation === "resolve" && target.status === "resolved") return { version: ctx.version, entryId: target.id, deduplicated: true };
+        applyEntryOperation(workspaceId, field, operation, target.id, actor);
+        notify(workspaceId);
+        recordContextChange(workspaceId, `${operation === "resolve" ? "Resolved" : "Removed"} ${label}`);
+        return { version: ctx.version, entryId: target.id, deduplicated: false };
       }
-      const id = `proposal_${nextId++}`;
-      const area = proposedValue.trim();
-      const conflict = operation === "add" ? detectConflict(workspaceId, input, ctx) : null;
-      // A conflict waits for a person even in an automatic workspace.
-      const apply = contextApprovals.get(workspaceId) === "automatic" && !conflict;
-      const status = apply ? "applied" as const : "pending" as const;
-      if (apply) {
-        if (operation === "add") applyAddition(workspaceId, { ...input, proposedValue }, actor);
-        else applyEntryOperation(workspaceId, input.field, operation, input.entryId!, actor);
-      }
-      proposals.push({
-        id, workspaceId, field: input.field, operation, rationale: input.rationale, sourceFileIds: [...input.sourceFileIds],
-        ...(operation !== "add" ? { entryId: input.entryId } : {}),
-        supersedes: input.supersedes ?? null,
-        proposedValue: input.field === "ownership" ? `${area}: ${memberNames.get(input.ownerUserId!) ?? "Workspace member"}` : proposedValue,
-        ...(input.field === "ownership" ? { ownerArea: area, ownerUserId: input.ownerUserId } : {}),
-        ...(input.field === "goal" || input.field === "scope" ? { baseValue: ctx[input.field]?.text ?? "" } : {}),
-        status, createdBy: { ...actor }, createdAt: Date.now(), decidedBy: null, decidedAt: null,
-        conflict, hasConflict: conflict !== null, resolution: null, decisionNote: null, revision: 1,
-      });
+      const value = (input.value ?? "").trim();
+      const change = { field, proposedValue: value, sourceFileIds: input.sourceFileIds, ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}) };
+      const existing = field === "goal" || field === "scope" ? ctx[field] : undefined;
+      validateChange(workspaceId, change, existing?.sourceFileIds);
+      if (input.supersedes !== undefined && !ctx.decisions.some((entry) => entry.id === input.supersedes && entry.status === "active"))
+        throw new TandemApiError("INVALID_INPUT");
+      const held = existingEntry(ctx, change);
+      if (held !== null && input.supersedes === undefined) return { version: ctx.version, entryId: held, deduplicated: true };
+      applyAddition(workspaceId, { ...change, supersedes: input.supersedes ?? null }, actor);
+      const entryId = field === "goal" || field === "scope" ? field : ctx[entryKey[field]].at(-1)!.id;
       notify(workspaceId);
-      return { id, status };
+      recordContextChange(workspaceId, `Updated ${label}`);
+      return { version: ctx.version, entryId, deduplicated: false };
     },
 
     async listPublishedWork(workspaceId, cursor = null, pageSize = 20) {
@@ -1161,153 +1107,6 @@ export function createMockApi({
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 100)
         .map(({ workspaceId: _workspaceId, ...task }) => structuredClone(task));
-    },
-
-    async getContextApproval(workspaceId) {
-      await delay();
-      requireMember(workspaceId);
-      return contextApprovals.get(workspaceId) ?? "manual";
-    },
-
-    async setContextApproval(workspaceId, mode) {
-      await delay();
-      requireAdmin(workspaceId);
-      if (mode !== "manual" && mode !== "automatic") throw new TandemApiError("INVALID_INPUT");
-      contextApprovals.set(workspaceId, mode);
-      notify(workspaceId);
-    },
-
-    async listProposals(workspaceId, status) {
-      await delay();
-      membersFor(workspaceId);
-      return proposals
-        .filter((p) => p.workspaceId === workspaceId && (!status || p.status === status))
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, 100)
-        .map(cloneProposal);
-    },
-
-    async decideProposal({ id, workspaceId }, decision, { resolution, note, expectedRevision, supersede } = {}) {
-      await delay();
-      const proposal = proposals.find((p) => p.id === id && p.workspaceId === workspaceId);
-      if (!proposal) throw new TandemApiError("PROPOSAL_DECIDED");
-      requireAdmin(workspaceId);
-      if (proposal.status !== "pending") throw new TandemApiError("PROPOSAL_DECIDED");
-      if (expectedRevision !== undefined && expectedRevision !== proposal.revision) throw new TandemApiError("PROPOSAL_CHANGED");
-      const approving = decision === "approved";
-      if (approving && proposal.conflict?.status === "checking") throw new TandemApiError("CONFLICT_CHECK_PENDING");
-      const scalar = proposal.field === "goal" || proposal.field === "scope";
-      if (resolution && ((resolution === "accepted" || resolution === "kept_both") !== approving || (resolution === "kept_both" && scalar)))
-        throw new TandemApiError("INVALID_INPUT");
-      const decisionNote = note?.trim() ?? "";
-      if (decisionNote.length > 2000) throw new TandemApiError("INVALID_INPUT");
-      // A proposal still in conflict records how it was settled.
-      const items = proposal.conflict?.items ?? [];
-      let outcome = resolution ?? (items.length > 0 ? (approving ? "accepted" : "rejected") : null);
-      // Accepting supersedes the targets the check is sure about, or the ones picked.
-      const supersedable = items.filter((item) => item.kind !== "competing" && (item.targetType === "decision" || item.targetType === "constraint"));
-      if (supersede && (outcome !== "accepted" || supersede.some((target) => !supersedable.some((item) => item.targetId === target))))
-        throw new TandemApiError("INVALID_INPUT");
-      const supersedeIds = outcome === "accepted" ? (supersede ?? supersedable.filter((item) => !item.uncertain).map((item) => item.targetId)) : [];
-      if (outcome === "accepted" && supersedable.length > 0 && supersedeIds.length === 0 && !proposal.supersedes) outcome = "kept_both";
-      const actor = getActor();
-      const now = Date.now();
-      const ctx = contexts.get(workspaceId);
-      let newEntryId: string | undefined;
-      if (decision === "approved" && proposal.operation !== "add") {
-        if (!applyEntryOperation(workspaceId, proposal.field, proposal.operation, proposal.entryId!, actor)) {
-          proposal.status = "stale";
-          notify(workspaceId);
-          throw new TandemApiError("VERSION_CONFLICT");
-        }
-      } else if (decision === "approved") {
-        const current = proposal.field === "goal" ? ctx?.goal : proposal.field === "scope" ? ctx?.scope : undefined;
-        if (current !== undefined && current !== proposal.baseValue) {
-          proposal.status = "stale";
-          notify(workspaceId);
-          throw new TandemApiError("VERSION_CONFLICT");
-        }
-        // A checked proposal supersedes its targets below, and only when accepted;
-        // a target that is no longer active is left alone instead of failing.
-        const input = { ...proposal, proposedValue: proposal.ownerArea ?? proposal.proposedValue, ...(proposal.conflict ? { supersedes: null } : {}) };
-        // Sources were accepted when proposed; deletion must not strand approval.
-        validateChange(workspaceId, input, proposal.sourceFileIds);
-        try {
-          applyAddition(workspaceId, input, actor);
-        } catch (err) {
-          proposal.status = "stale";
-          notify(workspaceId);
-          throw err;
-        }
-        const working = details.get(workspaceId)!;
-        if (proposal.field === "decision" || proposal.field === "constraint") newEntryId = working[entryKey[proposal.field]].at(-1)!.id;
-        if (outcome === "accepted" && newEntryId) {
-          const targets = new Set(supersedeIds);
-          if (proposal.supersedes) targets.add(proposal.supersedes);
-          for (const entry of [...working.decisions, ...working.constraints]) {
-            if (targets.has(entry.id) && entry.status === "active" && entry.id !== newEntryId) Object.assign(entry, { status: "superseded", supersededBy: newEntryId });
-          }
-          Object.assign(contexts.get(workspaceId)!, {
-            decisions: working.decisions.filter((entry) => entry.status === "active").map((entry) => entry.text),
-            constraints: working.constraints.filter((entry) => entry.status === "active").map((entry) => entry.text),
-          });
-        }
-      }
-      Object.assign(proposal, {
-        status: decision, decidedBy: { ...actor }, decidedAt: now,
-        resolution: outcome, decisionNote: decisionNote || null, revision: proposal.revision + 1,
-      });
-      // Pending proposals that competed with this one now face the approved value, or nothing.
-      for (const other of proposals) {
-        if (other.status !== "pending" || !other.conflict?.items.some((item) => item.kind === "competing" && item.targetId === proposal.id)) continue;
-        const items = other.conflict.items.flatMap((item): ConflictItem[] => {
-          if (item.kind !== "competing" || item.targetId !== proposal.id) return [item];
-          if (!approving) return [];
-          const targetType = proposal.field === "goal" || proposal.field === "scope" || proposal.field === "constraint" ? proposal.field : "decision";
-          return [{
-            ...item, kind: "replaces", targetType, targetId: newEntryId ?? proposal.field, targetBy: { ...actor }, targetAt: now,
-            contextVersion: details.get(workspaceId)!.version, explanation: "The proposal it competed with was approved; this would replace it.",
-          }];
-        });
-        other.conflict = { ...other.conflict, items, status: items.length === 0 ? "clear" : other.conflict.status };
-        other.revision++;
-      }
-      notify(workspaceId);
-      recordHuman(workspaceId, actor, {
-        kind: decision === "approved" ? "approve" : "reject",
-        summary: `${decision === "approved" ? "Approved" : "Rejected"} a ${proposal.field.replace("_", " ")} proposal`,
-        resource: { type: "proposal", id: proposal.id, label: null },
-      });
-    },
-
-    async recheckConflict({ id, workspaceId }) {
-      await delay();
-      const proposal = proposals.find((p) => p.id === id && p.workspaceId === workspaceId);
-      if (!proposal) throw new TandemApiError("PROPOSAL_DECIDED");
-      requireAdmin(workspaceId);
-      // The mock has no scheduled check to re-run: a stuck one just comes back clear.
-      if (proposal.status === "pending" && proposal.conflict?.status === "checking") {
-        proposal.conflict = { ...proposal.conflict, status: proposal.conflict.items.length > 0 ? "conflict" : "clear" };
-        proposal.revision++;
-        notify(workspaceId);
-      }
-    },
-
-    async listConflicts(workspaceId): Promise<ConflictList> {
-      await delay();
-      membersFor(workspaceId);
-      const own = proposals.filter((p) => p.workspaceId === workspaceId);
-      return {
-        pending: own
-          .filter((p) => p.status === "pending" && p.conflict && p.conflict.status !== "clear")
-          .sort((a, b) => b.createdAt - a.createdAt)
-          .map(cloneProposal),
-        resolved: own
-          .filter((p) => (p.status === "approved" || p.status === "rejected") && p.hasConflict)
-          .sort((a, b) => (b.decidedAt ?? b.createdAt) - (a.decidedAt ?? a.createdAt))
-          .slice(0, 100)
-          .map(cloneProposal),
-      };
     },
 
     async getMcpServerUrl() {
@@ -1375,11 +1174,8 @@ export function createMockApi({
         redirectHost: "claude.ai",
         suggestedClient: "claude",
         scopes: [
-          { name: "tandem:read", description: "Read this workspace's files, project context and proposals" },
-          {
-            name: "tandem:write",
-            description: "Create and update documents, publish work and propose context changes (never approve them)",
-          },
+          { name: "tandem:read", description: "Read this workspace's files and project context" },
+          { name: "tandem:write", description: "Create and update documents, publish work and update project context" },
         ],
         workspaces: workspaces
           .map((w) => ({ id: w.id, name: w.name, role: membersFor(w.id).get(signedInUser()) }))
@@ -1476,107 +1272,4 @@ export function createMockApi({
       commit(getFile(fileId), content, actor);
     },
   };
-}
-
-function seedProposals(
-  now: number,
-  context: ProjectContext,
-  details: ContextDetails,
-): Array<ContextProposal & { baseValue?: string; hasConflict?: boolean }> {
-  const base = {
-    operation: "add" as const, supersedes: null, workspaceId: MOCK_WORKSPACE_ID, decidedBy: null, decidedAt: null, status: "pending" as const,
-    conflict: null, resolution: null, decisionNote: null, revision: 1,
-  };
-  const decision = (text: string) => details.decisions.find((entry) => entry.text === text)!;
-  const contradicts = (target: ContextEntry, explanation: string, confidence: number): ConflictItem => ({
-    kind: "contradicts", targetType: "decision", targetId: target.id, targetText: target.text, targetBy: { ...target.updatedBy },
-    targetAt: target.updatedAt, contextVersion: details.version, explanation, confidence,
-  });
-  return [
-    {
-      // An AI-detected conflict, so the conflict card can be tried without a backend.
-      ...base,
-      id: "proposal_conflict",
-      field: "decision",
-      proposedValue: "Let the last save win instead of rejecting stale writes",
-      rationale: "Version conflicts interrupted the rehearsal twice; last-write-wins keeps edits flowing.",
-      sourceFileIds: ["file_brief"],
-      createdBy: { ...DEMO_CHATGPT },
-      createdAt: now - 5 * MINUTE,
-      conflict: {
-        status: "conflict", method: "semantic", model: "claude-haiku-5-5", checkedAt: now - 5 * MINUTE + 3_000,
-        items: [contradicts(decision("Optimistic versioning on every write"), "Last-write-wins drops the version check the approved decision requires on every write.", 0.93)],
-      },
-      hasConflict: true,
-      revision: 2,
-    },
-    {
-      // A settled conflict for the history.
-      ...base,
-      id: "proposal_conflict_resolved",
-      field: "decision",
-      proposedValue: "Make Gemini the primary demo client",
-      rationale: "Gemini is already open on the demo laptop.",
-      sourceFileIds: [],
-      createdBy: { ...DEMO_CHATGPT },
-      createdAt: now - 40 * MINUTE,
-      status: "rejected",
-      decidedBy: { ...ALEX },
-      decidedAt: now - 30 * MINUTE,
-      conflict: {
-        status: "conflict", method: "semantic", model: "claude-haiku-5-5", checkedAt: now - 40 * MINUTE + 3_000,
-        items: [contradicts(decision("Claude is the primary demo client"), "Both name the primary demo client; only one can be primary.", 0.88)],
-      },
-      hasConflict: true,
-      resolution: "retained_current",
-      decisionNote: "Claude connectors work on every plan; Gemini custom apps have eligibility limits.",
-      revision: 3,
-    },
-    {
-      ...base,
-      id: "proposal_goal",
-      field: "goal",
-      proposedValue: "Ship the Tandem P0 demo, plus a recorded fallback video, by Saturday night.",
-      rationale: "Live demos fail on venue Wi-Fi. proposal.md now lists a recorded fallback as a deliverable.",
-      sourceFileIds: ["file_proposal"],
-      createdBy: { ...CLAUDE },
-      createdAt: now - 8 * MINUTE,
-      baseValue: context.goal,
-    },
-    {
-      ...base,
-      id: "proposal_decision",
-      field: "decision",
-      proposedValue: "Demo ChatGPT as the second client, read-only",
-      rationale: "ChatGPT Pro only gets read-only MCP; the brief needs two clients and Claude covers writes.",
-      sourceFileIds: ["file_brief"],
-      createdBy: { ...CLAUDE },
-      createdAt: now - 20 * MINUTE,
-    },
-    {
-      // Based on an older scope, so approving it reports that the context moved on.
-      ...base,
-      id: "proposal_scope",
-      field: "scope",
-      proposedValue: "One workspace, one shared text file, edited only through MCP.",
-      rationale: "Drafted before the team agreed the dashboard edits files too.",
-      sourceFileIds: [],
-      createdBy: { ...ALEX },
-      createdAt: now - 70 * MINUTE,
-      baseValue: "One workspace and a shared text file.",
-    },
-    {
-      ...base,
-      id: "proposal_constraint",
-      field: "constraint",
-      proposedValue: "No agent-to-agent messaging",
-      rationale: "Cut from scope on purpose; assistants meet only through files and context.",
-      sourceFileIds: [],
-      createdBy: { ...CLAUDE },
-      createdAt: now - 3 * 60 * MINUTE,
-      status: "approved",
-      decidedBy: { ...ALEX },
-      decidedAt: now - 2 * 60 * MINUTE,
-    },
-  ];
 }

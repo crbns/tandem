@@ -3,8 +3,8 @@
 `SKILL.md` teaches an AI assistant how to use the Tandem remote MCP server:
 sync workspace context, read canonical files, save edits with
 `expected_version`, recover from `VERSION_CONFLICT`, publish only authorized
-work, and propose (not apply) changes to goal, scope, major decisions, and
-ownership.
+work, and change project context (goal, scope, decisions, ownership) only when
+the user directs it.
 
 You need two pieces in each client:
 
@@ -16,23 +16,25 @@ the assistant to run the same loop on every later project request: sync (brief
 first, reading `observed`), read the relevant files, do the work, save its
 documents (`update_document` / `create_document`), and reply. That's one write
 per task. The assistant calls `publish_work` only for a deliverable the user
-wants announced, and `propose_context_change` only for a goal, scope,
-decision, constraint, ownership or open-question change the user directs.
+wants announced, and `update_context` only for a goal, scope, decision,
+constraint, ownership or open-question change the user directs; it applies at
+once.
 The server sends the loop as MCP `instructions` at initialize and restates it
-as `next_steps` on `sync_workspace`, save, publish, and propose results, so it
+as `next_steps` on `sync_workspace`, save, publish, and context results, so it
 reaches assistants without the skill too. `TESTING.md` → "Continuous loop"
 measures it, and the eval's loop grader (below) checks the write calls.
 
 **Observed activity.** Tandem also records assistants' MCP calls and, with the
 optional Claude Code hooks (`docs/claude-code-hooks.md`), their Claude Code
 activity. Its context manager reads every saved document and that activity,
-records findings, tasks, progress and blockers, and proposes goal and decision
-changes for a human to approve. The compacted result is the `observed` section
+records findings, tasks, progress and blockers, and records the goals, decisions
+and owners documents show straight into project context. The compacted result
+is the `observed` section
 of `sync_workspace`: up to 10 entries in a brief, 30 in a full sync, resent
 with `since` only when it changed. It's labeled with evidence and never
-treated as approved context. Assistants read it instead of skimming recent
+treated as project context. Assistants read it instead of skimming recent
 work and events, so they don't write progress updates, findings or
-file-derived proposals by hand.
+file-derived context changes by hand.
 
 > **Limits.** A skill only nudges the model. Whether it activates, and whether
 > the assistant calls `sync_workspace`/`list_files`, is probabilistic. A skill
@@ -127,7 +129,7 @@ skills. Only the project-scoped path was measured: it is what the eval uses
 ## ChatGPT: UNTESTED
 
 - Full write MCP (needed for `create_document`, `update_document`,
-  `publish_work`, `propose_context_change`) is a **Business / Enterprise / Edu
+  `publish_work`, `update_context`) is a **Business / Enterprise / Edu
   beta** only, as of Oct 2026.
 - **Pro** is read-only for custom MCP. Expect read tools (`list_files`,
   `read_file`, `search_files`) only.
@@ -180,7 +182,7 @@ trials require a real brief ID, replace its content with the synthetic fixture,
 and inject via the second actor's key (or the same key if none is supplied).
 The literal marker says "sam" even if the seeded second actor is Blake; results
 record which credential arrangement was used. Do not interpret fixture markers
-as tests of the external workspace's approved goal.
+as tests of the external workspace's project goal.
 
 External results store the URL and brief ID, never credential settings; known
 keys are redacted from saved errors and answers too. `--keep` retains temporary
@@ -280,15 +282,16 @@ requires only sync and read.
 
 Prompts with a `loop` spec also get a loop grader. It passes when every
 step the spec requires happened successfully (`sync`, `read`, `save`) and
-no unwanted write was attempted (`publish: false`, `propose: false`). For an
+no unwanted write was attempted (`publish: false`, `context: false`). For an
 ordinary edit or draft request, the spec expects sync + read + save and no
-`publish_work` or `propose_context_change`. Only a prompt where the user
-directs a context change (p4) expects a proposal.
+`publish_work` or `update_context`. Only a prompt where the user directs a
+context change (p4) expects `update_context`. Results before 2026-10-25 graded
+the retired `propose_context_change` as the `propose` step.
 
 Summary counts are trials, not individual calls. `sync` and `write` measure
 attempts; `sync_ok` and `write_ok` require at least one matching non-error tool
 result. A write is any `create_document`, `update_document`, `publish_work`, or
-`propose_context_change` call. `tool_errors` counts trials with at least one
+`update_context` call. `tool_errors` counts trials with at least one
 Tandem MCP tool error, even if Claude returns a normal final answer.
 `errors_or_timeouts` includes those tool errors, CLI failures (including a
 nonzero exit or missing final result event), and timeouts. First-call order
@@ -312,8 +315,8 @@ Neither condition touched Tandem on the unrelated controls. Without the skill,
 though, Claude Code _still_ used Tandem tools in 10/10 project chats, because
 the tool descriptions were enough in a setup where Tandem is the only MCP
 server and the project dir is empty. So the skill doesn't decide _whether_
-Tandem gets used here. It changes _how_: it syncs the approved context first
-(so answers use the approved goal and ownership), and it saved drafts with
+Tandem gets used here. It changes _how_: it syncs the project context first
+(so answers use the recorded goal and ownership), and it saved drafts with
 `create_document` in 2/4 draft chats, against 0/4 without it. The other two
 asked before saving. When it saved, it said every workspace member can see the
 file now; no run called a saved file private. n=2 per cell is directional

@@ -164,7 +164,7 @@ function ConsentForm({ requestId, request }: { requestId: string; request: Conse
           </span>
           <SegmentedControl label="Assistant" value={client} options={CLIENT_OPTIONS} onChange={setClient} />
           <p className="text-xs text-muted-foreground">
-            Its saves show as yours, marked &ldquo;via {clientName(client)}&rdquo;.
+            Its saves and context changes show as yours, marked &ldquo;via {clientName(client)}&rdquo;.
           </p>
         </div>
 
@@ -174,7 +174,6 @@ function ConsentForm({ requestId, request }: { requestId: string; request: Conse
             {request.scopes.map((scope) => (
               <li key={scope.name}>{scope.description}</li>
             ))}
-            <li>Never approve changes to the goal, scope, decisions or ownership: a person does that here.</li>
           </ul>
           <p className="text-xs text-muted-foreground">
             You can disconnect it at any time on the workspace&apos;s Assistants page.

@@ -12,114 +12,97 @@ import type { api } from "@repo/backend/convex/_generated/api.js";
 
 const human: Actor = { actorType: "human", userId: "owner", userName: "Owner" };
 const agent: Actor = { ...human, actorType: "agent", agentName: "Claude", agentClient: "claude" };
-const input = { field: "open_question" as const, proposedValue: "When do we launch?", rationale: "Planning", sourceFileIds: [] };
+const question = { field: "open_question" as const, value: "When do we launch?", sourceFileIds: [] };
+const edit = { field: "open_question" as const, proposedValue: "When do we launch?", sourceFileIds: [] };
 const setup = () => {
   let actor = human;
   return { mock: createMockApi({ latencyMs: [0, 0], getActor: () => actor }), as: (next: Actor) => { actor = next; } };
 };
 
 describe("context lifecycle", () => {
-  it("immediately records agent working context, retains stable IDs and resolver attribution, and lets a human remove it", async () => {
-    const { mock, as } = setup();
+  it("applies additions, resolves and removals at once, keeping stable IDs and resolver attribution", async () => {
+    const { mock } = setup();
     await mock.listWorkspaces();
-    await mock.setContextApproval(workspaceId, "automatic");
     const changed = vi.fn();
     mock.watchWorkspace(workspaceId, changed);
-    as(agent);
-    const result = await mock.proposeContextChange(workspaceId, input);
-    expect(result.status).toBe("applied");
-    const before = await mock.getContext(workspaceId);
-    // Reads from the dashboard use a human session.
-    as(human);
+    const before = await mock.getContextDetails(workspaceId);
+    const added = await mock.changeContext(workspaceId, question);
+    expect(added).toMatchObject({ version: before.version + 1, deduplicated: false });
     let context = await mock.getContextDetails(workspaceId);
     const entry = context.openQuestions[0]!;
-    expect(entry).toMatchObject({ status: "active", updatedBy: agent, resolvedAt: null });
-    expect(entry.id).toBeTruthy();
-    as(agent);
-    await mock.proposeContextChange(workspaceId, { field: input.field, rationale: input.rationale, sourceFileIds: [], operation: "resolve", entryId: entry.id, expectedVersion: context.version });
-    as(human);
+    expect(entry).toMatchObject({ id: added.entryId, status: "active", updatedBy: human, resolvedAt: null });
+    await mock.changeContext(workspaceId, { field: question.field, operation: "resolve", entryId: entry.id, expectedVersion: context.version, sourceFileIds: [] });
     context = await mock.getContextDetails(workspaceId);
-    expect(context.openQuestions[0]).toMatchObject({ id: entry.id, status: "resolved", resolvedBy: agent, resolvedAt: expect.any(Number) });
-    expect(context.version).toBe(before!.version + 1);
+    expect(context.openQuestions[0]).toMatchObject({ id: entry.id, status: "resolved", resolvedBy: human, resolvedAt: expect.any(Number) });
     const resolvedVersion = context.version;
-    await expect(mock.updateContextField(workspaceId, { ...input, entryId: entry.id, expectedVersion: resolvedVersion })).rejects.toMatchObject({ code: "INVALID_INPUT" });
-
-    await expect(mock.proposeContextChange(workspaceId, { ...input, operation: "remove", entryId: entry.id, expectedVersion: resolvedVersion - 1 })).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
-    as(agent);
-    await expect(mock.proposeContextChange(workspaceId, { ...input, operation: "remove", entryId: entry.id, expectedVersion: resolvedVersion })).rejects.toMatchObject({ code: "INVALID_INPUT" });
-    as(human);
-    await mock.proposeContextChange(workspaceId, { field: input.field, rationale: input.rationale, sourceFileIds: [], operation: "remove", entryId: entry.id, expectedVersion: resolvedVersion });
+    // A retried resolve changes nothing.
+    expect(await mock.changeContext(workspaceId, { field: question.field, operation: "resolve", entryId: entry.id, sourceFileIds: [] }))
+      .toEqual({ version: resolvedVersion, entryId: entry.id, deduplicated: true });
+    await expect(mock.updateContextField(workspaceId, { ...edit, entryId: entry.id, expectedVersion: resolvedVersion })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(mock.changeContext(workspaceId, { field: question.field, operation: "remove", entryId: entry.id, expectedVersion: resolvedVersion - 1, sourceFileIds: [] })).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+    await mock.changeContext(workspaceId, { field: question.field, operation: "remove", entryId: entry.id, expectedVersion: resolvedVersion, sourceFileIds: [] });
     expect((await mock.getContextDetails(workspaceId)).openQuestions).toEqual([]);
-    expect((await mock.listProposals(workspaceId, "applied")).find((p) => p.id === result.id)).toMatchObject({ createdBy: agent, supersedes: null });
     expect(changed).toHaveBeenCalledTimes(3);
   });
 
-  it("holds working context and resolves for approval in a manual workspace, the default", async () => {
-    const { mock, as } = setup();
-    expect(await mock.getContextApproval(workspaceId)).toBe("manual");
-    as(agent);
-    const added = await mock.proposeContextChange(workspaceId, input);
-    expect(added.status).toBe("pending");
-    as(human);
-    expect((await mock.getContextDetails(workspaceId)).openQuestions).toEqual([]);
-    await mock.decideProposal({ id: added.id, workspaceId }, "approved");
-    const context = await mock.getContextDetails(workspaceId);
-    const entry = context.openQuestions[0]!;
-    expect(entry).toMatchObject({ text: input.proposedValue, status: "active" });
-    const resolve = await mock.proposeContextChange(workspaceId, {
-      ...input, operation: "resolve", entryId: entry.id, expectedVersion: context.version,
-    });
-    expect(resolve.status).toBe("pending");
-    expect((await mock.listProposals(workspaceId, "pending")).find((p) => p.id === resolve.id))
-      .toMatchObject({ operation: "resolve", proposedValue: input.proposedValue });
-    await mock.decideProposal({ id: resolve.id, workspaceId }, "approved");
-    expect((await mock.getContextDetails(workspaceId)).openQuestions[0]).toMatchObject({ id: entry.id, status: "resolved" });
-  });
-
-  it("requires a version and the right field for lifecycle writes, and checks optional add versions", async () => {
+  it("writes nothing when the context already holds the addition", async () => {
     const { mock } = setup();
     const context = await mock.getContextDetails(workspaceId);
-    await expect(mock.proposeContextChange(workspaceId, { ...input, operation: "resolve", entryId: "unknown" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
-    await expect(mock.proposeContextChange(workspaceId, { ...input, field: "constraint", operation: "resolve", entryId: context.constraints[0]!.id, expectedVersion: context.version })).rejects.toMatchObject({ code: "INVALID_INPUT" });
-    await expect(mock.proposeContextChange(workspaceId, { ...input, field: "decision", operation: "remove", entryId: context.decisions[0]!.id, expectedVersion: context.version })).rejects.toMatchObject({ code: "INVALID_INPUT" });
-    await expect(mock.proposeContextChange(workspaceId, { ...input, expectedVersion: context.version - 1 })).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
+    const constraint = context.constraints[0]!;
+    expect(await mock.changeContext(workspaceId, { field: "constraint", value: ` ${constraint.text.toUpperCase()} `, sourceFileIds: [] }))
+      .toEqual({ version: context.version, entryId: constraint.id, deduplicated: true });
+    expect(await mock.changeContext(workspaceId, { field: "goal", value: context.goal!.text, sourceFileIds: [] }))
+      .toEqual({ version: context.version, entryId: "goal", deduplicated: true });
+    expect((await mock.getContextDetails(workspaceId)).version).toBe(context.version);
+  });
+
+  it("is for people's dashboard sessions: an assistant identity gets APPROVAL_REQUIRED", async () => {
+    const { mock, as } = setup();
+    await mock.listWorkspaces();
+    as(agent);
+    await expect(mock.changeContext(workspaceId, question)).rejects.toMatchObject({ code: "APPROVAL_REQUIRED" });
+  });
+
+  it("requires an entry and the right field for lifecycle writes, and checks optional add versions", async () => {
+    const { mock } = setup();
+    const context = await mock.getContextDetails(workspaceId);
+    await expect(mock.changeContext(workspaceId, { ...question, operation: "resolve", entryId: "unknown" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(mock.changeContext(workspaceId, { field: "constraint", operation: "resolve", entryId: context.constraints[0]!.id, sourceFileIds: [] })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(mock.changeContext(workspaceId, { field: "decision", operation: "remove", entryId: context.decisions[0]!.id, sourceFileIds: [] })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(mock.changeContext(workspaceId, { field: "open_question", operation: "remove", sourceFileIds: [] })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(mock.changeContext(workspaceId, { ...question, expectedVersion: context.version - 1 })).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
     expect((await mock.getContextDetails(workspaceId)).version).toBe(context.version);
   });
 
   it("uses stable IDs after removal shifts list indexes", async () => {
     const { mock } = setup();
-    await mock.setContextApproval(workspaceId, "automatic");
     let context = await mock.getContextDetails(workspaceId);
     const [first, second] = context.constraints;
-    await mock.proposeContextChange(workspaceId, { ...input, field: "constraint", operation: "remove", entryId: first!.id, expectedVersion: context.version });
+    await mock.changeContext(workspaceId, { field: "constraint", operation: "remove", entryId: first!.id, expectedVersion: context.version, sourceFileIds: [] });
     context = await mock.getContextDetails(workspaceId);
-    await mock.updateContextField(workspaceId, { ...input, field: "constraint", entryId: second!.id, proposedValue: "Still required", expectedVersion: context.version });
+    await mock.updateContextField(workspaceId, { ...edit, field: "constraint", entryId: second!.id, proposedValue: "Still required", expectedVersion: context.version });
     expect((await mock.getContextDetails(workspaceId)).constraints).toEqual([expect.objectContaining({ id: second!.id, text: "Still required" })]);
   });
 
-  it("keeps a superseding decision pending until approval and preserves both decision IDs", async () => {
-    const { mock, as } = setup();
+  it("supersedes a decision at once and preserves both decision IDs", async () => {
+    const { mock } = setup();
     const before = await mock.getContextDetails(workspaceId);
     const original = before.decisions[0]!;
-    as(agent);
-    const proposal = await mock.proposeContextChange(workspaceId, { ...input, field: "decision", proposedValue: "Use two clients", supersedes: original.id });
-    expect(proposal.status).toBe("pending");
-    as(human);
-    expect((await mock.getContextDetails(workspaceId)).version).toBe(before.version);
-    expect((await mock.listProposals(workspaceId)).find((p) => p.id === proposal.id)?.supersedes).toBe(original.id);
-    await mock.decideProposal({ id: proposal.id, workspaceId }, "approved");
+    const result = await mock.changeContext(workspaceId, { field: "decision", value: "Use two clients", supersedes: original.id, sourceFileIds: [] });
     const after = await mock.getContextDetails(workspaceId);
     const replacement = after.decisions.at(-1)!;
+    expect(result).toEqual({ version: before.version + 1, entryId: replacement.id, deduplicated: false });
     expect(after.decisions[0]).toMatchObject({ id: original.id, status: "superseded", supersededBy: replacement.id });
     expect(replacement).toMatchObject({ status: "active", text: "Use two clients" });
     expect((await mock.getContext(workspaceId))?.decisions).not.toContain(original.text);
+    await expect(mock.changeContext(workspaceId, { field: "decision", value: "Use three clients", supersedes: original.id, sourceFileIds: [] })).rejects.toMatchObject({ code: "INVALID_INPUT" });
   });
 
   it("preserves ownership identity across targeted edits", async () => {
     const { mock } = setup();
     await mock.listWorkspaces();
     let context = await mock.getContextDetails(workspaceId);
-    await mock.updateContextField(workspaceId, { field: "ownership", proposedValue: "Original area", ownerUserId: human.userId, sourceFileIds: [], expectedVersion: context.version });
+    await mock.changeContext(workspaceId, { field: "ownership", value: "Original area", ownerUserId: human.userId, sourceFileIds: [], expectedVersion: context.version });
     context = await mock.getContextDetails(workspaceId);
     const id = context.ownership[0]!.id;
     for (const target of [{ entryId: id }, { entryIndex: 0 }]) {
@@ -132,55 +115,43 @@ describe("context lifecycle", () => {
 
   it("edits, resolves, and removes a question after its source is deleted", async () => {
     const { mock } = setup();
-    await mock.setContextApproval(workspaceId, "automatic");
     const file = await mock.createFile(workspaceId, { name: "source.md", mimeType: "text/markdown", content: "Evidence" });
-    await mock.proposeContextChange(workspaceId, { ...input, sourceFileIds: [file.id] });
+    await mock.changeContext(workspaceId, { ...question, sourceFileIds: [file.id] });
     await mock.deleteFile(file.id, file.version);
     let context = await mock.getContextDetails(workspaceId);
     const entry = context.openQuestions[0]!;
-    await mock.updateContextField(workspaceId, { ...input, proposedValue: "Edited", sourceFileIds: [file.id], entryId: entry.id, expectedVersion: context.version });
+    await mock.updateContextField(workspaceId, { ...edit, proposedValue: "Edited", sourceFileIds: [file.id], entryId: entry.id, expectedVersion: context.version });
     context = await mock.getContextDetails(workspaceId);
     expect(context.openQuestions[0]).toMatchObject({ id: entry.id, text: "Edited", sourceFileIds: [file.id] });
-    await mock.proposeContextChange(workspaceId, { ...input, operation: "resolve", entryId: entry.id, sourceFileIds: [file.id], expectedVersion: context.version });
+    await mock.changeContext(workspaceId, { field: question.field, operation: "resolve", entryId: entry.id, sourceFileIds: [], expectedVersion: context.version });
     context = await mock.getContextDetails(workspaceId);
     expect(context.openQuestions[0]).toMatchObject({ status: "resolved", sourceFileIds: [file.id] });
-    await mock.proposeContextChange(workspaceId, { ...input, operation: "remove", entryId: entry.id, sourceFileIds: [file.id], expectedVersion: context.version });
+    await mock.changeContext(workspaceId, { field: question.field, operation: "remove", entryId: entry.id, sourceFileIds: [], expectedVersion: context.version });
     expect((await mock.getContextDetails(workspaceId)).openQuestions).toEqual([]);
   });
 
   it("rejects new deleted or nonexistent sources even when another entry already links them", async () => {
     const { mock } = setup();
     const file = await mock.createFile(workspaceId, { name: "source.md", mimeType: "text/markdown", content: "Evidence" });
-    await mock.proposeContextChange(workspaceId, { ...input, sourceFileIds: [file.id] });
+    await mock.changeContext(workspaceId, { ...question, sourceFileIds: [file.id] });
     await mock.deleteFile(file.id, file.version);
     const context = await mock.getContextDetails(workspaceId);
     for (const sourceFileIds of [[file.id], ["missing-file"]]) {
-      await expect(mock.updateContextField(workspaceId, { ...input, sourceFileIds, expectedVersion: context.version })).rejects.toMatchObject({ code: "INVALID_INPUT" });
-      await expect(mock.proposeContextChange(workspaceId, { ...input, field: "decision", sourceFileIds })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      await expect(mock.updateContextField(workspaceId, { ...edit, proposedValue: "Another question", sourceFileIds, expectedVersion: context.version })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      await expect(mock.changeContext(workspaceId, { field: "decision", value: "Another decision", sourceFileIds })).rejects.toMatchObject({ code: "INVALID_INPUT" });
     }
   });
 
-  it("edits and proposes an existing goal with a deleted source, then approves it", async () => {
+  it("keeps an existing goal's deleted source when the goal is edited or replaced", async () => {
     const { mock } = setup();
     const file = await mock.createFile(workspaceId, { name: "source.md", mimeType: "text/markdown", content: "Evidence" });
     let context = await mock.getContextDetails(workspaceId);
-    const change = { ...input, field: "goal" as const, sourceFileIds: [file.id] };
-    await mock.updateContextField(workspaceId, { ...change, expectedVersion: context.version });
+    await mock.updateContextField(workspaceId, { ...edit, field: "goal", sourceFileIds: [file.id], expectedVersion: context.version });
     await mock.deleteFile(file.id, file.version);
     context = await mock.getContextDetails(workspaceId);
-    await mock.updateContextField(workspaceId, { ...change, proposedValue: "Edited goal", expectedVersion: context.version });
-    const proposal = await mock.proposeContextChange(workspaceId, { ...change, proposedValue: "Proposed goal" });
-    await mock.decideProposal({ id: proposal.id, workspaceId }, "approved");
-    expect((await mock.getContextDetails(workspaceId)).goal).toMatchObject({ text: "Proposed goal", sourceFileIds: [file.id] });
-  });
-
-  it("approves a pending proposal whose source was deleted after submission", async () => {
-    const { mock } = setup();
-    const file = await mock.createFile(workspaceId, { name: "source.md", mimeType: "text/markdown", content: "Evidence" });
-    const proposal = await mock.proposeContextChange(workspaceId, { ...input, field: "decision", sourceFileIds: [file.id] });
-    await mock.deleteFile(file.id, file.version);
-    await mock.decideProposal({ id: proposal.id, workspaceId }, "approved");
-    expect((await mock.getContextDetails(workspaceId)).decisions.at(-1)).toMatchObject({ text: input.proposedValue, sourceFileIds: [file.id] });
+    await mock.updateContextField(workspaceId, { ...edit, field: "goal", proposedValue: "Edited goal", sourceFileIds: [file.id], expectedVersion: context.version });
+    await mock.changeContext(workspaceId, { field: "goal", value: "Replaced goal", sourceFileIds: [file.id] });
+    expect((await mock.getContextDetails(workspaceId)).goal).toMatchObject({ text: "Replaced goal", sourceFileIds: [file.id] });
   });
 
   it("maps resolver actors without losing backend lifecycle IDs", () => {
@@ -192,10 +163,10 @@ describe("context lifecycle", () => {
 });
 
 const entry: ContextEntry = { id: "entry_1", text: "Launch?", sourceFileIds: [], updatedBy: human, updatedAt: 1, status: "active", resolvedBy: null, resolvedAt: null, supersededBy: null };
-function panel(field: ContextField, value = entry, canPropose = true, canEdit = false) {
+function panel(field: ContextField, value = entry, canEdit = true) {
   const { mock } = setup();
   return renderToStaticMarkup(createElement(TandemApiContext.Provider, { value: mock }, createElement(ContextFieldPanel, {
-    workspaceId, field, label: "Context", entries: [value], version: 1, canEdit, canPropose, files: [], members: [], onSaved: () => {},
+    workspaceId, field, label: "Context", entries: [value], version: 1, canEdit, files: [], members: [], onSaved: () => {},
   })));
 }
 
@@ -215,8 +186,8 @@ describe("context lifecycle controls", () => {
     expect(resolved).toContain("Resolved");
     expect(resolved).not.toContain("Resolve open question");
     expect(resolved).toContain("Remove Open question");
-    expect(panel("open_question", { ...entry, status: "resolved" }, false, true)).not.toContain("Edit Open question");
-    expect(panel("decision", { ...entry, status: "superseded" }, false, true)).not.toContain("Edit Decision");
+    expect(panel("open_question", { ...entry, status: "resolved" })).not.toContain("Edit Open question");
+    expect(panel("decision", { ...entry, status: "superseded" })).not.toContain("Edit Decision");
     const superseded = panel("decision", { ...entry, status: "superseded", supersededBy: "entry_2" });
     expect(superseded).toContain(`Superseded by ${displayId("entry_2")}`);
     expect(superseded).not.toContain("Supersede decision");

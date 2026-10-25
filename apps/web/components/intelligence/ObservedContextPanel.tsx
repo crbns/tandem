@@ -20,7 +20,7 @@ import { EntryCard } from "./EntryCard";
 /**
  * "What the team is doing": the context manager's observed state, grouped,
  * with evidence on every entry and a status line for the manager itself.
- * Derived from activity, never approved context.
+ * Derived from activity and documents; not project context.
  */
 export function ObservedContextPanel({
   workspaceId,
@@ -40,8 +40,9 @@ export function ObservedContextPanel({
           What the team is doing
         </h2>
         <p className="max-w-3xl text-xs text-muted-foreground">
-          Observed by Tandem&apos;s context manager from recorded activity. It is not approved context: goal and
-          decision changes still go to Approvals. Assistants receive this on their next sync.
+          Observed by Tandem&apos;s context manager from recorded activity and documents. It is not project context;
+          the context manager records goals, decisions and owners there itself. Assistants receive this on their
+          next sync.
         </p>
       </div>
       {resource.status === "loading" && (

@@ -39,20 +39,12 @@ const STATUS_OPTIONS: ReadonlyArray<{ value: ObservedStatus; label: string }> = 
   { value: "retracted", label: "Retracted (wrong)" },
 ];
 
-const PROPOSAL_COPY: Record<NonNullable<ObservedEntry["proposal"]>["status"], string> = {
-  pending: "Proposed for approval",
-  applied: "Applied to approved context",
-  approved: "Approved",
-  rejected: "Proposal rejected",
-  stale: "Proposal went stale",
-};
-
 type Mode = "view" | "edit" | "retract";
 
 /**
  * One observed entry: what it says, how well it's supported, who it's about,
  * and a person's ways to fix it (confirm, edit, retract). Observed, not
- * approved: approval only happens through proposals.
+ * project context, unless the context manager also recorded it there.
  */
 export function EntryCard({
   entry,
@@ -150,7 +142,7 @@ export function EntryCard({
       </h4>
       {entry.content && entry.content !== entry.title && <p className="line-clamp-3 text-xs text-muted-foreground">{entry.content}</p>}
 
-      {(entry.agents.length > 0 || entry.files.length > 0 || entry.proposal) && (
+      {(entry.agents.length > 0 || entry.files.length > 0 || entry.contextEntryId) && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.6875rem] text-muted-foreground">
           {entry.agents.length > 0 && (
             <span className="inline-flex min-w-0 items-center gap-1">
@@ -167,9 +159,9 @@ export function EntryCard({
               </Link>
             ),
           )}
-          {entry.proposal && (
-            <Link href={`/w/${workspaceId}/approvals`} className="inline-flex items-center gap-1 font-medium text-human hover:underline">
-              {PROPOSAL_COPY[entry.proposal.status]}
+          {entry.contextEntryId && (
+            <Link href={`/w/${workspaceId}/context`} className="inline-flex items-center gap-1 font-medium text-human hover:underline">
+              In project context
               <ArrowRightIcon aria-hidden className="size-3" />
             </Link>
           )}
@@ -214,7 +206,7 @@ export function EntryCard({
             ))}
           </select>
           <NoteField id={`${formId}-n`} value={draft.note} disabled={busy} required onChange={(note) => setDraft({ ...draft, note })} />
-          <p className="text-[0.6875rem] text-muted-foreground">Saving marks the entry as confirmed by you. It stays observed context, not approved context.</p>
+          <p className="text-[0.6875rem] text-muted-foreground">Saving marks the entry as confirmed by you. It stays observed context, not project context.</p>
           <FormFooter busy={busy} error={error} submit="Save correction" onCancel={() => setMode("view")} />
         </form>
       )}

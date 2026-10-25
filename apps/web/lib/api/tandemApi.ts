@@ -1,6 +1,7 @@
 import type {
   ContextChangeInput,
-  ContextProposalInput,
+  ContextChangeRequest,
+  ContextChangeResult,
   ContextDetails,
   PublishedWorkPage,
   Task,
@@ -9,12 +10,7 @@ import type {
   AgentClient,
   AgentConnection,
   ConsentRequest,
-  ContextApproval,
-  ContextProposal,
-  ConflictList,
-  DecideProposalOptions,
   NewAgentConnection,
-  ProposalStatus,
   CreateFileInput,
   DirectoryListing,
   FileDetail,
@@ -89,40 +85,22 @@ export interface TandemApi {
   listRevisions(fileId: string): Promise<Revision[]>;
   /** One revision with its content, or null when that version doesn't exist. */
   getRevision(fileId: string, version: number): Promise<Revision | null>;
-  /** The approved project context, or null when nothing has been approved yet. */
+  /** The compact project context, or null before a goal is set. */
   getContext(workspaceId: string): Promise<ProjectContext | null>;
   getContextDetails(workspaceId: string): Promise<ContextDetails>;
   listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]>;
+  /** Any member: a new goal/scope value, or a replacement for one active entry (`entryId`). Applies at once. */
   updateContextField(workspaceId: string, input: ContextChangeInput & { expectedVersion: number; entryId?: string; entryIndex?: number }): Promise<{ version: number }>;
-  proposeContextChange(workspaceId: string, input: ContextProposalInput): Promise<{ id: string; status: "pending" | "applied" }>;
+  /**
+   * Any member: adds to project context, or resolves/removes an entry, at
+   * once. Rejects with VERSION_CONFLICT when `expectedVersion` is behind;
+   * an addition the context already holds is `deduplicated`.
+   */
+  changeContext(workspaceId: string, input: ContextChangeRequest): Promise<ContextChangeResult>;
   /** Newest first, cursor-paginated; maximum page size is 100. */
   listPublishedWork(workspaceId: string, cursor?: string | null, pageSize?: number): Promise<PublishedWorkPage>;
   /** Every status, newest updatedAt first, at most 100. Read-only: assistants manage tasks over MCP. */
   listTasks(workspaceId: string): Promise<Task[]>;
-  /** "manual" (the default) holds every proposal for an owner or admin. */
-  getContextApproval(workspaceId: string): Promise<ContextApproval>;
-  /** Owner/admin humans only. Proposals already pending stay pending. */
-  setContextApproval(workspaceId: string, mode: ContextApproval): Promise<void>;
-  /** Newest first, at most 100. Every member may read them. */
-  listProposals(workspaceId: string, status?: ProposalStatus): Promise<ContextProposal[]>;
-  /**
-   * Owner/admin humans only. Rejects with VERSION_CONFLICT when the field the
-   * proposal was based on changed since (the backend marks it stale), with
-   * PROPOSAL_DECIDED when someone else decided it first, and with
-   * PROPOSAL_CHANGED when `expectedRevision` is behind (e.g. a verdict landed).
-   */
-  decideProposal(
-    proposal: Pick<ContextProposal, "id" | "workspaceId">,
-    decision: "approved" | "rejected",
-    options?: DecideProposalOptions,
-  ): Promise<void>;
-  /**
-   * Proposals that hit a conflict: `pending` wait on a person, `resolved` were
-   * settled (newest first). Every member may read them.
-   */
-  listConflicts(workspaceId: string): Promise<ConflictList>;
-  /** Owner/admin: runs a conflict check again when it is stuck on "checking". */
-  recheckConflict(proposal: Pick<ContextProposal, "id" | "workspaceId">): Promise<void>;
   /** The MCP server URL people paste into their assistant. */
   getMcpServerUrl(): Promise<string>;
   /** Only the signed-in person's own API-key connection; the key is returned once. */
@@ -149,21 +127,21 @@ export interface TandemApi {
   ): Promise<{ redirectUrl: string }>;
   /**
    * Calls `onChange` whenever a new workspace event lands (a file saved through
-   * MCP, a proposal, an approval), so lists can refetch without a reload.
+   * MCP, a context change), so lists can refetch without a reload.
    * Returns an unsubscribe function.
    */
   watchWorkspace(workspaceId: string, onChange: () => void): () => void;
   /**
-   * Live page: every unrevoked assistant, the approved-context version and how
+   * Live page: every unrevoked assistant, the project-context version and how
    * far behind each one is. Reactive: `onData` runs on every change (including
    * read-only MCP calls). Returns an unsubscribe function.
    */
   watchAgentNetwork(workspaceId: string, subscriber: Subscriber<AgentNetwork>): () => void;
-  /** The newest page of assistant activity and people's decisions, reactively. */
+  /** The newest page of assistant activity and people's edits, reactively. */
   watchTimeline(workspaceId: string, query: TimelineQuery, subscriber: Subscriber<TimelinePage>): () => void;
   /** One older page (`query.before` set), fetched once. */
   listTimeline(workspaceId: string, query: TimelineQuery): Promise<TimelinePage>;
-  /** Observed (derived) context and the context manager's status, reactively. Never approved context. */
+  /** Observed (derived) context and the context manager's status, reactively. Never project context. */
   watchObservedContext(workspaceId: string, subscriber: Subscriber<ObservedContext>): () => void;
   /** The newest page of raw activity events (every source), reactively. */
   watchActivityEvents(workspaceId: string, query: ActivityEventQuery, subscriber: Subscriber<ActivityEventPage>): () => void;

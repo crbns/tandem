@@ -52,7 +52,7 @@ function prose(seed: string, n: number) {
 }
 
 /**
- * A mid-hackathon workspace: an approved goal and 6 decisions, 15 files, 20
+ * A mid-hackathon workspace: a goal and 6 decisions, 15 files, 20
  * publications with ~400-character summaries (about 40 workspace events in
  * all), and 30 observed entries: open blockers, active tasks and progress,
  * decisions, superseded history and per-document digests.
@@ -70,15 +70,14 @@ async function realisticWorkspace() {
   const workspaceId = await alex.mutation(api.workspaces.createWorkspace, { name: "Launch" });
   const invite = await alex.mutation(api.workspaces.createWorkspaceInvite, { workspaceId, role: "member" });
   await sam.mutation(api.workspaces.acceptWorkspaceInvite, { token: invite.token });
-  await alex.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "automatic" });
   const created = await sam.action(api.agentConnections.createAgentConnection, { workspaceId, client: "claude" });
   const apiKey = created.token as string;
   const tool = (name: string, args: Record<string, unknown> = {}) => callTool(t, apiKey, name, args);
 
-  await tool("propose_context_change", { field: "goal", proposed_value: "Ship the public beta of Tandem by Friday with two native clients connected.", rationale: "Kickoff" });
+  await tool("update_context", { field: "goal", value: "Ship the public beta of Tandem by Friday with two native clients connected." });
   for (const d of ["Convex is the only backend", "MCP runs inside Convex HTTP actions", "Claude is the primary test client",
     "Optimistic versioning on every write", "No agent-to-agent messaging", "Vercel hosts the dashboard"])
-    await tool("propose_context_change", { field: "decisions", proposed_value: d, rationale: "Planning" });
+    await tool("update_context", { field: "decisions", value: d });
 
   const files: { id: Id<"files">; name: string }[] = [];
   for (let i = 0; i < 15; i++) {
@@ -251,7 +250,8 @@ const BEFORE = {
 const WRITES = {
   save: /\b(update_document|create_document)\b/,
   publish: /\bpublish_work\b/,
-  propose: /\bpropose(_context_change)?\b/,
+  // The old loop's propose_context_change, now update_context.
+  context: /\b(propose(_context_change)?|update_context)\b/,
 } as const;
 /**
  * A sentence that mentions a write tool directs it unless the sentence gates
@@ -276,19 +276,19 @@ describe("loop write metric", () => {
   const after = [MCP_INSTRUCTIONS, ...syncNextSteps(), ...savedNextSteps({ id: "FILE", version: 1 })];
 
   it("asks for one write per edit (save), down from save + publish + propose", () => {
-    expect([...directedWrites(before)].sort()).toEqual(["propose", "publish", "save"]);
+    expect([...directedWrites(before)].sort()).toEqual(["context", "publish", "save"]);
     expect([...directedWrites(after)]).toEqual(["save"]);
     // Required write calls per edit: before, save + publish_work + at least
     // one propose_context_change (before and after the work); after, the save.
-    const proposeSteps = before.filter((t) => WRITES.propose.test(t) && !GATED.test(t)).length;
+    const proposeSteps = before.filter((t) => WRITES.context.test(t) && !GATED.test(t)).length;
     expect(proposeSteps).toBeGreaterThanOrEqual(2);
     console.info(`loop writes per edit: before ${directedWrites(before).size} kinds (${proposeSteps} propose steps), after ${directedWrites(after).size}`);
   });
 
-  it("never directs publish_work or propose_context_change unprompted", () => {
+  it("never directs publish_work or update_context unprompted", () => {
     for (const text of after)
       for (const sentence of text.split(/(?<=[.;:])\s+|\n/))
-        if (WRITES.publish.test(sentence) || WRITES.propose.test(sentence)) expect(sentence).toMatch(GATED);
+        if (WRITES.publish.test(sentence) || WRITES.context.test(sentence)) expect(sentence).toMatch(GATED);
   });
 
   it("reads shorter: instructions and sync next_steps", () => {

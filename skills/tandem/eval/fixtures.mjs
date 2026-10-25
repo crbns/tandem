@@ -13,7 +13,7 @@ Ship a working Tandem demo at Cal Hacks 13.0: two teammates, each in their own a
 
 ## Scope
 
-- One shared workspace with files, revisions, and approvals.
+- One shared workspace with files, revisions, and project context.
 - A remote MCP server for Claude and ChatGPT.
 - Out of scope: real-time co-editing, agent-to-agent messaging.
 
@@ -27,7 +27,7 @@ Ship a working Tandem demo at Cal Hacks 13.0: two teammates, each in their own a
 export const TEAMMATE_MARKER =
   "Teammate note (sam): budget approved — keep this line.";
 
-// Phrases that only the stale sources contain. Tandem's approved goal and
+// Phrases that only the stale sources contain. Tandem's project goal and
 // brief say "Cal Hacks"; the local tree and the stubs never do.
 export const STALE_MARKERS = {
   local: ["Spring Builders Summit", "mobile-first beta"],

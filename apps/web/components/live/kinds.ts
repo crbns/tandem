@@ -19,7 +19,7 @@ import type { ActivityKind } from "@/lib/api/types";
 /**
  * One colour per kind of traffic: slate for syncs, a lighter slate for reads,
  * verdigris for what assistants send in, deep red for conflicts, ochre for
- * errors, ink-blue for people's decisions. `stroke` is a CSS colour for SVG.
+ * errors, ink-blue for people's edits. `stroke` is a CSS colour for SVG.
  */
 export const KIND_STYLE: Record<ActivityKind, { icon: LucideIcon; text: string; stroke: string }> = {
   sync: { icon: RefreshCwIcon, text: "text-archive", stroke: "var(--archive)" },

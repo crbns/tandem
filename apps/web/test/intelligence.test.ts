@@ -34,7 +34,7 @@ describe("mock context intelligence", () => {
       expect(groups.get(key)!.length, key).toBeGreaterThan(0);
     expect(new Set(observed.entries.map((e) => e.evidence))).toEqual(new Set(["requested", "claimed", "observed", "verified", "human_confirmed"]));
     expect(new Set(observed.entries.map((e) => e.severity).filter(Boolean))).toEqual(new Set(["potential", "actual"]));
-    expect(observed.entries.find((e) => e.proposal)?.proposal?.status).toBe("pending");
+    expect(observed.entries.find((e) => e.contextEntryId)).toMatchObject({ category: "goal", contextEntryId: "goal" });
 
     const feed = await api.listActivityEvents(MOCK_WORKSPACE_ID, { sources: ["simulator"] });
     expect(feed.items.length).toBeGreaterThan(0);

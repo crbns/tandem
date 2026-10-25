@@ -6,12 +6,12 @@ import type { Actor } from "@/lib/api/types";
 const human: Actor = { actorType: "human", userId: "u", userName: "Demo Human" };
 
 describe("mock getContext", () => {
-  it("returns the approved project context with who approved it", async () => {
+  it("returns the project context with who set the goal", async () => {
     const api = createMockApi({ latencyMs: [0, 0], getActor: () => human });
     const ctx = await api.getContext(MOCK_WORKSPACE_ID);
     expect(ctx?.goal).toMatch(/\S/);
     expect(ctx?.version).toBeGreaterThanOrEqual(1);
-    expect(ctx?.approvedBy.actorType).toBe("human");
+    expect(ctx?.updatedBy.actorType).toBe("human");
     expect(Array.isArray(ctx?.decisions)).toBe(true);
     expect(Array.isArray(ctx?.constraints)).toBe(true);
   });

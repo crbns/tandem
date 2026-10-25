@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 // sync_workspace's `observed` section (lib/observed.ts): derived context from
-// the context manager, labeled as not approved, bounded, and tenant-scoped.
+// the context manager, labeled as not project context, bounded, and tenant-scoped.
 import mcpTest from "@convex-dev/mcp/test";
 import { convexTest } from "convex-test";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -10,7 +10,6 @@ import { recordWorkspaceEvent } from "./lib/auth";
 import { INTEL_ACTOR } from "./lib/intelQueue";
 import { ALL_MCP_SCOPES } from "./lib/mcpConfig";
 import { toAttribution, toSyncResult } from "./lib/mcpContract";
-import { CONFLICT_ACTOR } from "./lib/conflicts";
 import {
   OBSERVED_BRIEF_CONTENT,
   OBSERVED_BRIEF_LIMIT,
@@ -371,7 +370,6 @@ describe("sync_workspace observed", () => {
 describe("toAttribution", () => {
   it("reports system actors as system and keeps the human and agent mappings", () => {
     expect(toAttribution(INTEL_ACTOR)).toEqual({ actor_type: "system", user_id: "", client: "system", label: "Tandem context manager" });
-    expect(toAttribution(CONFLICT_ACTOR).actor_type).toBe("system");
     expect(toAttribution({ type: "human", label: "Alex", userId: "u1" as Id<"users"> })).toEqual({
       actor_type: "human", user_id: "u1", client: "dashboard", label: "Alex",
     });

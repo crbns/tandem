@@ -20,8 +20,8 @@ import { KIND_STYLE } from "./kinds";
 import { cn } from "@/lib/utils";
 
 /**
- * Newest first: every MCP call the assistants made, and the decisions and
- * edits people made, filterable by assistant and by type. A row opens its
+ * Newest first: every MCP call the assistants made, and the context and
+ * file edits people made, filterable by assistant and by type. A row opens its
  * record in place.
  */
 export function ActivityTimeline({
@@ -164,7 +164,8 @@ function TimelineRow({
   const style = KIND_STYLE[item.kind];
   const Icon = style.icon;
   const conflict = item.kind === "conflict" || item.kind === "error";
-  const decision = item.kind === "approve" || item.kind === "reject";
+  // People's context changes ("approve"/"reject" only in older history).
+  const decision = item.kind === "context" || item.kind === "approve" || item.kind === "reject";
   const detailId = `live-item-${item.id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
   return (
     <li
@@ -223,8 +224,7 @@ function resourceLabel(resource: NonNullable<TimelineItem["resource"]>): string 
     case "file":
     case "folder":
       return `Open ${resource.label ?? resource.type}`;
-    case "proposal":
-      return "Open approvals";
+    case "proposal": // older history
     case "context":
     case "published_work":
       return "Open project context";
@@ -279,7 +279,7 @@ function TimelineDetail({
           : `Received v${item.contextRevision} (had v${item.previousSyncedContextRevision})`,
     ]);
   } else if (item.contextRevision !== null && item.contextRevision > 0) {
-    rows.push(["Context", `v${item.contextRevision} was approved at the time`]);
+    rows.push(["Context", `v${item.contextRevision} was current at the time`]);
   }
   if (item.resource) {
     rows.push([

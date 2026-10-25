@@ -8,11 +8,9 @@ import { createConvexApi, toActor } from "@/lib/api/convex";
 import { createMockApi, MOCK_WORKSPACE_ID } from "@/lib/api/mock";
 import { normalizeError } from "@/lib/api/errors";
 import type { Actor } from "@/lib/api/types";
-import { canDecideProposals } from "@/lib/proposals";
 import { claudeCodeCommand, mcpEndpoint, sortConnections } from "@/lib/assistants";
 
-type BackendProposal = FunctionReturnType<typeof api.context.getApprovals>[number];
-type BackendActor = BackendProposal["createdBy"];
+type BackendActor = Parameters<typeof toActor>[0];
 type BackendConnection = FunctionReturnType<typeof api.agentConnections.listAgentConnections>[number];
 type BackendNewConnection = FunctionReturnType<typeof api.agentConnections.createAgentConnection>;
 
@@ -26,28 +24,6 @@ const ALEXS_CLAUDE: BackendActor = {
   label: "Claude",
   client: "claude",
   userName: "Alex",
-};
-
-const PROPOSAL: BackendProposal = {
-  id: "context_proposals_1" as Id<"context_proposals">,
-  workspaceId: "workspaces_1" as Id<"workspaces">,
-  field: "goal",
-  operation: "add",
-  proposedValue: "Ship it",
-  rationale: "Because",
-  sourceFileIds: ["files_1" as Id<"files">],
-  status: "pending",
-  supersedes: null,
-  createdBy: ALEXS_CLAUDE,
-  createdAt: 10,
-  decidedBy: null,
-  decidedAt: null,
-  ownerUserId: null,
-  ownerArea: null,
-  conflict: null,
-  resolution: null,
-  decisionNote: null,
-  revision: 1,
 };
 
 /** Answers by function name, records calls, and serves one controllable watch. */
@@ -112,114 +88,6 @@ describe("toActor (issue #12)", () => {
   it("names a human by userName, falling back to the label", () => {
     expect(toActor(ALEX)).toEqual({ actorType: "human", userId: "users_alex", userName: "Alex" });
     expect(toActor({ type: "human", userId: ALEX_ID, label: "alex@x", userName: "Alex R" }).userName).toBe("Alex R");
-  });
-});
-
-describe("Convex adapter: approvals", () => {
-  it("lists proposals with exact args and maps both actors", async () => {
-    const decided = { ...PROPOSAL, status: "approved" as const, decidedBy: ALEX, decidedAt: 20 };
-    const { client, calls } = fakeConvex({ "context:getApprovals": [decided] });
-    const tandem = createConvexApi(client);
-    expect(await tandem.listProposals("workspaces_1", "approved")).toEqual([
-      {
-        id: "context_proposals_1",
-        workspaceId: "workspaces_1",
-        field: "goal",
-        operation: "add",
-        proposedValue: "Ship it",
-        rationale: "Because",
-        sourceFileIds: ["files_1"],
-        status: "approved",
-        supersedes: null,
-        createdBy: { actorType: "agent", userId: "users_alex", userName: "Alex", agentName: "Claude", agentClient: "claude" },
-        createdAt: 10,
-        decidedBy: { actorType: "human", userId: "users_alex", userName: "Alex" },
-        decidedAt: 20,
-        conflict: null,
-        resolution: null,
-        decisionNote: null,
-        revision: 1,
-      },
-    ]);
-    await tandem.listProposals("workspaces_1");
-    expect(calls).toEqual([
-      { name: "context:getApprovals", args: { workspaceId: "workspaces_1", status: "approved" } },
-      // No status key at all: Convex rejects `status: undefined` in some clients.
-      { name: "context:getApprovals", args: { workspaceId: "workspaces_1" } },
-    ]);
-  });
-
-  it("approves, then checks the proposal didn't land as stale", async () => {
-    const { client, calls } = fakeConvex({ "context:decideContextProposal": null, "context:getApprovals": [] });
-    await createConvexApi(client).decideProposal(PROPOSAL, "approved");
-    expect(calls).toEqual([
-      { name: "context:decideContextProposal", args: { proposalId: PROPOSAL.id, decision: "approved" } },
-      { name: "context:getApprovals", args: { workspaceId: "workspaces_1", status: "stale" } },
-    ]);
-  });
-
-  it("reports VERSION_CONFLICT when the backend marked the approval stale", async () => {
-    const { client } = fakeConvex({
-      "context:decideContextProposal": null,
-      "context:getApprovals": [{ ...PROPOSAL, status: "stale" }],
-    });
-    await expect(createConvexApi(client).decideProposal(PROPOSAL, "approved")).rejects.toMatchObject({
-      code: "VERSION_CONFLICT",
-    });
-  });
-
-  it("maps a conflict's target author, and lists conflicts", async () => {
-    const conflicted: BackendProposal = {
-      ...PROPOSAL,
-      field: "decision",
-      revision: 2,
-      conflict: {
-        status: "conflict",
-        method: "semantic",
-        model: "claude-haiku-5-5",
-        items: [{
-          kind: "contradicts", targetType: "decision", targetId: "entry_1", targetText: "Use Convex Auth", targetBy: ALEX,
-          targetAt: 5, contextVersion: 7, explanation: "Both pick the auth provider.", confidence: 0.93,
-        }],
-      },
-    };
-    const settled: BackendProposal = { ...conflicted, status: "rejected", resolution: "retained_current", decisionNote: "Stay put", decidedBy: ALEX, decidedAt: 30 };
-    const { client, calls } = fakeConvex({ "context:listConflicts": { pending: [conflicted], resolved: [settled] } });
-    const { pending, resolved } = await createConvexApi(client).listConflicts("workspaces_1");
-    expect(calls).toEqual([{ name: "context:listConflicts", args: { workspaceId: "workspaces_1" } }]);
-    expect(pending[0]?.conflict?.items[0]).toMatchObject({ targetText: "Use Convex Auth", targetBy: { actorType: "human", userName: "Alex" }, confidence: 0.93 });
-    expect(resolved[0]).toMatchObject({ resolution: "retained_current", decisionNote: "Stay put", revision: 2 });
-  });
-
-  it("sends a resolution, note and expected revision only when given", async () => {
-    const { client, calls } = fakeConvex({ "context:decideContextProposal": null });
-    await createConvexApi(client).decideProposal(PROPOSAL, "rejected", { resolution: "retained_current", note: "Keep it", expectedRevision: 3 });
-    expect(calls).toEqual([{
-      name: "context:decideContextProposal",
-      args: { proposalId: PROPOSAL.id, decision: "rejected", resolution: "retained_current", note: "Keep it", expectedRevision: 3 },
-    }]);
-  });
-
-  it("rejects without a stale check, and maps already-decided", async () => {
-    const ok = fakeConvex({ "context:decideContextProposal": null });
-    await createConvexApi(ok.client).decideProposal(PROPOSAL, "rejected");
-    expect(ok.calls.map((c) => c.name)).toEqual(["context:decideContextProposal"]);
-
-    const late = fakeConvex({ "context:decideContextProposal": new ConvexError({ code: "PROPOSAL_ALREADY_DECIDED" }) });
-    await expect(createConvexApi(late.client).decideProposal(PROPOSAL, "rejected")).rejects.toMatchObject({
-      code: "PROPOSAL_DECIDED",
-    });
-  });
-
-  it.each([
-    ["PROPOSAL_ALREADY_DECIDED", "PROPOSAL_DECIDED"],
-    ["PROPOSAL_NOT_FOUND", "PROPOSAL_DECIDED"],
-    ["PROPOSAL_STALE", "VERSION_CONFLICT"],
-    ["PROPOSAL_CHANGED", "PROPOSAL_CHANGED"],
-    ["VERSION_CONFLICT", "VERSION_CONFLICT"],
-    ["APPROVAL_REQUIRED", "APPROVAL_REQUIRED"],
-  ])("maps %s to %s", (backendCode, code) => {
-    expect(normalizeError(new ConvexError({ code: backendCode })).code).toBe(code);
   });
 });
 
@@ -311,62 +179,6 @@ describe("Convex adapter: watchWorkspace", () => {
     fake.push(info());
     fake.push(info("e1"));
     expect(changes).toBe(1);
-  });
-});
-
-describe("mock approvals", () => {
-  const owner: Actor = { actorType: "human", userId: "user_owner", userName: "Owner" };
-  const setup = () => {
-    let actor = owner;
-    const api = createMockApi({ latencyMs: [0, 0], getActor: () => actor });
-    return { api, as: (next: Actor) => (actor = next) };
-  };
-
-  it("approving a goal proposal updates the approved goal and credits the approver", async () => {
-    const { api } = setup();
-    const pending = await api.listProposals(MOCK_WORKSPACE_ID, "pending");
-    const goal = pending.find((p) => p.field === "goal")!;
-    const before = (await api.getContext(MOCK_WORKSPACE_ID))!;
-    await api.decideProposal(goal, "approved");
-    const after = (await api.getContext(MOCK_WORKSPACE_ID))!;
-    expect(after.goal).toBe(goal.proposedValue);
-    expect(after.version).toBe(before.version + 1);
-    expect(after.approvedBy).toEqual(owner);
-    const [decided] = (await api.listProposals(MOCK_WORKSPACE_ID)).filter((p) => p.id === goal.id);
-    expect(decided).toMatchObject({ status: "approved", decidedBy: owner });
-  });
-
-  it("a proposal based on an old value conflicts and is marked stale; context is untouched", async () => {
-    const { api } = setup();
-    const scope = (await api.listProposals(MOCK_WORKSPACE_ID, "pending")).find((p) => p.field === "scope")!;
-    const before = await api.getContext(MOCK_WORKSPACE_ID);
-    await expect(api.decideProposal(scope, "approved")).rejects.toMatchObject({ code: "VERSION_CONFLICT" });
-    expect(await api.getContext(MOCK_WORKSPACE_ID)).toEqual(before);
-    expect((await api.listProposals(MOCK_WORKSPACE_ID, "stale")).map((p) => p.id)).toEqual([scope.id]);
-    await expect(api.decideProposal(scope, "approved")).rejects.toMatchObject({ code: "PROPOSAL_DECIDED" });
-  });
-
-  it("members can read proposals but can't decide them", async () => {
-    const { api, as } = setup();
-    await api.listWorkspaces(); // the first caller becomes owner
-    const { token } = await api.createInvite(MOCK_WORKSPACE_ID, "member");
-    const member: Actor = { actorType: "human", userId: "user_member", userName: "Member" };
-    as(member);
-    await api.acceptInvite(token);
-    const [first] = await api.listProposals(MOCK_WORKSPACE_ID, "pending");
-    await expect(api.decideProposal(first!, "rejected")).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect((await api.listWorkspaces())[0]?.role).toBe("member");
-  });
-
-  it("returns copies, so callers can't edit the stored record", async () => {
-    const { api } = setup();
-    const [first] = await api.listProposals(MOCK_WORKSPACE_ID);
-    first!.createdBy.userName = "Mallory";
-    first!.sourceFileIds.push("x");
-    const [again] = await api.listProposals(MOCK_WORKSPACE_ID);
-    expect(again!.createdBy.userName).not.toBe("Mallory");
-    expect(again!.sourceFileIds).not.toContain("x");
-    expect(again).not.toHaveProperty("baseValue");
   });
 });
 
@@ -486,18 +298,6 @@ describe("mock watchWorkspace", () => {
     await api.updateFileContent(id, { expectedVersion: 2, content: "x" });
     await Promise.resolve();
     expect(changes).toBe(2);
-  });
-});
-
-describe("approval permission gating", () => {
-  it.each([
-    ["owner", true],
-    ["admin", true],
-    ["member", false],
-    [undefined, false],
-    [null, false],
-  ] as const)("%s can decide: %s", (role, allowed) => {
-    expect(canDecideProposals(role)).toBe(allowed);
   });
 });
 

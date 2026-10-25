@@ -108,7 +108,6 @@ const MCP_READ_TOOLS = new Set([
   "get_workspace_info",
   "list_files",
   "search_files",
-  "get_approvals",
   "get_file_versions",
   // Kept simple: reads are never significant. What an assistant does with
   // what it read shows up in its writes.
@@ -122,7 +121,7 @@ const MCP_WRITE_TOOLS = new Set([
   "move_file",
   "move_folder",
   "publish_work",
-  "propose_context_change",
+  "update_context",
   "manage_task",
 ]);
 
@@ -401,7 +400,7 @@ const MIRRORED_CONTEXT_KINDS = new Set(["context.approved", "context.rejected", 
 
 /**
  * Copies a workspace event into activity_events when it is a file change or a
- * context decision. System actors (the context manager, the conflict check)
+ * context change. System actors (the context manager)
  * are never mirrored, so the context manager can't feed on its own writes.
  */
 export async function mirrorWorkspaceEvent(
@@ -427,7 +426,7 @@ export async function mirrorWorkspaceEvent(
     version = file?.version;
     resource = { type: "file", id: event.entityId, ...(file ? { label: file.name } : {}) };
   } else {
-    resource = { type: event.entityType === "context_proposal" ? "proposal" : "context", id: event.entityId };
+    resource = { type: "context", id: event.entityId };
   }
   await recordActivityEvent(ctx, {
     workspaceId: event.workspaceId,

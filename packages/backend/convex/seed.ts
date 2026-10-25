@@ -1,8 +1,8 @@
 // Demo seed (issue #22). One internal entry point rebuilds the demo from
 // scratch: Alex (owner), Blake and Casey (members) as Password users, one
-// workspace with brief.md v1, an approved goal and scope, research and
-// requirements files, working context, three tasks, one pending proposal from
-// Casey's Gemini, and one agent connection per member. proposal.md is left
+// workspace with brief.md v1, a goal and scope, research and requirements
+// files, working context, three tasks, one decision recorded by Casey's
+// Gemini, and one agent connection per member. proposal.md is left
 // out: Claude creates it live.
 //
 //   npx convex run seed:resetDemo '{}'      (or scripts/demo-reset.mjs)
@@ -28,7 +28,6 @@ import {
   internalQuery,
 } from "./_generated/server";
 import { MIN_PASSWORD_LENGTH } from "./auth";
-import { decideProposalCore } from "./context";
 import { agentActor, revokeConnectionCredentials } from "./lib/agent";
 import {
   ALL_MCP_SCOPES,
@@ -44,7 +43,7 @@ import {
   completeTaskCore,
   createDocumentCore,
   createTaskCore,
-  proposeContextChangeCore,
+  changeContextCore,
   updateDocumentCore,
 } from "./lib/ops";
 
@@ -132,23 +131,16 @@ Draft proposal.md: milestones, owners, and how we measure success.
 export const DEMO_DECISION =
   'First value means "first project created", not "first teammate invited".';
 export const DEMO_CONSTRAINT = "Launch before the January 15 billing cycle.";
-/**
- * The approved constraint Casey's proposal contradicts. Context conflict
- * detection (#61) compares decisions against decisions and constraints, not
- * scope, so the scope's "Out: a new help-center platform" is restated here
- * for the check to find.
- */
+/** The constraint Casey's Gemini's decision contradicts (the scope says it too). */
 export const DEMO_HELP_CENTER_CONSTRAINT =
   "No new help-center platform: the guides live in the existing help center or the app.";
 export const DEMO_OPEN_QUESTION =
   "Do the how-to guides live in the app or in the existing help center?";
 /**
- * Casey's Gemini proposes this; it contradicts the approved scope and the
- * help-center constraint on purpose. Keep it free of words the other context
- * entries use (e.g. "launch"): without an ANTHROPIC_API_KEY the conflict check
- * falls back to word overlap and would flag those too.
+ * Casey's Gemini records this; it contradicts the scope and the help-center
+ * constraint on purpose, so the demo has a disagreement for the team to see.
  */
-export const DEMO_PENDING_DECISION =
+export const DEMO_AGENT_DECISION =
   "Move the three how-to guides to a new help-center platform.";
 
 const DEMO_SUPPORT_TICKETS = `# Support tickets: first 30 days
@@ -410,21 +402,17 @@ export const rebuildDemoWorkspace = internalMutation({
       content: DEMO_BRIEF,
       actor: owner,
     });
-    for (const [field, proposedValue] of [
+    for (const [field, value] of [
       ["goal", DEMO_GOAL],
       ["scope", DEMO_SCOPE],
-    ] as const) {
-      const proposal = await proposeContextChangeCore(ctx, {
+    ] as const)
+      await changeContextCore(ctx, {
         workspaceId,
         field,
-        proposedValue,
-        rationale: "From the approved brief.",
+        value,
         sourceFileIds: [brief._id],
         actor: owner,
-        skipConflictCheck: true,
       });
-      await decideProposalCore(ctx, proposal, "approved", alex);
-    }
 
     const members = [];
     for (const { person, user, token } of cast) {
@@ -482,10 +470,10 @@ export const rebuildDemoWorkspace = internalMutation({
 });
 
 /**
- * Everything after the approved goal and scope: research and requirements in
- * folders (one file with history to diff), a decision, an owner, a
- * constraint, an open question, three tasks in each state, and one pending
- * decision from Casey's Gemini that conflicts with the approved scope.
+ * Everything after the goal and scope: research and requirements in folders
+ * (one file with history to diff), a decision, an owner, a constraint, an
+ * open question, three tasks in each state, and one decision from Casey's
+ * Gemini that contradicts the scope.
  */
 async function seedStory(
   ctx: MutationCtx,
@@ -519,20 +507,17 @@ async function seedStory(
     mimeType: "text/markdown", content: DEMO_SETUP_CHECKLIST, actor: blake,
   });
 
-  const approved = [
-    { field: "decision", proposedValue: DEMO_DECISION, sourceFileIds: [tickets._id] },
-    { field: "ownership", proposedValue: "Welcome email sequence", ownerUserId: user("blake")._id, sourceFileIds: [briefId] },
-    { field: "constraint", proposedValue: DEMO_CONSTRAINT, sourceFileIds: [briefId] },
-    { field: "constraint", proposedValue: DEMO_HELP_CENTER_CONSTRAINT, sourceFileIds: [briefId] },
-    { field: "open_question", proposedValue: DEMO_OPEN_QUESTION, sourceFileIds: [briefId] },
+  const kickoff = [
+    { field: "decision", value: DEMO_DECISION, sourceFileIds: [tickets._id] },
+    { field: "ownership", value: "Welcome email sequence", ownerUserId: user("blake")._id, sourceFileIds: [briefId] },
+    { field: "constraint", value: DEMO_CONSTRAINT, sourceFileIds: [briefId] },
+    { field: "constraint", value: DEMO_HELP_CENTER_CONSTRAINT, sourceFileIds: [briefId] },
+    { field: "open_question", value: DEMO_OPEN_QUESTION, sourceFileIds: [briefId] },
   ] as const;
-  for (const change of approved) {
-    const proposal = await proposeContextChangeCore(ctx, {
-      workspaceId, ...change, sourceFileIds: [...change.sourceFileIds],
-      rationale: "Agreed in the kickoff.", actor: owner, skipConflictCheck: true,
+  for (const change of kickoff)
+    await changeContextCore(ctx, {
+      workspaceId, ...change, sourceFileIds: [...change.sourceFileIds], actor: owner,
     });
-    if (proposal.status === "pending") await decideProposalCore(ctx, proposal, "approved", alex);
-  }
 
   const emails = await createTaskCore(ctx, {
     workspaceId, title: "Draft the welcome email sequence",
@@ -552,9 +537,8 @@ async function seedStory(
 
   const caseyConnection = await ctx.db.get(members.find((m) => m.key === "casey")!.connectionId);
   if (!caseyConnection) throw new ConvexError({ code: "INVALID_INPUT" });
-  await proposeContextChangeCore(ctx, {
-    workspaceId, field: "decision", proposedValue: DEMO_PENDING_DECISION,
-    rationale: "Support tickets cluster around guides customers can't find.",
+  await changeContextCore(ctx, {
+    workspaceId, field: "decision", value: DEMO_AGENT_DECISION,
     sourceFileIds: [tickets._id], actor: agentActor(caseyConnection, user("casey")),
   });
 }

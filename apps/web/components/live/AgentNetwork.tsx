@@ -36,7 +36,7 @@ interface Pulse {
 
 /**
  * Tandem in the middle, each assistant on a ring around it. An edge's line
- * says whether that assistant has received the current approved context;
+ * says whether that assistant has received the current project context;
  * pulses play only for calls that arrive while the page is open.
  */
 export function AgentNetwork({
@@ -322,12 +322,12 @@ function CenterNode({
           </div>
           {contextUpdatedAt !== null && (
             <div className="text-xs text-muted-foreground" title={formatAbsolute(contextUpdatedAt)}>
-              approved {formatRelative(contextUpdatedAt, now)}
+              updated {formatRelative(contextUpdatedAt, now)}
             </div>
           )}
         </>
       ) : (
-        <div className="mt-1.5 text-xs text-muted-foreground">No approved context yet</div>
+        <div className="mt-1.5 text-xs text-muted-foreground">No project context yet</div>
       )}
     </div>
   );
@@ -407,8 +407,8 @@ function PropagationBadge({ sync, contextRevision }: { sync: ReturnType<typeof p
         ? `Has received a brief of context v${contextRevision}: goal, scope, recent decisions and blockers, not constraints or ownership`
         : `Has received context v${contextRevision}`
       : sync.state === "behind"
-        ? `Has received v${contextRevision - sync.behind}; v${contextRevision} is approved`
-        : "Has never received the approved context";
+        ? `Has received v${contextRevision - sync.behind}; v${contextRevision} is current`
+        : "Has never received the project context";
   return (
     <div
       title={received}

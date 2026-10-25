@@ -107,18 +107,16 @@ export interface CreateFileInput {
 /** A new version of an existing binary, or a new file in a folder (null = root). */
 export type UploadTarget = { fileId: string; expectedVersion: number } | { parentId: string | null };
 
-/**
- * The approved project context: changes to it need a human's approval, so the
- * dashboard only ever shows the approved version (read-only in P0).
- */
+/** The compact project context. Every change applies at once, attributed to its actor. */
 export interface ProjectContext {
   goal: string;
   scope: string;
   constraints: string[];
   decisions: string[];
   version: number;
-  approvedBy: Actor;
-  approvedAt: number;
+  /** Who set the goal, and when. */
+  updatedBy: Actor;
+  updatedAt: number;
 }
 
 export interface FileUpdate {
@@ -195,95 +193,7 @@ export interface ConsentRequest {
 }
 
 export type ContextField = "goal" | "scope" | "constraint" | "decision" | "ownership" | "open_question";
-export type ProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
-
-/** A proposed change to the project context, waiting on (or decided by) a person. */
-/** Whether context proposals wait in Approvals or apply as soon as they're made. */
-export type ContextApproval = "manual" | "automatic";
-
-export type ConflictStatus = "checking" | "clear" | "conflict" | "uncertain";
-/** structural: supersedes or a competing proposal; semantic: the AI check; heuristic: word overlap when the AI is off. */
-export type ConflictMethod = "structural" | "semantic" | "heuristic";
-
-/**
- * One approved entry (or pending proposal) a proposal collides with. The text
- * and author are a snapshot taken at detection (docs/conflict-resolution.md).
- */
-export interface ConflictItem {
-  kind: "replaces" | "contradicts" | "competing";
-  /** The AI wasn't sure; a person has to look. */
-  uncertain?: boolean;
-  targetType: "decision" | "constraint" | "goal" | "scope" | "proposal";
-  /** A context entry id, "goal"/"scope", or a proposal id. */
-  targetId: string;
-  targetText: string;
-  targetBy: Actor;
-  targetAt: number;
-  /** The context revision the target was read at. */
-  contextVersion: number;
-  explanation: string;
-  /** 0 to 1, semantic checks only. */
-  confidence?: number;
-}
-
-export interface ProposalConflict {
-  status: ConflictStatus;
-  method: ConflictMethod;
-  checkedAt?: number;
-  model?: string;
-  /** Why the check fell back, e.g. "Semantic check unavailable: timeout". */
-  reason?: string;
-  items: ConflictItem[];
-}
-
-/** How a person settled a proposal: accepted and kept_both approve it; the other two change nothing. */
-export type ConflictResolution = "accepted" | "kept_both" | "retained_current" | "rejected";
-
-export interface ContextProposal {
-  id: string;
-  workspaceId: string;
-  field: ContextField;
-  /** resolve/remove act on an existing constraint or open question entry. */
-  operation: "add" | "resolve" | "remove";
-  proposedValue: string;
-  rationale: string;
-  sourceFileIds: string[];
-  status: ProposalStatus;
-  supersedes: string | null;
-  createdBy: Actor;
-  createdAt: number;
-  decidedBy: Actor | null;
-  decidedAt: number | null;
-  /** null when no check ran (open questions, ownership, older proposals). */
-  conflict: ProposalConflict | null;
-  resolution: ConflictResolution | null;
-  /** The decider's note, if they left one. */
-  decisionNote: string | null;
-  /** Bumped whenever the proposal changes (a verdict lands, it's decided); sent back as expectedRevision. */
-  revision: number;
-}
-
-/** Options for deciding a proposal. Omitted fields take the backend defaults. */
-export interface DecideProposalOptions {
-  resolution?: ConflictResolution;
-  /** At most 2000 characters. */
-  note?: string;
-  /** The revision the person was shown; a newer one fails with PROPOSAL_CHANGED. */
-  expectedRevision?: number;
-  /**
-   * Accepted only: the conflict targets (decision or constraint ids) the
-   * proposal replaces. Defaults to those the check is sure about.
-   */
-  supersede?: string[];
-}
-
-/** Proposals that ever had a conflict: those waiting on a person, and those already settled. */
-export interface ConflictList {
-  pending: ContextProposal[];
-  resolved: ContextProposal[];
-}
-
-/** Context entries retain their canonical sources and the human decision's attribution. */
+/** Context entries retain their canonical sources and who last changed them. */
 export interface ContextEntry {
   id: string;
   status: "active" | "resolved" | "superseded";
@@ -360,20 +270,39 @@ export interface WorkspaceMember {
   role: NonNullable<Workspace["role"]>;
 }
 
-export interface ContextProposalInput extends Omit<ContextChangeInput, "proposedValue"> {
-  proposedValue?: string;
-  rationale: string;
+/**
+ * One change to project context, applied at once. `add` (the default) needs
+ * `value` (for ownership the area, plus `ownerUserId`); goal and scope replace
+ * the current value. `resolve` (open questions) and `remove` (constraints and
+ * open questions) need `entryId` instead.
+ */
+export interface ContextChangeRequest {
+  field: ContextField;
   operation?: "add" | "resolve" | "remove";
+  value?: string;
+  ownerUserId?: string;
   entryId?: string;
+  /** An active decision this one replaces. */
   supersedes?: string;
+  /** The context version the change was based on; stale fails with VERSION_CONFLICT. */
   expectedVersion?: number;
+  sourceFileIds: string[];
+}
+
+export interface ContextChangeResult {
+  version: number;
+  /** The entry the change touched ("goal"/"scope" for those); null when none. */
+  entryId: string | null;
+  /** The context already held this, so nothing was written. */
+  deduplicated: boolean;
 }
 
 /**
  * What one MCP call (or, for the human kinds, one workspace event) was. Agent
  * kinds come from `agent_activity`; "resolved" is a successful write after the
- * same assistant's conflict on that resource; "approve", "reject", "context"
- * and "human_edit" are people's workspace events.
+ * same assistant's conflict on that resource; "context" and "human_edit" are
+ * people's workspace events. "propose", "approve" and "reject" only appear in
+ * history from before context changes applied at once.
  */
 export type ActivityKind =
   | "sync"
@@ -403,7 +332,7 @@ export interface NetworkAgent {
   oauthClientName: string | null;
   lastMcpActionAt: number | null;
   lastSyncAt: number | null;
-  /** The approved-context version its last sync_workspace returned; null if it never synced. */
+  /** The project-context version its last sync_workspace returned; null if it never synced. */
   syncedContextRevision: number | null;
   /** That version arrived only as a brief sync: no constraints or ownership. */
   syncedContextBrief: boolean;
@@ -414,7 +343,7 @@ export interface NetworkAgent {
 }
 
 export interface AgentNetwork {
-  /** The approved-context version; 0 when nothing has been approved. */
+  /** The project-context version. */
   contextRevision: number;
   contextUpdatedAt: number | null;
   /** Most recent action first, at most 50. */
@@ -463,7 +392,7 @@ export interface Subscriber<T> {
 }
 
 // Context intelligence (docs/context-intelligence.md): the raw activity log,
-// the observed (derived, never approved) context state and its history.
+// the observed (derived, never project context) state and its history.
 
 /** Where an activity event came from. "simulator" is development replay and always labeled as simulated. */
 export type ActivitySource = "mcp" | "claude_code" | "workspace" | "simulator";
@@ -547,8 +476,8 @@ export interface ObservedEntry {
   evidenceEventIds: string[];
   agents: Array<{ connectionId: string; label: string; client: string }>;
   files: Array<{ id: string; name: string; deleted: boolean }>;
-  /** A goal or decision finding raised for human approval. */
-  proposal: { id: string; status: ProposalStatus } | null;
+  /** The project context entry this finding was recorded as ("goal" for the goal), if any. */
+  contextEntryId: string | null;
   model: string | null;
   createdBy: IntelActor;
   updatedBy: IntelActor;
@@ -611,7 +540,8 @@ export interface IntelRun {
   summary: string | null;
   error: string | null;
   eventCount: number;
-  proposals: number;
+  /** Project context changes the run recorded. */
+  contextChanges: number;
   startedAt: number;
   finishedAt: number | null;
 }
