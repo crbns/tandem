@@ -1,10 +1,13 @@
 // The Haiku context manager (docs/context-intelligence.md, processing rules).
 // processWorkspace claims the workspace (a lease), loads one bounded batch of
-// pending activity_events plus the current derived and approved context,
-// asks the model once (or runs the heuristic without a key), validates the
-// result deterministically (lib/intel.ts) and applies it in one mutation
-// guarded by entriesRevision. Goal and decision findings only reach approved
-// context as proposals, through the existing conflict detection.
+// pending activity_events plus the current derived and approved context, and
+// asks the model (or runs the heuristic without a key): one call for the
+// activity, and one digest call per text document the batch touched, which
+// reads the whole document. Results are validated deterministically
+// (lib/intel.ts) and applied in one mutation guarded by entriesRevision; then
+// any section over its size threshold is compacted the same way. Goal and
+// decision findings only reach approved context as proposals, through the
+// existing conflict detection.
 import { v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -12,29 +15,54 @@ import {
   internalAction,
   internalMutation,
   internalQuery,
+  type ActionCtx,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
 import { recordWorkspaceEvent } from "./lib/auth";
+import { shortHash } from "./lib/activityLog";
 import {
+  COMPACT_RESPONSE_SCHEMA,
+  COMPACT_SYSTEM_PROMPT,
+  COMPACT_THRESHOLDS,
+  DIGEST_RESPONSE_SCHEMA,
+  DIGEST_SYSTEM_PROMPT,
+  DOC_EVENT_TYPES,
+  DOC_KEY_PREFIX,
   IntelParseError,
+  LIVE_STATUSES,
+  MAX_COMPACT_INPUT,
   MAX_EVENTS,
   MAX_ENTRIES,
   MAX_EVIDENCE_IDS,
   RESPONSE_SCHEMA,
   SYSTEM_PROMPT,
-  changedLines,
+  compactMessage,
+  digestMessage,
+  docKey,
+  documentText,
   evidenceRank,
   extractJson,
+  heuristicDigest,
   heuristicOutput,
+  systemBlocks,
   userMessage,
+  validateCompaction,
+  validateDigest,
   validateIntelOutput,
   withDeterministic,
-  type IntelBatch,
+  type Category,
+  type CompactSection,
+  type DocumentInput,
   type IntelResult,
 } from "./lib/intel";
-import { batchWindowMs, contextModel, INTEL_ACTOR, intelDisabled } from "./lib/intelQueue";
-import { lineChanges } from "./lib/diff";
+import {
+  batchWindowMs,
+  contextModel,
+  enqueueBackfillPage,
+  INTEL_ACTOR,
+  intelDisabled,
+} from "./lib/intelQueue";
 import { listProposals, loadContext, proposeContextChangeCore } from "./lib/ops";
 import schema from "./schema";
 
@@ -42,12 +70,21 @@ declare const process: { env: Record<string, string | undefined> };
 
 type ReadCtx = QueryCtx | MutationCtx;
 
-const LEASE_MS = 2 * 60 * 1000;
+// Long enough for a batch of digests plus compaction (CONCURRENCY at a time).
+const LEASE_MS = 6 * 60 * 1000;
 const TIMEOUT_MS = 25_000;
+// A digest sends a whole document (up to ~24 KB).
+const DIGEST_TIMEOUT_MS = 45_000;
 const MAX_TOKENS = 8192;
 const TRUNCATED = "output truncated";
 const MIN_RETRY_EVENTS = 5;
-const MAX_FILE_CHANGES = 5;
+/** Documents one batch reads; later documents wait for the next batch (never dropped). */
+const MAX_DOCUMENTS = 12;
+/** Model calls in flight at once within a run. */
+const CONCURRENCY = 4;
+/** Proposals one run raises across all its calls. */
+const MAX_RUN_PROPOSALS = 4;
+const COMPACT_SCAN = 120;
 const MAX_CONNECTIONS = 50;
 const MAX_PENDING_PROPOSALS = 20;
 const MAX_FAILURES = 5;
@@ -100,15 +137,19 @@ const batchValidator = v.object({
   pendingProposals: v.array(v.object({ field: v.string(), text: v.string() })),
   connections: v.array(v.object({ id: v.string(), label: v.string(), client: v.string() })),
   files: v.array(v.object({ id: v.string(), name: v.string() })),
-  fileChanges: v.array(
+  documents: v.array(
     v.object({
       fileId: v.string(),
       name: v.string(),
+      path: v.string(),
       version: v.number(),
-      linesAdded: v.number(),
-      linesRemoved: v.number(),
-      added: v.array(v.string()),
-      removed: v.array(v.string()),
+      author: v.string(),
+      authorType: v.union(v.literal("human"), v.literal("agent"), v.literal("system")),
+      content: v.string(),
+      truncated: v.boolean(),
+      sourceHash: v.string(),
+      eventIds: v.array(v.string()),
+      previous: v.union(v.null(), v.object({ content: v.string(), sourceHash: v.optional(v.string()) })),
     }),
   ),
 });
@@ -136,6 +177,7 @@ const entryOpValidator = v.object({
   supersededBy: v.optional(v.string()),
   severity: entryFields.severity,
   reason: v.string(),
+  sourceHash: v.optional(v.string()),
 });
 type EntryOpArg = Infer<typeof entryOpValidator>;
 
@@ -221,7 +263,8 @@ async function loadBatch(
     return file;
   };
   const events: Batch["events"] = [];
-  const updated: { file: Doc<"files">; version?: number }[] = [];
+  // Text documents to read, newest touch last: fileId → this batch's events for it.
+  const touched = new Map<Id<"files">, string[]>();
   for (const e of args.events) {
     const fileIds: string[] = [];
     for (const r of e.resources) {
@@ -229,16 +272,11 @@ async function loadBatch(
       const file = await workspaceFile(r.id);
       if (file) fileIds.push(file._id);
     }
-    // lib/activityLog.ts mirrors file changes as { kind, entityId, version }.
-    if ((e.type === "file.updated" || e.type === "file.created") && fileIds.length > 0) {
-      let version: number | undefined;
-      try {
-        const parsed = JSON.parse(e.payload ?? "{}") as { version?: unknown };
-        if (typeof parsed.version === "number") version = parsed.version;
-      } catch {
-        // No version in the payload: compare the file's last two versions.
-      }
-      updated.push({ file: files.get(fileIds[0] as Id<"files">)!, version });
+    if (DOC_EVENT_TYPES.has(e.type) && fileIds.length > 0) {
+      const id = fileIds[0] as Id<"files">;
+      const list = touched.get(id) ?? [];
+      touched.delete(id);
+      touched.set(id, [...list, e._id]);
     }
     events.push({
       id: e._id,
@@ -257,28 +295,29 @@ async function loadBatch(
     });
   }
 
-  // Bounded diffs: the newest version each changed or created file reached in the batch.
-  const fileChanges: Batch["fileChanges"] = [];
-  const seen = new Set<string>();
-  for (const { file, version: given } of [...updated].reverse()) {
-    if (fileChanges.length >= MAX_FILE_CHANGES || seen.has(file._id)) continue;
-    seen.add(file._id);
-    const version = given ?? file.version;
-    const revision = (n: number) =>
-      ctx.db
-        .query("file_revisions")
-        .withIndex("by_file_and_version", (q) => q.eq("fileId", file._id).eq("version", n))
-        .first();
-    const after = await revision(version);
-    // A new file's first version is all additions.
-    const before = version > 1 ? await revision(version - 1) : { content: "" };
-    if (!after || !before) continue;
-    fileChanges.push({
-      fileId: file._id,
+  // Each touched text document once, at its current content (deduped by file).
+  const documents: Batch["documents"] = [];
+  for (const [fileId, eventIds] of touched) {
+    const file = files.get(fileId)!;
+    // Deleted and binary files have nothing to read.
+    if (file.deletedAt !== undefined || file.storageId !== undefined || typeof file.content !== "string") continue;
+    const sourceHash = shortHash(file.content);
+    const previous = await getEntry(ctx, workspaceId, docKey(fileId));
+    // Unchanged since the last digest: no model call.
+    if (previous?.sourceHash === sourceHash) continue;
+    documents.push({
+      fileId,
       name: file.name,
-      version,
-      ...lineChanges(before.content, after.content),
-      ...changedLines(before.content, after.content),
+      path: await filePath(ctx, file),
+      version: file.version,
+      author: file.updatedBy.label,
+      authorType: file.updatedBy.type,
+      ...documentText(file.content),
+      sourceHash,
+      eventIds,
+      previous: previous
+        ? { content: previous.content, ...(previous.sourceHash !== undefined ? { sourceHash: previous.sourceHash } : {}) }
+        : null,
     });
   }
 
@@ -358,13 +397,46 @@ async function loadBatch(
     pendingProposals,
     connections,
     files: [...files.values()].map((f) => ({ id: f._id, name: f.name })),
-    fileChanges,
+    documents,
   };
+}
+
+/** "folder/sub/name.md": the file's folders, at most 10 deep. */
+async function filePath(ctx: ReadCtx, file: Doc<"files">) {
+  const parts = [file.name];
+  let parentId = file.parentId;
+  for (let depth = 0; parentId && depth < 10; depth++) {
+    const folder = await ctx.db.get(parentId);
+    if (!folder || folder.workspaceId !== file.workspaceId) break;
+    parts.unshift(folder.name);
+    parentId = folder.parentId;
+  }
+  return parts.join("/");
+}
+
+/**
+ * The pending events up to the first one that would add a document past
+ * MAX_DOCUMENTS, so one run never makes an unbounded number of digest calls.
+ * The rest stay pending for the next batch.
+ */
+function capDocuments(events: Doc<"activity_events">[]) {
+  const docs = new Set<string>();
+  const out: Doc<"activity_events">[] = [];
+  for (const e of events) {
+    const fileId = DOC_EVENT_TYPES.has(e.type) ? e.resources.find((r) => r.type === "file")?.id : undefined;
+    if (fileId !== undefined && !docs.has(fileId)) {
+      if (docs.size >= MAX_DOCUMENTS && out.length > 0) break;
+      docs.add(fileId);
+    }
+    out.push(e);
+  }
+  return out;
 }
 
 /**
  * Takes the lease (a live one held by another run wins; an expired one is
- * taken over) and returns the oldest pending events as one batch. With
+ * taken over), queues the one-time document backfill on a workspace's first
+ * run, and returns the oldest pending events as one batch. With
  * nothing pending, records a skipped run and goes idle.
  */
 export const claimBatch = internalMutation({
@@ -379,12 +451,20 @@ export const claimBatch = internalMutation({
     const last = state?.lastRunId ? await ctx.db.get(state.lastRunId) : null;
     if (last?.status === "running")
       await ctx.db.patch(last._id, { status: "failed", error: "lease expired", finishedAt: now });
+    // The first run for a workspace also reads the documents it already has:
+    // one file.backfill event per live text file, claimed below like any
+    // other. backfilledAt is set when the backfill is queued, so later runs
+    // don't queue it again while continuation pages are still being written.
+    if (state?.backfilledAt === undefined) {
+      await patchState(ctx, workspaceId, { backfilledAt: now });
+      await enqueueBackfillPage(ctx, workspaceId, null, { requestRun: false });
+    }
     // A reply cut off at max_tokens: retry with half the events.
     const limit =
       last?.status === "failed" && last.error?.startsWith(TRUNCATED)
         ? Math.max(MIN_RETRY_EVENTS, Math.floor(last.eventIds.length / 2))
         : MAX_EVENTS;
-    const events = await pendingEvents(ctx, workspaceId, limit);
+    const events = capDocuments(await pendingEvents(ctx, workspaceId, limit));
     const method = process.env.ANTHROPIC_API_KEY ? ("llm" as const) : ("heuristic" as const);
     const model = method === "llm" ? contextModel() : undefined;
     const runId = await ctx.db.insert("context_intel_runs", {
@@ -497,6 +577,7 @@ async function applyEntry(
       ...(op.status === "superseded" && op.supersededBy !== undefined
         ? { supersededBy: op.supersededBy }
         : {}),
+      ...(op.sourceHash !== undefined ? { sourceHash: op.sourceHash } : {}),
       ...(run.model !== undefined ? { model: run.model } : {}),
       lastRunId: run.runId,
       createdBy: INTEL_ACTOR,
@@ -520,7 +601,11 @@ async function applyEntry(
     });
     return "created";
   }
-  const byPerson = existing.evidence === "human_confirmed" || existing.updatedBy.type === "human";
+  // A document digest is human_confirmed when a person wrote the document,
+  // which mustn't freeze it: only a person's correction of it does.
+  const byPerson =
+    existing.updatedBy.type === "human" ||
+    (op.sourceHash === undefined && existing.evidence === "human_confirmed");
   if (byPerson && evidenceRank(op.evidence) <= evidenceRank(existing.evidence)) return "protected";
   const evidenceEventIds = [...new Set([...op.evidenceEventIds, ...existing.evidenceEventIds])]
     .slice(0, MAX_EVIDENCE_IDS) as Id<"activity_events">[];
@@ -530,6 +615,7 @@ async function applyEntry(
   const severity = op.severity ?? existing.severity;
   const supersededBy =
     op.status === "superseded" ? (op.supersededBy ?? existing.supersededBy) : undefined;
+  const sourceHash = op.sourceHash ?? existing.sourceHash;
   const unchanged =
     existing.title === snapshot.title &&
     existing.content === snapshot.content &&
@@ -538,6 +624,7 @@ async function applyEntry(
     Math.abs(existing.confidence - snapshot.confidence) < 0.005 &&
     existing.severity === severity &&
     existing.supersededBy === supersededBy &&
+    existing.sourceHash === sourceHash &&
     sameList(existing.evidenceEventIds, evidenceEventIds) &&
     sameList(existing.agentConnectionIds, agentConnectionIds) &&
     sameList(existing.fileIds, fileIds);
@@ -550,6 +637,7 @@ async function applyEntry(
     fileIds,
     severity,
     supersededBy,
+    sourceHash,
     ...(run.model !== undefined ? { model: run.model } : {}),
     lastRunId: run.runId,
     updatedBy: INTEL_ACTOR,
@@ -600,6 +688,52 @@ export const raiseProposal = internalMutation({
     return { proposalId: proposal._id, deduplicated: proposal.deduplicated };
   },
 });
+
+/**
+ * Raises each finding as an INTEL_ACTOR proposal (raiseProposal) and links
+ * it to the entry that tracks it. Returns how many new proposals it raised;
+ * refusals go to `dropped`.
+ */
+async function raiseProposals(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  list: Infer<typeof proposalOpValidator>[],
+  dropped: string[],
+) {
+  let proposals = 0;
+  for (const p of list) {
+    const entry = await getEntry(ctx, workspaceId, p.key);
+    // Raised before (and maybe rejected by a person): don't ask again.
+    const prior = entry?.proposalId ? await ctx.db.get(entry.proposalId) : null;
+    if (prior && normalize(prior.proposedValue) === normalize(p.text)) continue;
+    const evidence: string[] = [];
+    for (const id of p.evidenceEventIds.slice(0, 3)) {
+      const e = await ctx.db.get(id);
+      if (e) evidence.push(clip(e.summary, 100));
+    }
+    try {
+      const raised: { proposalId: Id<"context_proposals">; deduplicated: boolean } =
+        await ctx.runMutation(internal.intel.raiseProposal, {
+          workspaceId,
+          field: p.field,
+          text: p.text,
+          rationale: clip(
+            `${p.rationale}${evidence.length ? ` Evidence: ${evidence.join("; ")}.` : ""} (Context manager, confidence ${p.confidence.toFixed(2)}.)`,
+            1000,
+          ),
+          sourceFileIds: p.fileIds,
+          ...(p.supersedes !== undefined ? { supersedes: p.supersedes } : {}),
+        });
+      if (entry) await ctx.db.patch(entry._id, { proposalId: raised.proposalId });
+      if (!raised.deduplicated) proposals++;
+    } catch {
+      // ALREADY_IN_CONTEXT, INVALID_INPUT and the like: the finding stays an
+      // observed entry; nothing reaches approved context.
+      dropped.push(`proposal ${p.key}: not raised`);
+    }
+  }
+  return proposals;
+}
 
 /** Schedules the next batch when events are still waiting; returns whether it did. */
 async function scheduleIfPending(ctx: MutationCtx, workspaceId: Id<"workspaces">) {
@@ -660,38 +794,7 @@ export const applyResult = internalMutation({
       else if (outcome === "protected") dropped.push(`${op.key}: kept the person's version`);
     }
 
-    let proposals = 0;
-    for (const p of args.proposals) {
-      const entry = await getEntry(ctx, workspaceId, p.key);
-      // Raised before (and maybe rejected by a person): don't ask again.
-      const prior = entry?.proposalId ? await ctx.db.get(entry.proposalId) : null;
-      if (prior && normalize(prior.proposedValue) === normalize(p.text)) continue;
-      const evidence: string[] = [];
-      for (const id of p.evidenceEventIds.slice(0, 3)) {
-        const e = await ctx.db.get(id);
-        if (e) evidence.push(clip(e.summary, 100));
-      }
-      try {
-        const raised: { proposalId: Id<"context_proposals">; deduplicated: boolean } =
-          await ctx.runMutation(internal.intel.raiseProposal, {
-            workspaceId,
-            field: p.field,
-            text: p.text,
-            rationale: clip(
-              `${p.rationale}${evidence.length ? ` Evidence: ${evidence.join("; ")}.` : ""} (Context manager, confidence ${p.confidence.toFixed(2)}.)`,
-              1000,
-            ),
-            sourceFileIds: p.fileIds,
-            ...(p.supersedes !== undefined ? { supersedes: p.supersedes } : {}),
-          });
-        if (entry) await ctx.db.patch(entry._id, { proposalId: raised.proposalId });
-        if (!raised.deduplicated) proposals++;
-      } catch {
-        // ALREADY_IN_CONTEXT, INVALID_INPUT and the like: the finding stays an
-        // observed entry; nothing reaches approved context.
-        dropped.push(`proposal ${p.key}: not raised`);
-      }
-    }
+    const proposals = await raiseProposals(ctx, workspaceId, args.proposals, dropped);
 
     for (const id of args.eventIds) {
       const event = await ctx.db.get(id);
@@ -803,12 +906,192 @@ export const releaseDisabled = internalMutation({
   },
 });
 
-type Analysis = { result: IntelResult; inputTokens?: number; outputTokens?: number };
+/** The next page of a backfill (lib/intelQueue.ts enqueueBackfillPage). */
+export const continueBackfill = internalMutation({
+  args: { workspaceId: v.id("workspaces"), cursor: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { workspaceId, cursor }) => {
+    await enqueueBackfillPage(ctx, workspaceId, cursor, { requestRun: true });
+    return null;
+  },
+});
 
-/** One Messages API call; throws with a short reason, never a provider body. */
-async function askModel(key: string, model: string, batch: IntelBatch) {
+const sectionValidator = v.object({
+  category: entryFields.category,
+  entries: v.array(
+    v.object({
+      key: v.string(),
+      category: entryFields.category,
+      title: v.string(),
+      content: v.string(),
+      status: entryFields.status,
+      evidence: entryFields.evidence,
+      confidence: v.number(),
+      evidenceEventIds: v.array(v.string()),
+      severity: entryFields.severity,
+      agentConnectionIds: v.array(v.string()),
+      fileIds: v.array(v.string()),
+      protected: v.boolean(),
+    }),
+  ),
+  approvedDecisions: v.array(v.object({ id: v.string(), text: v.string() })),
+});
+
+/** A person confirmed or corrected it: compaction never folds it. */
+async function isProtected(ctx: ReadCtx, entry: Doc<"context_entries">) {
+  if (entry.evidence === "human_confirmed" || entry.updatedBy.type === "human") return true;
+  const revisions = await ctx.db
+    .query("context_entry_revisions")
+    .withIndex("by_entry_and_revision", (q) => q.eq("entryId", entry._id))
+    .order("desc")
+    .take(20);
+  return revisions.some((r) => r.change === "corrected");
+}
+
+/**
+ * The sections over their COMPACT_THRESHOLDS count of live entries, each with
+ * its newest MAX_COMPACT_INPUT live entries, and the entriesRevision they
+ * were read at.
+ */
+export const loadCompaction = internalQuery({
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.object({ entriesRevision: v.number(), sections: v.array(sectionValidator) }),
+  handler: async (ctx, { workspaceId }) => {
+    const state = await getState(ctx, workspaceId);
+    const sections: CompactSection[] = [];
+    for (const [category, threshold] of Object.entries(COMPACT_THRESHOLDS) as [Category, number][]) {
+      const live = (
+        await ctx.db
+          .query("context_entries")
+          .withIndex("by_workspace_and_category_and_updated_at", (q) =>
+            q.eq("workspaceId", workspaceId).eq("category", category),
+          )
+          .order("desc")
+          .take(COMPACT_SCAN)
+      ).filter((e) => LIVE_STATUSES.includes(e.status) && !e.key.startsWith(DOC_KEY_PREFIX));
+      if (live.length <= threshold) continue;
+      const entries: CompactSection["entries"] = [];
+      for (const e of live.slice(0, MAX_COMPACT_INPUT))
+        entries.push({
+          key: e.key,
+          category: e.category,
+          title: e.title,
+          content: e.content,
+          status: e.status,
+          evidence: e.evidence,
+          confidence: e.confidence,
+          evidenceEventIds: e.evidenceEventIds,
+          ...(e.severity !== undefined ? { severity: e.severity } : {}),
+          agentConnectionIds: e.agentConnectionIds,
+          fileIds: e.fileIds,
+          protected: await isProtected(ctx, e),
+        });
+      let approvedDecisions: CompactSection["approvedDecisions"] = [];
+      if (category === "decision") {
+        try {
+          approvedDecisions = (await loadContext(ctx, workspaceId)).decisions
+            .filter((d) => d.status === "active")
+            .map((d) => ({ id: d.id, text: d.text }));
+        } catch {
+          // CONTEXT_NOT_INITIALIZED: nothing approved yet.
+        }
+      }
+      sections.push({ category, entries, approvedDecisions });
+    }
+    return { entriesRevision: state?.entriesRevision ?? 0, sections };
+  },
+});
+
+/**
+ * Applies the run's compaction results in one transaction, guarded by
+ * entriesRevision like applyResult (stale writes nothing). Merged entries are
+ * upserts and every folded entry a supersede, each with a revision; at most
+ * one approved-decision supersede proposal goes through raiseProposal.
+ */
+export const applyCompaction = internalMutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    runId: v.id("context_intel_runs"),
+    entriesRevision: v.number(),
+    summary: v.string(),
+    entries: v.array(entryOpValidator),
+    proposals: v.array(proposalOpValidator),
+    dropped: v.array(v.string()),
+    inputTokens: v.optional(v.number()),
+    outputTokens: v.optional(v.number()),
+  },
+  returns: v.object({ stale: v.boolean(), superseded: v.number(), proposals: v.number() }),
+  handler: async (ctx, args) => {
+    const { workspaceId } = args;
+    const run = await ctx.db.get(args.runId);
+    if (!run || run.workspaceId !== workspaceId) return { stale: false, superseded: 0, proposals: 0 };
+    const state = await getState(ctx, workspaceId);
+    const errorWith = (more: string[]) =>
+      more.length ? { error: clip([run.error, `Compaction: ${more.join("; ")}`].filter(Boolean).join(" "), 500) } : {};
+    if (!state || state.entriesRevision !== args.entriesRevision) {
+      await ctx.db.patch(run._id, errorWith(["skipped, context changed"]));
+      return { stale: true, superseded: 0, proposals: 0 };
+    }
+    const now = Date.now();
+    const meta = { runId: run._id, model: run.model, now };
+    const dropped = [...args.dropped];
+    let created = 0;
+    let updated = 0;
+    let superseded = 0;
+    for (const op of args.entries) {
+      const outcome = await applyEntry(ctx, workspaceId, op, meta);
+      if (outcome === "created") created++;
+      else if (outcome === "updated") updated++;
+      else if (outcome === "protected") dropped.push(`${op.key}: kept the person's version`);
+      if (outcome === "updated" && op.op === "supersede") superseded++;
+    }
+    const proposals = await raiseProposals(ctx, workspaceId, args.proposals, dropped);
+    const changed = created + updated > 0;
+    const entriesRevision = state.entriesRevision + (changed ? 1 : 0);
+    const add = (a: number | undefined, b: number | undefined) =>
+      a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
+    const inputTokens = add(run.inputTokens, args.inputTokens);
+    const outputTokens = add(run.outputTokens, args.outputTokens);
+    await ctx.db.patch(run._id, {
+      created: run.created + created,
+      updated: run.updated + updated,
+      proposals: run.proposals + proposals,
+      ...(changed
+        ? { entriesRevision, summary: clip(`${run.summary ?? ""} Compacted ${superseded} entries${args.summary ? ` (${args.summary})` : ""}.`.trim(), 300) }
+        : {}),
+      ...errorWith(dropped),
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
+    });
+    if (changed) {
+      await patchState(ctx, workspaceId, { entriesRevision });
+      await recordWorkspaceEvent(ctx, {
+        workspaceId,
+        kind: "context.observed",
+        entityType: "context_entries",
+        entityId: workspaceId,
+        summary: clip(
+          `Context manager compacted ${superseded} entries${args.summary ? ` (${args.summary})` : ""}`,
+          200,
+        ),
+        actor: INTEL_ACTOR,
+      });
+    }
+    return { stale: false, superseded, proposals };
+  },
+});
+
+type Usage = { inputTokens?: number; outputTokens?: number };
+type Analysis = { result: IntelResult } & Usage;
+type ModelCall = { system: string; schema: unknown; content: string; timeoutMs: number };
+
+/**
+ * One Messages API call; throws with a short reason, never a provider body.
+ * The system prompt is a cached block; cache reads and writes count as input.
+ */
+async function askModel(key: string, model: string, call: ModelCall) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), call.timeoutMs);
   let res: Response;
   try {
     res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -823,9 +1106,9 @@ async function askModel(key: string, model: string, batch: IntelBatch) {
         max_tokens: MAX_TOKENS,
         // Haiku 5.5 rejects sampling parameters; structured outputs keep the
         // reply on the schema and low effort keeps the call cheap.
-        output_config: { effort: "low", format: { type: "json_schema", schema: RESPONSE_SCHEMA } },
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userMessage(batch) }],
+        output_config: { effort: "low", format: { type: "json_schema", schema: call.schema } },
+        system: systemBlocks(call.system),
+        messages: [{ role: "user", content: call.content }],
       }),
       signal: controller.signal,
     });
@@ -838,7 +1121,12 @@ async function askModel(key: string, model: string, batch: IntelBatch) {
   let body: {
     content?: { type: string; text?: string }[];
     stop_reason?: string;
-    usage?: { input_tokens?: number; output_tokens?: number };
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
   };
   try {
     body = await res.json();
@@ -853,25 +1141,175 @@ async function askModel(key: string, model: string, batch: IntelBatch) {
     .filter((b) => b.type === "text")
     .map((b) => b.text ?? "")
     .join("");
-  return { text, inputTokens: body.usage?.input_tokens, outputTokens: body.usage?.output_tokens };
+  const usage = body.usage;
+  const inputTokens =
+    usage?.input_tokens === undefined
+      ? undefined
+      : usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+  return { text, inputTokens, outputTokens: usage?.output_tokens };
 }
 
-async function analyze(batch: Batch): Promise<Analysis> {
-  if (batch.method === "heuristic")
-    return { result: validateIntelOutput(withDeterministic(heuristicOutput(batch), batch), batch) };
+/** A model call's parsed JSON (validation is the caller's). */
+async function callModel(model: string | undefined, call: ModelCall): Promise<{ raw: unknown } & Usage> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("no API key");
-  const reply = await askModel(key, batch.model ?? contextModel(), batch);
+  const reply = await askModel(key, model ?? contextModel(), call);
   const raw = extractJson(reply.text);
   if (!raw) throw new IntelParseError();
   return {
-    result: validateIntelOutput(withDeterministic(raw, batch), batch),
+    raw,
     ...(reply.inputTokens !== undefined ? { inputTokens: reply.inputTokens } : {}),
     ...(reply.outputTokens !== undefined ? { outputTokens: reply.outputTokens } : {}),
   };
 }
 
+/** Runs the tasks CONCURRENCY at a time; the first failure rejects. */
+async function pooled<T>(tasks: (() => Promise<T>)[]): Promise<T[]> {
+  const out: T[] = [];
+  for (let i = 0; i < tasks.length; i += CONCURRENCY)
+    out.push(...(await Promise.all(tasks.slice(i, i + CONCURRENCY).map((task) => task()))));
+  return out;
+}
+
+const usageOf = ({ inputTokens, outputTokens }: Usage): Usage => ({
+  ...(inputTokens !== undefined ? { inputTokens } : {}),
+  ...(outputTokens !== undefined ? { outputTokens } : {}),
+});
+
+/** The activity half: every event but the backfill markers, without document content. */
+async function analyzeActivity(batch: Batch): Promise<Analysis | null> {
+  const events = batch.events.filter((e) => e.type !== "file.backfill");
+  if (events.length === 0) return null;
+  const scoped = { ...batch, events };
+  if (batch.method === "heuristic")
+    return { result: validateIntelOutput(withDeterministic(heuristicOutput(scoped), scoped), scoped) };
+  const reply = await callModel(batch.model, {
+    system: SYSTEM_PROMPT,
+    schema: RESPONSE_SCHEMA,
+    content: userMessage(scoped),
+    timeoutMs: TIMEOUT_MS,
+  });
+  return { result: validateIntelOutput(withDeterministic(reply.raw, scoped), scoped), ...usageOf(reply) };
+}
+
+/** One document's digest call (or the deterministic digest without a model). */
+async function analyzeDocument(doc: DocumentInput, batch: Batch): Promise<Analysis> {
+  if (batch.method === "heuristic") return { result: heuristicDigest(doc) };
+  const reply = await callModel(batch.model, {
+    system: DIGEST_SYSTEM_PROMPT,
+    schema: DIGEST_RESPONSE_SCHEMA,
+    content: digestMessage(doc, batch),
+    timeoutMs: DIGEST_TIMEOUT_MS,
+  });
+  return { result: validateDigest(reply.raw, doc, batch), ...usageOf(reply) };
+}
+
+/**
+ * The activity call and every digest call, CONCURRENCY at a time. Any failure
+ * fails the whole analysis, so no event is marked processed unless every
+ * document in the batch was read. Results merge into one: the later call
+ * wins a shared key; proposals dedupe, at most MAX_RUN_PROPOSALS and one
+ * that supersedes an approved decision.
+ */
+async function analyze(batch: Batch): Promise<Analysis> {
+  const [activity, ...digests] = await pooled<Analysis | null>([
+    () => analyzeActivity(batch),
+    ...batch.documents.map((doc) => () => analyzeDocument(doc, batch)),
+  ]);
+  const parts = [activity, ...digests].filter((p): p is Analysis => p !== null);
+  const entries = new Map<string, IntelResult["entries"][number]>();
+  const proposals: IntelResult["proposals"] = [];
+  const dropped: string[] = [];
+  const seen = new Set<string>();
+  let superseding = false;
+  for (const { result } of parts) {
+    dropped.push(...result.dropped);
+    for (const e of result.entries) {
+      if (entries.has(e.key)) dropped.push(`${e.key}: from two calls; the later one wins`);
+      entries.set(e.key, e);
+    }
+    for (const p of result.proposals) {
+      const id = `${p.field}:${normalize(p.text)}`;
+      if (seen.has(id)) continue;
+      if (p.supersedes !== undefined && superseding) {
+        dropped.push(`proposal ${p.key}: one superseding proposal per run`);
+        continue;
+      }
+      if (proposals.length >= MAX_RUN_PROPOSALS) {
+        dropped.push(`proposal ${p.key}: at most ${MAX_RUN_PROPOSALS} proposals per run`);
+        continue;
+      }
+      seen.add(id);
+      if (p.supersedes !== undefined) superseding = true;
+      proposals.push(p);
+    }
+  }
+  const read = batch.documents.length;
+  const summary = [activity?.result.summary, read ? `Read ${read} document${read === 1 ? "" : "s"}` : ""]
+    .filter(Boolean)
+    .join("; ");
+  const sum = (key: keyof Usage) =>
+    parts.some((p) => p[key] !== undefined) ? parts.reduce((n, p) => n + (p[key] ?? 0), 0) : undefined;
+  return {
+    result: { summary, entries: [...entries.values()], proposals, dropped },
+    ...usageOf({ inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens") }),
+  };
+}
+
 const KNOWN_ERRORS = /^(timeout|request failed|HTTP \d{3}|unparseable response|model refused|no API key|output truncated)$/;
+const knownError = (err: unknown) => {
+  const message = err instanceof Error ? err.message : "";
+  return KNOWN_ERRORS.test(message) ? message : "internal error";
+};
+
+/**
+ * Compacts every section over its threshold, one model call per section
+ * (after a successful apply that changed something; model mode only). A
+ * failed call only skips its section; the run has already succeeded.
+ */
+async function compact(
+  ctx: ActionCtx,
+  args: { workspaceId: Id<"workspaces">; runId: Id<"context_intel_runs">; model?: string; allowSupersede: boolean },
+) {
+  const { entriesRevision, sections } = await ctx.runQuery(internal.intel.loadCompaction, {
+    workspaceId: args.workspaceId,
+  });
+  if (sections.length === 0) return;
+  const dropped: string[] = [];
+  const results = await pooled(
+    sections.map((section) => async (): Promise<Analysis | null> => {
+      try {
+        const reply = await callModel(args.model, {
+          system: COMPACT_SYSTEM_PROMPT,
+          schema: COMPACT_RESPONSE_SCHEMA,
+          content: compactMessage(section),
+          timeoutMs: TIMEOUT_MS,
+        });
+        return { result: validateCompaction(reply.raw, section, args.allowSupersede), ...usageOf(reply) };
+      } catch (err) {
+        dropped.push(`${section.category} failed (${knownError(err)})`);
+        return null;
+      }
+    }),
+  );
+  const parts = results.filter((r): r is Analysis => r !== null);
+  const entries = parts.flatMap((p) => p.result.entries);
+  const proposals = parts.flatMap((p) => p.result.proposals).slice(0, 1);
+  dropped.push(...parts.flatMap((p) => p.result.dropped));
+  if (entries.length === 0 && proposals.length === 0 && dropped.length === 0) return;
+  const sum = (key: keyof Usage) =>
+    parts.some((p) => p[key] !== undefined) ? parts.reduce((n, p) => n + (p[key] ?? 0), 0) : undefined;
+  await ctx.runMutation(internal.intel.applyCompaction, {
+    workspaceId: args.workspaceId,
+    runId: args.runId,
+    entriesRevision,
+    summary: parts.map((p) => p.result.summary).filter(Boolean).join("; "),
+    entries: entries as EntryOpArg[],
+    proposals: proposals as Infer<typeof proposalOpValidator>[],
+    dropped,
+    ...usageOf({ inputTokens: sum("inputTokens"), outputTokens: sum("outputTokens") }),
+  });
+}
 
 export const processWorkspace = internalAction({
   args: { workspaceId: v.id("workspaces") },
@@ -888,28 +1326,38 @@ export const processWorkspace = internalAction({
       try {
         analysis = await analyze(batch);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "";
         await ctx.runMutation(internal.intel.recordFailure, {
           workspaceId,
           runId: batch.runId,
-          error: KNOWN_ERRORS.test(message) ? message : "internal error",
+          error: knownError(err),
         });
         return null;
       }
       const { result } = analysis;
-      const applied: { stale: boolean } = await ctx.runMutation(internal.intel.applyResult, {
-        workspaceId,
-        runId: batch.runId,
-        entriesRevision: batch.entriesRevision,
-        eventIds: batch.events.map((e) => e.id as Id<"activity_events">),
-        summary: result.summary,
-        entries: result.entries as EntryOpArg[],
-        proposals: result.proposals as Infer<typeof proposalOpValidator>[],
-        dropped: result.dropped,
-        ...(analysis.inputTokens !== undefined ? { inputTokens: analysis.inputTokens } : {}),
-        ...(analysis.outputTokens !== undefined ? { outputTokens: analysis.outputTokens } : {}),
-      });
-      if (!applied.stale) return null;
+      const applied: { stale: boolean; created: number; updated: number } = await ctx.runMutation(
+        internal.intel.applyResult,
+        {
+          workspaceId,
+          runId: batch.runId,
+          entriesRevision: batch.entriesRevision,
+          eventIds: batch.events.map((e) => e.id as Id<"activity_events">),
+          summary: result.summary,
+          entries: result.entries as EntryOpArg[],
+          proposals: result.proposals as Infer<typeof proposalOpValidator>[],
+          dropped: result.dropped,
+          ...usageOf(analysis),
+        },
+      );
+      if (!applied.stale) {
+        if (batch.method === "llm" && applied.created + applied.updated > 0)
+          await compact(ctx, {
+            workspaceId,
+            runId: batch.runId,
+            model: batch.model,
+            allowSupersede: !result.proposals.some((p) => p.supersedes !== undefined),
+          });
+        return null;
+      }
       // Retry once against fresh state; then leave the events for a later run.
       const fresh: Batch | null = attempt < 2
         ? await ctx.runQuery(internal.intel.reloadBatch, { workspaceId, runId: batch.runId })

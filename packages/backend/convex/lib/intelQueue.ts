@@ -72,3 +72,64 @@ export async function requestIntelRun(
     });
   }
 }
+
+/** Files one backfill mutation reads; a continuation takes the next page. */
+export const BACKFILL_PAGE = 200;
+
+/**
+ * Queues one file.backfill activity event per live text file on this page
+ * of the workspace's files (binaries have nothing to read), so the context
+ * manager reads documents nobody has edited since it started. Inserted
+ * directly, never through recordWorkspaceEvent, so nothing mirrors or loops;
+ * the dedupe key makes re-queuing the same version a no-op. Schedules the
+ * next page when there is one; with requestRun, also asks for a batch.
+ */
+export async function enqueueBackfillPage(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  cursor: string | null,
+  options: { requestRun: boolean },
+): Promise<{ queued: number; isDone: boolean }> {
+  const page = await ctx.db
+    .query("files")
+    .withIndex("by_workspace_and_deleted_at_and_updated_at", (q) =>
+      q.eq("workspaceId", workspaceId).eq("deletedAt", undefined),
+    )
+    .paginate({ numItems: BACKFILL_PAGE, cursor });
+  const now = Date.now();
+  let queued = 0;
+  for (const file of page.page) {
+    if (file.storageId !== undefined || typeof file.content !== "string") continue;
+    const dedupeKey = `backfill:${file._id}:v${file.version}`;
+    const existing = await ctx.db
+      .query("activity_events")
+      .withIndex("by_workspace_and_dedupe_key", (q) =>
+        q.eq("workspaceId", workspaceId).eq("dedupeKey", dedupeKey),
+      )
+      .first();
+    if (existing) continue;
+    await ctx.db.insert("activity_events", {
+      workspaceId,
+      actor: INTEL_ACTOR,
+      source: "workspace",
+      type: "file.backfill",
+      outcome: "ok",
+      summary: `Read existing document ${file.name} (v${file.version})`.slice(0, 200),
+      payload: JSON.stringify({ version: file.version }),
+      resources: [{ type: "file", id: file._id, label: file.name.slice(0, 80) }],
+      dedupeKey,
+      significant: true,
+      intelStatus: "pending",
+      occurredAt: now,
+      createdAt: now,
+    });
+    queued++;
+  }
+  if (!page.isDone)
+    await ctx.scheduler.runAfter(0, internal.intel.continueBackfill, {
+      workspaceId,
+      cursor: page.continueCursor,
+    });
+  if (queued > 0 && options.requestRun) await requestIntelRun(ctx, workspaceId);
+  return { queued, isDone: page.isDone };
+}

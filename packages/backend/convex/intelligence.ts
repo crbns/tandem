@@ -9,7 +9,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { agentActor } from "./lib/agent";
 import { humanActor, recordWorkspaceEvent, requireMembership } from "./lib/auth";
-import { intelDisabled } from "./lib/intelQueue";
+import { enqueueBackfillPage, intelDisabled } from "./lib/intelQueue";
 import { actorValidator, proposalStatusValidator } from "./lib/validators";
 
 type ReadCtx = QueryCtx | MutationCtx;
@@ -760,5 +760,35 @@ export const retryContextManager = mutation({
       });
     }
     return { scheduled: schedule };
+  },
+});
+
+/**
+ * Owner/admin: queues a read of every live text document (one file.backfill
+ * event each, 200 per mutation with continuations) and asks for a run.
+ * Versions already read are skipped by their dedupe key.
+ */
+export const backfillDocuments = mutation({
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.object({ queued: v.number(), more: v.boolean() }),
+  handler: async (ctx, { workspaceId }) => {
+    const { membership } = await requireMembership(ctx, workspaceId);
+    if (membership.role !== "owner" && membership.role !== "admin")
+      throw new ConvexError({ code: "FORBIDDEN" });
+    if (intelDisabled()) return { queued: 0, more: false };
+    const now = Date.now();
+    const state = await intelState(ctx, workspaceId);
+    if (state) await ctx.db.patch(state._id, { backfilledAt: now, updatedAt: now });
+    else
+      await ctx.db.insert("context_intel_state", {
+        workspaceId,
+        status: "idle",
+        consecutiveFailures: 0,
+        entriesRevision: 0,
+        backfilledAt: now,
+        updatedAt: now,
+      });
+    const { queued, isDone } = await enqueueBackfillPage(ctx, workspaceId, null, { requestRun: true });
+    return { queued, more: !isDone };
   },
 });

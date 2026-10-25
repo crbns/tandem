@@ -568,6 +568,9 @@ export default defineSchema({
     supersededBy: v.optional(v.string()),
     // A goal or decision finding raised for human approval.
     proposalId: v.optional(v.id("context_proposals")),
+    // Document digests (knowledge:doc-*) only: hash of the content the digest
+    // was made from; an unchanged hash skips the model call.
+    sourceHash: v.optional(v.string()),
     model: v.optional(v.string()),
     lastRunId: v.optional(v.id("context_intel_runs")),
     createdBy: actor,
@@ -655,6 +658,8 @@ export default defineSchema({
     lastRunAt: v.optional(v.number()),
     // Bumped by every applied change to context_entries; sync reports it.
     entriesRevision: v.number(),
+    // When the one-time read of the workspace's existing documents was queued.
+    backfilledAt: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_workspace", ["workspaceId"]),
 
