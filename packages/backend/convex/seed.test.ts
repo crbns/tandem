@@ -194,22 +194,25 @@ describe("seed:rebuildDemoWorkspace", () => {
   });
 
   it("flags Casey's proposal against the help-center constraint it contradicts, and nothing else", async () => {
-    // No ANTHROPIC_API_KEY in tests, so #61's word-overlap fallback runs: the
-    // seed's wording must point it at the real contradiction (the help-center
-    // constraint), not at an incidental shared word like "launch".
+    // Pins #61's no-key word-overlap fallback (an empty key counts as unset,
+    // even when the shell exports a real one): the seed's wording must point
+    // it at the real contradiction (the help-center constraint), not at an
+    // incidental shared word like "launch".
     vi.useFakeTimers();
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
     try {
       const { t, rebuild } = await setup();
       const demo = await rebuild();
       await t.finishAllScheduledFunctions(vi.runAllTimers);
-      const pending = await t.run((ctx) =>
+      const proposals = await t.run((ctx) =>
         ctx.db.query("context_proposals")
           .withIndex("by_workspace_and_created", (q) => q.eq("workspaceId", demo.workspaceId)).collect());
-      const casey = pending.filter((p) => p.status === "pending");
-      expect(casey).toHaveLength(1);
-      expect(casey[0]!.conflict?.status).not.toBe("clear");
-      expect(casey[0]!.conflict?.items.map((item) => item.targetText)).toEqual([DEMO_HELP_CENTER_CONSTRAINT]);
+      const pending = proposals.filter((p) => p.status === "pending");
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.conflict).toMatchObject({ status: "uncertain", method: "heuristic" });
+      expect(pending[0]!.conflict?.items.map((item) => item.targetText)).toEqual([DEMO_HELP_CENTER_CONSTRAINT]);
     } finally {
+      vi.unstubAllEnvs();
       vi.useRealTimers();
     }
   });
