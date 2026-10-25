@@ -535,6 +535,29 @@ function toContext(c: ContextRow) {
   };
 }
 
+/** All current project rules, without the retained resolved history. */
+function toActiveContext(c: ContextRow) {
+  const active = (entries: ContextEntry[]) => entries
+    .filter((e) => e.status === "active")
+    .map((e) => ({ id: e.id, text: e.text, source_ids: e.sourceFileIds }));
+  return {
+    goal: c.goal?.text ?? "",
+    goal_source_ids: c.goal?.sourceFileIds ?? [],
+    scope: c.scope?.text ?? "",
+    scope_source_ids: c.scope?.sourceFileIds ?? [],
+    constraints: active(c.constraints),
+    decisions: active(c.decisions),
+    ownership: c.ownership
+      .filter((e) => e.status === "active")
+      .map((e) => ({
+        id: e.id, text: e.text, source_ids: e.sourceFileIds,
+        area: e.ownerArea ?? e.text.split(": ")[0] ?? e.text,
+        owner_user_id: e.ownerUserId ?? "",
+      })),
+    open_questions: active(c.openQuestions),
+  };
+}
+
 type SyncRow = {
   workspace: { id: string; name: string };
   context: ContextRow;
@@ -565,6 +588,8 @@ function toObserved(o: Observed) {
     updated_at: isoOrNull(o.updatedAt),
     last_run_at: isoOrNull(o.lastRunAt),
     entries: o.entries.map((e) => ({
+      id: e.id,
+      revision: e.revision,
       key: e.key,
       category: e.category,
       title: e.title,
@@ -573,6 +598,7 @@ function toObserved(o: Observed) {
       evidence: e.evidence,
       confidence: e.confidence,
       agents: e.agents,
+      source_file_ids: e.sourceFileIds,
       updated_at: iso(e.updatedAt),
     })),
     truncated: o.truncated,
@@ -647,10 +673,12 @@ function toSyncBrief(r: SyncRow, detail: "brief" | "full") {
  */
 export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
   const brief = toSyncBrief(r, detail);
+  const activeContext = toActiveContext(r.context);
   const cursor = encodeCursor(r.workspace.id, r.cursorSeq);
   if (detail === "brief")
     return {
       brief,
+      active_context: activeContext,
       workspace: r.workspace,
       context_version: r.context.revision,
       changed_files: r.changedFiles.map((f) => ({ id: f.id, name: f.name, path: f.path, version: f.version })),
@@ -671,6 +699,7 @@ export function toSyncResult(r: SyncRow, detail: "brief" | "full" = "full") {
     };
   return {
     brief,
+    active_context: activeContext,
     workspace: r.workspace,
     context: toContext(r.context),
     context_version: r.context.revision,

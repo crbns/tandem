@@ -6,9 +6,8 @@
 // reads the whole document. Results are validated deterministically
 // (lib/intel.ts) and applied in one mutation guarded by entriesRevision; then
 // any section over its size threshold is compacted the same way. Goal,
-// decision and ownership findings are recorded in project context
-// (structured_context) at once, through the same core as a person's edit.
-import { ConvexError, v, type Infer } from "convex/values";
+// decision and ownership claims remain observed until a person directs a change.
+import { v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -28,7 +27,6 @@ import {
   DIGEST_RESPONSE_SCHEMA,
   DIGEST_SYSTEM_PROMPT,
   DOC_EVENT_TYPES,
-  MIN_CHANGE_CONFIDENCE,
   DOC_KEY_PREFIX,
   IntelParseError,
   LIVE_STATUSES,
@@ -64,8 +62,7 @@ import {
   INTEL_ACTOR,
   intelDisabled,
 } from "./lib/intelQueue";
-import { changeContextCore, loadContext, normalizeContext } from "./lib/ops";
-import { nameKey } from "./lib/names";
+import { loadContext } from "./lib/ops";
 import schema from "./schema";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -494,10 +491,7 @@ export const claimBatch = internalMutation({
       startedAt: now,
     });
     if (events.length === 0) {
-      // Nothing new to read, but goal and decision findings the model only
-      // recorded as entries still reach project context.
-      const promoted = await promoteFindings(ctx, workspaceId, [], PROMOTE_PER_RUN);
-      if (promoted > 0) await ctx.db.patch(runId, { contextChanges: promoted });
+      // Nothing new to read. Existing findings remain observations.
       await patchState(ctx, workspaceId, {
         status: "idle",
         scheduledFor: undefined,
@@ -677,185 +671,10 @@ async function applyEntry(
   return "updated";
 }
 
-/**
- * changeContextCore as the context manager. A nested mutation, so a refusal
- * (INVALID_INPUT, INVALID_SOURCE_FILE) rolls back on its own and the caller's
- * apply continues.
- */
-export const recordContextChange = internalMutation({
-  args: {
-    workspaceId: v.id("workspaces"),
-    field: v.union(v.literal("goal"), v.literal("decision"), v.literal("ownership")),
-    text: v.string(),
-    ownerUserId: v.optional(v.string()),
-    sourceFileIds: v.array(v.id("files")),
-    supersedes: v.optional(v.string()),
-  },
-  returns: v.object({ entryId: v.union(v.string(), v.null()), deduplicated: v.boolean() }),
-  handler: async (ctx, args) => {
-    const result = await changeContextCore(ctx, {
-      workspaceId: args.workspaceId,
-      field: args.field,
-      value: args.text,
-      sourceFileIds: args.sourceFileIds,
-      ...(args.ownerUserId !== undefined ? { ownerUserId: args.ownerUserId } : {}),
-      ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
-      actor: INTEL_ACTOR,
-    });
-    return { entryId: result.entryId, deduplicated: result.deduplicated };
-  },
-});
-
 /** An entry already recorded in project context (or refused), never tried again. */
 const recorded = (e: Doc<"context_entries">) =>
   e.contextEntryId !== undefined || e.contextSkipped !== undefined ||
   e.proposalId !== undefined || e.proposalSkipped !== undefined;
-
-/**
- * Why project context, as it stands now, overrules a change the batch
- * proposed, or null. Checked at apply time, since a person may have changed
- * context during the model call: a goal is only set while there is none, and
- * the context manager only replaces an owner it set itself (or a decision it
- * recorded itself, for compaction's supersede).
- */
-async function overruled(
-  ctx: MutationCtx,
-  workspaceId: Id<"workspaces">,
-  c: Infer<typeof changeOpValidator>,
-  fromCompaction: boolean,
-): Promise<string | null> {
-  const stored = await ctx.db
-    .query("structured_context")
-    .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
-    .unique();
-  if (!stored) return null;
-  const context = normalizeContext(stored);
-  if (c.field === "goal") return stored.goal?.text ? "project context already has a goal" : null;
-  const active = (e: { status?: string }) => !e.status || e.status === "active";
-  if (c.field === "ownership") {
-    const current = context.ownership.find(
-      (o) => active(o) && o.ownerArea !== undefined && nameKey(o.ownerArea) === nameKey(c.text),
-    );
-    return current && current.ownerUserId !== c.ownerUserId && current.updatedBy.type !== "system"
-      ? "kept the owner a person or assistant set"
-      : null;
-  }
-  if (fromCompaction && c.supersedes !== undefined) {
-    const target = context.decisions.find((d) => d.id === c.supersedes);
-    return target && target.updatedBy.type !== "system"
-      ? "kept the decision a person or assistant recorded"
-      : null;
-  }
-  return null;
-}
-
-/**
- * Records each finding in project context (recordContextChange) and links it
- * to the entry that tracks it. Returns how many changes it made; refusals go
- * to `dropped`.
- */
-async function recordChanges(
-  ctx: MutationCtx,
-  workspaceId: Id<"workspaces">,
-  list: Infer<typeof changeOpValidator>[],
-  dropped: string[],
-  { fromCompaction = false } = {},
-) {
-  let changes = 0;
-  for (const c of list) {
-    const entry = c.field === "ownership" ? null : await getEntry(ctx, workspaceId, c.key);
-    // Recorded before (and maybe since edited or removed by a person): don't
-    // record it again. A supersede is a new change, so it always goes through.
-    if (entry && recorded(entry) && c.supersedes === undefined) continue;
-    const reason = await overruled(ctx, workspaceId, c, fromCompaction);
-    if (reason) {
-      dropped.push(`context change ${c.key}: ${reason}`);
-      continue;
-    }
-    try {
-      const result: { entryId: string | null; deduplicated: boolean } =
-        await ctx.runMutation(internal.intel.recordContextChange, {
-          workspaceId,
-          field: c.field,
-          text: c.text,
-          ...(c.ownerUserId !== undefined ? { ownerUserId: c.ownerUserId } : {}),
-          sourceFileIds: c.fileIds,
-          ...(c.supersedes !== undefined ? { supersedes: c.supersedes } : {}),
-        });
-      if (entry && result.entryId !== null) await ctx.db.patch(entry._id, { contextEntryId: result.entryId });
-      if (!result.deduplicated) changes++;
-    } catch (err) {
-      // INVALID_INPUT (an owner who left), INVALID_SOURCE_FILE and the like:
-      // the finding stays an observed entry, marked so it isn't retried.
-      const data = err instanceof ConvexError ? err.data : undefined;
-      const parsed = typeof data === "string" ? (() => { try { return JSON.parse(data); } catch { return null; } })() : data;
-      const code = parsed && typeof parsed === "object" && typeof parsed.code === "string" ? parsed.code : "ERROR";
-      if (entry) await ctx.db.patch(entry._id, { contextSkipped: code });
-      dropped.push(`context change ${c.key}: not recorded (${code})`);
-    }
-  }
-  return changes;
-}
-
-const PROMOTE_PER_RUN = 3;
-const PROMOTE_SCAN = 20;
-// Content that narrates the observation rather than stating the finding.
-const NARRATION = /^(observed|requested|claimed|document|the document|open question)\b|\b(said|says|reported|claims?)\b/i;
-
-/**
- * Goal and decision findings the model recorded only as observed entries
- * (it often doesn't list them under context_changes) are recorded in
- * project context here. The entry links to what it recorded; one already
- * recorded, or whose recording was refused, is never tried again. Skips what
- * project context already says, and records a goal only while there is none.
- */
-async function promoteFindings(
-  ctx: MutationCtx,
-  workspaceId: Id<"workspaces">,
-  dropped: string[],
-  budget: number,
-) {
-  if (budget <= 0) return 0;
-  const stored = await ctx.db
-    .query("structured_context")
-    .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
-    .unique();
-  const current = stored ? normalizeContext(stored) : null;
-  const decisions = (current?.decisions ?? []).filter((d) => !d.status || d.status === "active").map((d) => d.text);
-  let goalTaken = Boolean(stored?.goal?.text);
-  let made = 0;
-  for (const category of ["goal", "decision"] as const) {
-    const rows = await ctx.db
-      .query("context_entries")
-      .withIndex("by_workspace_and_category_and_updated_at", (q) =>
-        q.eq("workspaceId", workspaceId).eq("category", category),
-      )
-      .order("desc")
-      .take(PROMOTE_SCAN);
-    for (const e of rows) {
-      if (made >= budget) return made;
-      if (recorded(e) || e.status !== "active" || e.confidence < MIN_CHANGE_CONFIDENCE) continue;
-      const text = !NARRATION.test(e.content) && e.content.length <= 500 ? e.content : e.title;
-      if (category === "goal" && goalTaken) continue;
-      if (category === "decision" && decisions.some((d) => normalize(d) === normalize(text) || similar(d, text))) {
-        // Already in project context: mark it so it isn't re-checked every run.
-        await ctx.db.patch(e._id, { contextSkipped: "DUPLICATE" });
-        continue;
-      }
-      made += await recordChanges(ctx, workspaceId, [{
-        field: category,
-        text,
-        confidence: e.confidence,
-        evidenceEventIds: e.evidenceEventIds.slice(0, 3),
-        fileIds: e.fileIds,
-        key: e.key,
-      }], dropped);
-      if (category === "goal") goalTaken = true;
-      else decisions.push(text);
-    }
-  }
-  return made;
-}
 
 /** Schedules the next batch when events are still waiting; returns whether it did. */
 async function scheduleIfPending(ctx: MutationCtx, workspaceId: Id<"workspaces">) {
@@ -916,9 +735,9 @@ export const applyResult = internalMutation({
       else if (outcome === "protected") dropped.push(`${op.key}: kept the person's version`);
     }
 
-    const made = await recordChanges(ctx, workspaceId, args.changes, dropped);
-    const contextChanges =
-      made + (await promoteFindings(ctx, workspaceId, dropped, Math.min(PROMOTE_PER_RUN, MAX_RUN_CHANGES - made)));
+    // Validated model findings live in context_entries. Do not promote them
+    // to structured_context without a person's direction.
+    const contextChanges = 0;
 
     // A deleted document's digest leaves observed context with it; nothing
     // else would ever retract it (only a digest call writes doc keys).
@@ -1158,7 +977,7 @@ export const loadCompaction = internalQuery({
  * Applies the run's compaction results in one transaction, guarded by
  * entriesRevision like applyResult (stale writes nothing). Merged entries are
  * upserts and every folded entry a supersede, each with a revision; at most
- * one decision supersede is recorded in project context.
+ * authoritative decisions are never changed by compaction.
  */
 export const applyCompaction = internalMutation({
   args: {
@@ -1197,8 +1016,7 @@ export const applyCompaction = internalMutation({
       else if (outcome === "protected") dropped.push(`${op.key}: kept the person's version`);
       if (outcome === "updated" && op.op === "supersede") superseded++;
     }
-    // A merged entry keeps the context link (or refusal) of what it folded,
-    // so promotion doesn't record an already-recorded finding again.
+    // Preserve legacy context links on merged historical entries.
     for (const op of args.entries) {
       if (op.op !== "supersede" || op.supersededBy === undefined) continue;
       const folded = await getEntry(ctx, workspaceId, op.key);
@@ -1208,7 +1026,7 @@ export const applyCompaction = internalMutation({
         ? { contextEntryId: folded.contextEntryId }
         : { contextSkipped: folded.contextSkipped ?? folded.proposalSkipped ?? "PROPOSED" });
     }
-    const contextChanges = await recordChanges(ctx, workspaceId, args.changes, dropped, { fromCompaction: true });
+    const contextChanges = 0;
     const changed = created + updated > 0;
     const entriesRevision = state.entriesRevision + (changed ? 1 : 0);
     const add = (a: number | undefined, b: number | undefined) =>

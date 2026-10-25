@@ -41,7 +41,7 @@ export function ObservedContextPanel({
         </h2>
         <p className="max-w-3xl text-xs text-muted-foreground">
           Observed by Tandem&apos;s context manager from recorded activity and documents. It is not project context;
-          the context manager records goals, decisions and owners there itself. Assistants receive this on their
+          goals, decisions and owners need a person&apos;s direction. Assistants receive this on their
           next sync.
         </p>
       </div>

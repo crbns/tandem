@@ -66,4 +66,4 @@ These integration prerequisites are implemented. `apps/mcp` is not a deployment 
 - Search inspects the newest 200 files plus bounded filename-index hits. It does not guarantee substring matches across every older file's content (`searchFilesCore`).
 - The skill eval starts a fresh mock process per trial; it has no external MCP URL/key mode or isolated live seed setup (`skills/tandem/eval/run.mjs`).
 
-People, their assistants and the context manager all change project context directly, with attribution and history. Published findings do not change project context.
+People can change project context directly or direct their assistants to do so, with attribution and history. The context manager and published findings produce observations, not authoritative context changes.

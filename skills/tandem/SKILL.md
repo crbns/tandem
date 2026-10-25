@@ -22,9 +22,8 @@ description: >-
 Tandem holds the team's canonical files (with revision history) and a compact
 project context: goal, scope, constraints, decisions, ownership, open
 questions. You reach it through the Tandem MCP connector. You read, draft, and
-save versioned edits. Tandem's context manager reads the saved documents and
-your activity, then records findings, tasks, progress, blockers, goals,
-decisions and owners for you.
+save versioned edits. Tandem's context manager reads saved documents and
+activity, then records compact, unapproved observations.
 
 ## The Tandem loop
 
@@ -35,22 +34,25 @@ to ask you to sync, read, or save.
 
 1. **Sync and read context before the task.** First time in the conversation:
    `sync_workspace` with `detail: "brief"`, and keep the `cursor`. Later:
-   `sync_workspace` with `since: <cursor>`, in full detail before a decision or
-   write that depends on constraints or ownership (section 1). Read the brief
-   first. Its `observed` is the context manager's compacted summary of what
+   `sync_workspace` with `since: <cursor>`. Read `active_context` first: it
+   includes every active goal, scope, constraint, decision, owner and open
+   question even in brief mode. Then read `observed`, the compact summary of what
    teammates' assistants are doing and what the workspace's documents say:
    read it _instead of_ skimming `recent_work` and events. It is not project
    context (section 1).
-2. **Read.** `search_files` / `read_file` the files the request touches before
-   you answer or edit. Use the project context (goal, scope, constraints,
-   decisions) as the frame for the work. Cite path and version (section 2).
+2. **Read and verify.** `search_files` / `read_file` the files the request
+   touches. Treat observed entries as leads and read their `source_file_ids`
+   before acting. Use active project context as the frame. Cite path and version.
 3. **Do the work** in the chat. If a shared task (`manage_task`) matches it,
    claim it first and complete it when done (section 6).
-4. **Save your documents to the workspace.** Save edits to existing files with
+4. **Save your documents to the workspace.** Fix verified routine issues within
+   the user's task; create a task for unrelated work. Save edits to existing files with
    `update_document` and the `expected_version` you read (section 3); create
    new documents with `create_document` (section 5). That is the whole write
    step: the context manager reads what you save, so teammates' assistants get
-   it from `observed` without you publishing or recording anything.
+   it from `observed` without you publishing. After fixing an issue or
+   disproving a stale lead, call `resolve_observation` with its `id`,
+   `revision` and a short note. Verification alone leaves a valid lead active.
 5. **Reply as you would without Tandem, then report.** When you create or edit
    a document, show it to the user in your reply too: the full text for a new
    or short document, the changed sections for a long edit. Tandem keeps the
@@ -65,7 +67,7 @@ Don't call `publish_work` or `update_context` on your own:
 - `update_context` only when the user directs a change to the goal, scope, a
   decision, a constraint, ownership or an open question ("record that we cut
   mobile", "Sam owns onboarding"). It applies at once (section 7). Don't
-  record what a file shows: the context manager does that.
+  treat a file's claim as an approved context change.
 
 Save only when a file actually changes. Asking for project work in a
 conversation that uses Tandem counts as permission to save it to the
@@ -83,9 +85,8 @@ What's automatic and what isn't: Tandem records every MCP tool call you make
 and, if the user installed Tandem's Claude Code hooks, your Claude Code
 activity (edits, commands, test results; prompts only if they opted in). Its
 context manager reads every saved document and that activity and turns them
-into `observed`, and records the goals, decisions and owners documents show
-into project context, so you don't write progress summaries, findings or
-file-derived context changes. Tandem can't make you call a tool, run between
+into `observed`. Claims about goals, decisions or owners stay observations
+until a person directs a context change. Tandem can't make you call a tool, run between
 turns, or wake this chat when teammates change things. The loop happens only
 when you run it. The server enforces only `expected_version` on writes.
 
@@ -95,7 +96,7 @@ Use only the tools the connector actually exposes. The full surface is:
 `sync_workspace`, `list_files`, `search_files`, `read_file`, `create_document`,
 `update_document`, `create_folder`, `move_file`, `move_folder`,
 `publish_work`, `update_context`, `get_file_versions`, `get_workspace_info`,
-`manage_task`.
+`manage_task`, `resolve_observation`.
 
 If a tool you need is missing from the connector, use the closest one it does
 expose and tell the user what you could not do. If no Tandem tools are available
@@ -107,14 +108,14 @@ not.
 - At the start of meaningful project work in a conversation, call
   `sync_workspace` with `detail: "brief"` to orient cheaply (add `workspace_id`
   only if the user means a non-default workspace; `get_workspace_info` lists
-  them). You get the brief (with `observed`), the `cursor`, compact file
-  metadata, `recent_work` and tasks, without `context` or `events`. Once the context manager has run (`observed.revision` > 0), brief
+  them). You get complete `active_context`, the brief (with `observed`), the
+  `cursor`, compact file metadata, `recent_work` and tasks, without context
+  history or events. Once the context manager has run (`observed.revision` > 0), brief
   `recent_work` lists titles only (`id`, `kind`, `title`, `created_by`,
   `created_at`, `file_ids`): `observed` summarizes that work.
-- Read its `brief` first: goal, scope, active decisions, blockers (open
-  questions) and the newest changes. The brief omits
-  constraints and ownership: before a decision or write that may depend on
-  them, sync in full detail (the default; pass `since` to keep it small).
+- Read `active_context` first. It always includes all active fields with source
+  IDs; none of its lists are capped. `brief` adds a small orientation and newest
+  changes. Use full detail for history and richer events.
   Remove files in `deleted_file_ids` from local context: brief mode retains
   every deletion in the event page, even outside its ten newest changes.
 - The full result (the default) also returns `context` (goal, scope,
@@ -143,13 +144,16 @@ not.
   decisions, knowledge (including a digest per document), agent summaries and
   coordination, open blockers and active work first and document digests
   last. Read it instead of skimming `recent_work` and events. Each entry has
-  `key`, `category`, `title`, `content`, `status`, `evidence`, `confidence`,
-  `agents` (labels) and `updated_at`. It is **not** project context: only
-  `context` (and the brief's `active_decisions`) is authoritative. Evidence
+  `id`, `revision`, `key`, `category`, `title`, `content`, `status`, `evidence`,
+  `confidence`, `source_file_ids`, `agents` (labels) and `updated_at`. It is
+  **not** project context: only `active_context` is authoritative. Evidence
   runs `requested` < `claimed` < `observed` < `verified` < `human_confirmed`.
   Cite it ("Sam's assistant reports the auth tests pass, verified from the
   test run"), treat `claimed` as unconfirmed, and never present claimed work
-  as done. With `since`, `observed_changed: false` means nothing changed in
+  as done. Read relevant sources before acting. Fix verified routine issues in
+  the user's task, make unrelated work a task, and get human direction for
+  major context changes. Resolve an observation only after fixing the issue or
+  showing the lead is stale, using its current revision. With `since`, `observed_changed: false` means nothing changed in
   that event page and `observed` is left out: keep what you read last.
 - When asked "what has Sam (or Sam's assistant) been working on?", answer from
   `observed` and `recent_changes`/`events`, separating what is verified, what
@@ -257,8 +261,8 @@ Someone else saved a newer version since you read it.
 
 ## 7. Change project context when the user directs it
 
-- Tandem's context manager reads saved documents and records the goals,
-  decisions and owners they show, so don't record what a file shows. Call
+- Tandem's context manager reads saved documents and may note proposed goals,
+  decisions and owners as observations. It does not make them project context. Call
   `update_context` only when the user directs a change to the goal, scope, a
   decision, a constraint, ownership or an open question ("we're going with
   Stripe", "Sam owns onboarding", "launch slipped to March", "add an open

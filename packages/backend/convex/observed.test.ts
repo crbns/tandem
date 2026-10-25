@@ -154,6 +154,31 @@ async function setRevision(t: Test, workspaceId: Id<"workspaces">, entriesRevisi
 }
 
 describe("sync_workspace observed", () => {
+  it("lets an agent resolve a verified lead with version and workspace checks", async () => {
+    const { t, workspaceId, samAgent, jordanAgent } = await setup();
+    await setRevision(t, workspaceId, 1);
+    const id = await insertEntry(t, { workspaceId, key: "blocker:auth-test", category: "blocker" });
+    const before = await callTool(t, samAgent.apiKey, "sync_workspace", { detail: "brief" });
+    const lead = before.brief.observed.entries.find((e: { id: string }) => e.id === id);
+    expect(lead).toMatchObject({ id, revision: 1, source_file_ids: [] });
+    await expect(t.mutation(internal.mcpTools.resolveObservation, {
+      principal: jordanAgent.principal, workspaceId, entryId: id, expectedRevision: 1, note: "Checked",
+    })).rejects.toThrow();
+    const resolved = await callTool(t, samAgent.apiKey, "resolve_observation", {
+      entry_id: id, expected_revision: lead.revision, note: "Re-ran the auth test; it passes.",
+    });
+    expect(resolved).toEqual({ entry_id: id, revision: 2, observed_revision: 2 });
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row).toMatchObject({ status: "resolved", evidence: "observed", revision: 2 });
+    const after = await callTool(t, samAgent.apiKey, "sync_workspace", { since: before.cursor });
+    expect(after.observed_changed).toBe(true);
+    expect(after.context_version).toBe(before.context_version);
+    expect(after.events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "context.corrected", subject_id: id })]));
+    await expect(t.mutation(internal.mcpTools.resolveObservation, {
+      principal: samAgent.principal, workspaceId, entryId: id, expectedRevision: 1, note: "Stale",
+    })).rejects.toThrow();
+  });
+
   it("reports an empty observed state, labeled, before the context manager has run", async () => {
     const { t, samAgent } = await setup();
     const full = await callTool(t, samAgent.apiKey, "sync_workspace");
@@ -206,6 +231,8 @@ describe("sync_workspace observed", () => {
     // Superseded history stays on the dashboard, out of the agent-facing sync.
     expect(full.observed.entries).toEqual([
       {
+        id: expect.any(String),
+        revision: 1,
         key: "task:jwt-auth",
         category: "task",
         title: "Implement JWT auth",
@@ -214,6 +241,7 @@ describe("sync_workspace observed", () => {
         evidence: "verified",
         confidence: 0.83,
         agents: ["Sam's claude assistant"],
+        source_file_ids: [doc.id],
         updated_at: new Date(lastRunAt - 10).toISOString(),
       },
     ]);

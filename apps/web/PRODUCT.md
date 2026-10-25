@@ -53,7 +53,7 @@ Assistants never message each other. They meet only through the files and the co
 - History is immutable. Restore (not in P0) creates a new head revision.
 
 **Context and attribution**
-- Every context change applies at once, whoever makes it: any member on the dashboard, an assistant over MCP, or Tandem's context manager. There is no approval step.
+- A person can change project context on the dashboard or direct an assistant to do so over MCP; the change applies at once. Tandem's context manager records observations and never changes approved project context.
 - Every record carries actor attribution, person and agent, so anyone can see who set what and change it back.
 
 **Presence and privacy**

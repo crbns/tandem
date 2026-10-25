@@ -372,17 +372,18 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
       title: "Sync workspace",
       description:
         "Call this before any workspace-related work, then again with since before significant decisions or writes. " +
+        "Every result includes active_context: the complete current goal, scope, constraints, decisions, ownership and open questions with source ids. It is never capped by the brief lists. " +
         "next_steps restates the loop: read the files the task touches before working, save files after. " +
         "Read brief first: goal, scope, active_decisions, blockers (active open_questions), recent_changes (newest first) and changed_file_count; " +
         `each list holds at most ${BRIEF_LIMIT} and truncated says one was capped. ` +
-        'detail: "full" (default) or "brief" (only brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/path/version, deleted_file_ids, recent_work and tasks; ' +
-        "no context or events; once observed.revision > 0, brief recent_work is titles only: id, kind, title, created_by, created_at, file_ids). Use brief to orient; before decisions or writes that may depend on constraints or ownership, use full, and read_file before editing. " +
+        'detail: "full" (default) or "brief" (active_context, brief, workspace, context_version, cursor, truncation flags, changed_files as id/name/path/version, deleted_file_ids, recent_work and tasks; ' +
+        "no context history or events; once observed.revision > 0, brief recent_work is titles only: id, kind, title, created_by, created_at, file_ids). Use brief to orient; full adds history and event details. Read_file before editing. " +
         "The full result also has the project context (goal, scope, decisions, ownership, constraints and open questions, with retained resolved/superseded history), " +
         "changed files, tasks, recent_work (published findings and deliverables with full summaries and file references), and recent workspace events. " +
-        "context and brief.active_decisions are what the team has recorded and is following. " +
+        "active_context is what the team has recorded and is following. " +
         "observed (top level in full, up to 30 entries; brief.observed in brief, up to 10 with content clipped; open blockers and active work first, document digests last) is the context manager's compacted summary of teammates' assistant activity and workspace documents: " +
-        "read it instead of skimming recent_work and events. Entries have key, category, title, content, status, evidence (requested < claimed < observed < verified < human_confirmed), confidence, agents (labels) and updated_at. " +
-        "It is NOT project context: treat claimed as unconfirmed and never present claimed work as done. " +
+        "read it instead of skimming recent_work and events. Entries have id, revision, key, category, title, content, status, evidence (requested < claimed < observed < verified < human_confirmed), confidence, agents (labels), source_file_ids and updated_at. " +
+        "It is NOT project context: treat claimed as unconfirmed and never present claimed work as done. Verify sources before acting; fix only relevant routine issues in the user's task, then resolve_observation. " +
         "observed_changed is false only with since when this event page held no context.observed or context.corrected event; observed is then omitted (keep what you read). " +
         "A snapshot's recent_work contains the newest 20 publications. With since, it contains the newest 20 publications within this event page; later work arrives when you continue syncing. work_truncated means older matching work within that page (or snapshot) was omitted. " +
         "Without since you get a snapshot: the full context, all files (up to 50), active tasks (open and in_progress, up to 50; tasks_truncated if more) and the latest events. " +
@@ -415,6 +416,28 @@ export const mcp: McpServer<string> = new McpServer(components.mcp, {
             detail: args.detail ?? "full",
           });
           return { ...toSyncResult(r, args.detail), next_steps: syncNextSteps() };
+        }, { workspaceId: args.workspace_id }),
+    }),
+
+    resolve_observation: tool({
+      title: "Resolve observation",
+      description: "Mark one active observed lead resolved after reading its cited files and verifying a relevant routine fix or disproving the lead. Use the entry id and revision from sync_workspace, and explain the evidence in note. This does not approve or change project context; evidence is not upgraded to human_confirmed. A stale revision returns VERSION_CONFLICT. Leave unrelated leads for another task.",
+      args: {
+        workspace_id: v.optional(v.string()),
+        entry_id: v.string(),
+        expected_revision: v.number(),
+        note: v.string(),
+      },
+      annotations: write(false),
+      scope: WRITE,
+      handler: (ctx, args, user) =>
+        run(ctx, user, "resolve_observation", args, async () => {
+          const result = await ctx.runMutation(internal.mcpTools.resolveObservation, {
+            principal: p(user), workspaceId: args.workspace_id,
+            entryId: args.entry_id, expectedRevision: args.expected_revision,
+            note: args.note,
+          });
+          return { entry_id: args.entry_id, revision: result.revision, observed_revision: result.observedRevision };
         }, { workspaceId: args.workspace_id }),
     }),
 

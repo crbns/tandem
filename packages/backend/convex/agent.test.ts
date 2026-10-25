@@ -161,7 +161,7 @@ describe("agent connections", () => {
     expect(stored?.tokenHash).toBeUndefined();
     expect(JSON.stringify(stored)).not.toContain(created.apiKey);
 
-    // The key works against the real endpoint and sees all 12 tools.
+    // The key works against the real endpoint and sees the observation resolver.
     const list = await mcpRequest(t, created.apiKey, "tools/list");
     expect(list.status).toBe(200);
     expect(list.body.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
@@ -175,6 +175,7 @@ describe("agent connections", () => {
       "move_folder",
       "publish_work",
       "read_file",
+      "resolve_observation",
       "search_files",
       "sync_workspace",
       "update_context",
@@ -2849,12 +2850,14 @@ describe("sync brief and server instructions", () => {
     const { brief, next_steps, ...rest } = sync;
     expect(Object.keys(sync).at(-1)).toBe("next_steps");
     expect(next_steps).toEqual(syncNextSteps());
-    expect(Object.keys(rest)).toEqual(["workspace", "context", "context_version", "changed_files", "files_truncated", "folders", "folders_truncated",
+    expect(Object.keys(rest)).toEqual(["active_context", "workspace", "context", "context_version", "changed_files", "files_truncated", "folders", "folders_truncated",
       "recent_work", "work_truncated", "tasks", "tasks_truncated", "observed_changed", "observed", "events", "events_truncated", "cursor"]);
     const raw = await t.mutation(internal.mcpTools.syncWorkspace, { principal: token });
     expect(rest.workspace).toEqual({ id: workspaceId, name: "Demo" });
     expect(rest.context_version).toBe(raw.context.revision);
     expect(rest.context.goal).toBe("Ship the beta");
+    expect(rest.active_context.goal).toBe("Ship the beta");
+    expect(rest.active_context.decisions).toEqual([{ id: expect.any(String), text: "Usage pricing", source_ids: [] }]);
     expect(rest.context.decisions.map((e: { id: string; text: string; status: string }) => [e.id, e.text, e.status]))
       .toEqual(raw.context.decisions.map((e) => [e.id, e.text, e.status]));
     expect(rest.context.open_questions.map((e: { id: string; text: string; status: string }) => [e.id, e.text, e.status]))
@@ -2895,10 +2898,11 @@ describe("sync brief and server instructions", () => {
     const { t, alex, tool, doc, workspaceId } = await seeded();
     const compact = await tool("sync_workspace", { detail: "brief" });
     const full = await tool("sync_workspace");
-    expect(Object.keys(compact)).toEqual(["brief", "workspace", "context_version", "changed_files", "deleted_file_ids", "files_truncated",
+    expect(Object.keys(compact)).toEqual(["brief", "active_context", "workspace", "context_version", "changed_files", "deleted_file_ids", "files_truncated",
       "recent_work", "work_truncated", "tasks", "tasks_truncated", "events_truncated", "cursor", "next_steps"]);
     expect(compact).not.toHaveProperty("context");
     expect(compact).not.toHaveProperty("events");
+    expect(compact.active_context).toEqual(full.active_context);
     expect(compact.changed_files).toEqual([{ id: doc.id, name: "plan.md", path: "/plan.md", version: 1 }]);
     expect(compact.recent_work).toEqual(full.recent_work);
     expect(compact.tasks).toEqual(full.tasks);
@@ -2919,6 +2923,19 @@ describe("sync brief and server instructions", () => {
     expect(bad.isError).toBe(true);
   });
 
+  it("returns every active decision in brief even when its orientation list is capped", async () => {
+    const { tool } = await seeded();
+    for (let i = 0; i < 12; i++)
+      await tool("update_context", { field: "decisions", value: `Decision ${i}` });
+    const brief = await tool("sync_workspace", { detail: "brief" });
+    expect(brief.brief.active_decisions).toHaveLength(10);
+    expect(brief.active_context.decisions).toHaveLength(13);
+    expect(brief.active_context.decisions.map((d: { text: string }) => d.text)).toContain("Decision 0");
+    expect(brief.active_context.decisions.map((d: { text: string }) => d.text)).toContain("Decision 11");
+    expect((await tool("sync_workspace", { since: brief.cursor, detail: "brief" })).active_context)
+      .toEqual(brief.active_context);
+  });
+
   it("restates the read-before / write-back loop in next_steps on the results that open and close work", async () => {
     const { t, alex, sam, workspaceId } = await setup();
     const { apiKey } = await connect(sam, { workspaceId, client: "claude" });
@@ -2931,9 +2948,9 @@ describe("sync brief and server instructions", () => {
     // The context manager reads saved files, so the loop asks only for files.
     const steps = (await tool("sync_workspace", { detail: "brief" })).next_steps;
     expect(steps).toEqual(syncNextSteps());
-    expect(steps[0]).toMatch(/^Read before working: observed.*instead of skimming recent_work.*read_file/);
-    expect(steps.join(" ")).toMatch(/update_document with the expected_version you read, or create_document/);
-    expect(steps.join(" ")).toMatch(/No publish_work or update_context unless the user asks/);
+    expect(steps[0]).toMatch(/^Read active_context.*observed leads.*read_file/);
+    expect(steps.join(" ")).toMatch(/Save changed files with expected_version/);
+    expect(steps.join(" ")).toMatch(/Only update_context when the user directs/);
     expect(steps.join(" ")).not.toMatch(/even if no file changed|seed/);
 
     const created = await tool("create_document", { name: "loop.md", content: "v1" });
@@ -2975,12 +2992,12 @@ describe("sync brief and server instructions", () => {
     const { MCP_INSTRUCTIONS } = await import("./mcp");
     for (const term of ["sync_workspace", "since", "cursor", "read_file", "update_document", "create_document", "publish_work", "update_context",
       "expected_version", "best effort", "without waiting to be asked", "private conversation history", "untrusted",
-      "read brief first", "observed", "instead of skimming", "manage_task", "it applies at once",
-      "don't publish or change context on your own", "the user wants announced", "the user directs",
+      "active_context", "observed", "resolve_observation", "manage_task", "it applies at once",
+      "the user wants announced", "the user directs",
       // Documents go to the chat as well as to Tandem.
       "Reply in chat", "show docs you write", "long edit"])
       expect(MCP_INSTRUCTIONS).toContain(term);
-    for (const gone of ["even if no file changed", "Record before the work", "Record after", "create or edit", "propose", "approv"])
+    for (const gone of ["even if no file changed", "Record before the work", "Record after", "create or edit", "propose"])
       expect(MCP_INSTRUCTIONS).not.toContain(gone);
     expect(MCP_INSTRUCTIONS).not.toMatch(/real[- ]time|push notification|guarantee/i);
     expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(1300);

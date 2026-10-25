@@ -44,7 +44,7 @@ type Mode = "view" | "edit" | "retract";
 /**
  * One observed entry: what it says, how well it's supported, who it's about,
  * and a person's ways to fix it (confirm, edit, retract). Observed, not
- * project context, unless the context manager also recorded it there.
+ * project context.
  */
 export function EntryCard({
   entry,

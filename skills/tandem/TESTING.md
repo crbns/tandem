@@ -221,13 +221,11 @@ workspace with no goal, scope or entries, after seeding `brief.md` with a
 goal, an owner and an open question in its text (turn 1 then finds no
 recorded goal). Expected: the assistant reads and saves files but makes no
 `update_context` call for what they show. Within a minute or two of the saves,
-Tandem's context manager records the brief's goal (only because none is set),
-decisions and owner in project context, attributed to "Context manager" and
-citing the file, and a later `sync_workspace` shows them. Check in the
-dashboard that each item was recorded once. Record yes / no / prompted per
-client.
+Tandem's context manager records the brief's claims as observations citing
+the file. A later `sync_workspace` shows them under `observed` while
+`active_context` stays empty. Record yes / no / prompted per client.
 
-| Client         | Run | No unprompted `update_context` | Context manager recorded goal/owner | Cites the file | No duplicates | Notes |
+| Client         | Run | No unprompted `update_context` | Goal/owner stay observed | Cites the file | No duplicates | Notes |
 | -------------- | --- | ------------------------------ | ----------------------------------- | -------------- | ------------- | ----- |
 | Claude web     |     | PENDING                        | PENDING                             | PENDING        | PENDING       |       |
 | Claude desktop |     | PENDING                        | PENDING                             | PENDING        | PENDING       |       |

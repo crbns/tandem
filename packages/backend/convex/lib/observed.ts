@@ -37,6 +37,8 @@ export const OBSERVED_EVENT_KINDS: ReadonlySet<string> = new Set(["context.obser
 const SCAN_LIMIT = 200;
 
 export const observedEntryValidator = v.object({
+  id: v.id("context_entries"),
+  revision: v.number(),
   key: v.string(),
   category: v.union(
     v.literal("goal"),
@@ -62,6 +64,8 @@ export const observedEntryValidator = v.object({
   confidence: v.number(),
   /** Assistant labels ("Sam's claude assistant"), this workspace's only. */
   agents: v.array(v.string()),
+  /** Canonical files an assistant can read to verify this lead. */
+  sourceFileIds: v.array(v.id("files")),
   updatedAt: v.number(),
 });
 
@@ -181,6 +185,8 @@ export async function loadObservedContext(
       if (label) agents.push(label);
     }
     return {
+      id: e._id,
+      revision: e.revision,
       key: e.key,
       category: e.category,
       title: e.title,
@@ -190,6 +196,7 @@ export async function loadObservedContext(
       evidence: e.evidence,
       confidence: Math.round(e.confidence * 100) / 100,
       agents,
+      sourceFileIds: e.fileIds,
       updatedAt: e.updatedAt,
     };
   };
