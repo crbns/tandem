@@ -333,7 +333,7 @@ export function createMockApi({
   const proposals: StoredProposal[] = seedProposals(Date.now(), context);
   // Unset means "manual", like the backend's default.
   const contextApprovals = new Map<string, ContextApproval>();
-  type StoredConnection = AgentConnection & { workspaceId: string; syncedContextRevision?: number; syncedSeq?: number };
+  type StoredConnection = AgentConnection & { workspaceId: string; syncedContextRevision?: number };
   const connections: StoredConnection[] = [
     {
       id: "conn_alex_claude",
@@ -356,10 +356,7 @@ export function createMockApi({
   // Live page subscriptions also see read-only calls, which record no workspace event.
   const liveWatchers = new Map<string, Set<() => void>>();
   const pingLive = (workspaceId: string) => liveWatchers.get(workspaceId)?.forEach((listener) => queueMicrotask(listener));
-  // Stands in for the newest workspace_events seq: one per notified write.
-  const headSeqs = new Map<string, number>();
   const notify = (workspaceId: string) => {
-    headSeqs.set(workspaceId, (headSeqs.get(workspaceId) ?? 0) + 1);
     watchers.get(workspaceId)?.forEach((listener) => queueMicrotask(listener));
     pingLive(workspaceId);
   };
@@ -431,7 +428,6 @@ export function createMockApi({
 
   const agentNetwork = (workspaceId: string): AgentNetwork => {
     const contextRevision = contextVersion(workspaceId);
-    const headSeq = headSeqs.get(workspaceId) ?? 0;
     const agents = connections
       .filter((c) => c.workspaceId === workspaceId && c.revokedAt === undefined)
       .sort((a, b) => (b.lastMcpActionAt ?? -Infinity) - (a.lastMcpActionAt ?? -Infinity) || b.createdAt - a.createdAt)
@@ -447,15 +443,13 @@ export function createMockApi({
           lastSyncAt: c.lastSyncAt ?? null,
           syncedContextRevision: c.syncedContextRevision ?? null,
           contextVersionsBehind: c.syncedContextRevision === undefined ? null : contextRevision - c.syncedContextRevision,
-          syncedSeq: c.syncedSeq ?? null,
-          eventsBehind: c.syncedSeq === undefined ? null : headSeq - c.syncedSeq,
           lastTool: last?.tool ?? null,
           lastKind: last?.kind ?? null,
           lastOutcome: last?.outcome ?? null,
         };
       });
     const ctx = details.get(workspaceId);
-    return { contextRevision, contextUpdatedAt: contexts.get(workspaceId)?.approvedAt ?? ctx?.goal?.updatedAt ?? null, headSeq, agents };
+    return { contextRevision, contextUpdatedAt: contexts.get(workspaceId)?.approvedAt ?? ctx?.goal?.updatedAt ?? null, agents };
   };
   const timeline = (workspaceId: string, { before, limit = 50, connectionId, kinds }: TimelineQuery): TimelinePage => {
     const size = Math.min(Math.max(1, Math.floor(limit)), 100);
@@ -634,8 +628,6 @@ export function createMockApi({
         seeded.push({ at, record: () => recordAgent(c, { kind: "sync", tool: "sync_workspace", summary: `Received context v${c.syncedContextRevision ?? 0}`, resource: { type: "context", id: c.workspaceId, label: null }, createdAt: at }) });
     }
     seeded.sort((a, b) => a.at - b.at).forEach((entry) => entry.record());
-    headSeqs.set(MOCK_WORKSPACE_ID, activity.filter((a) => a.kind !== "sync").length);
-    for (const c of connections) if (c.lastSyncAt !== undefined) c.syncedSeq = headSeqs.get(c.workspaceId);
   }
 
   // Copies so callers can't mutate the store (revisions are immutable).
@@ -1291,7 +1283,6 @@ export function createMockApi({
       if (call === "sync") {
         const previous = c.syncedContextRevision ?? null;
         c.syncedContextRevision = contextVersion(workspaceId);
-        c.syncedSeq = headSeqs.get(workspaceId) ?? 0;
         c.lastSyncAt = Date.now();
         recordAgent(c, {
           kind: "sync", tool: "sync_workspace", summary: `Received context v${c.syncedContextRevision}`,

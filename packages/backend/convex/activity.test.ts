@@ -122,8 +122,6 @@ describe("agent activity recording", () => {
         lastMcpActionAt: null,
         syncedContextRevision: null,
         contextVersionsBehind: null,
-        syncedSeq: null,
-        eventsBehind: null,
         lastTool: null,
       }),
     ]);
@@ -152,8 +150,6 @@ describe("agent activity recording", () => {
     expect(network.agents[0]).toMatchObject({
       syncedContextRevision: network.contextRevision,
       contextVersionsBehind: 0,
-      syncedSeq: network.headSeq,
-      eventsBehind: 0,
       lastTool: "sync_workspace",
       lastKind: "sync",
       lastOutcome: "ok",
@@ -202,11 +198,10 @@ describe("agent activity recording", () => {
       syncedContextRevision: r0,
       contextVersionsBehind: 1,
     });
-    expect(gpt().eventsBehind).toBeGreaterThan(0);
 
     await callTool(t, chatgpt.apiKey, "sync_workspace", { detail: "brief" });
     network = await alex.query(api.activity.getAgentNetwork, { workspaceId });
-    expect(gpt()).toMatchObject({ syncedContextRevision: r0 + 1, contextVersionsBehind: 0, eventsBehind: 0 });
+    expect(gpt()).toMatchObject({ syncedContextRevision: r0 + 1, contextVersionsBehind: 0 });
     // Most recent action first.
     expect(network.agents[0]!.connectionId).toBe(chatgpt.connectionId);
     const rows = await activityRows(t, chatgpt.connectionId);
@@ -342,6 +337,41 @@ describe("agent activity recording", () => {
     ]);
     const [failed] = await activityRows(t, alexBot.connectionId);
     expect(failed).toMatchObject({ tool: "manage_task", kind: "conflict", resource: { type: "task", id: task.id, label: "Write the demo script" } });
+
+    // Someone else won the claim; a later successful claim by the loser isn't
+    // a fix of a stale write, so it isn't linked as resolving the conflict.
+    const reopened = await t.run(async (ctx) => {
+      const row = (await ctx.db.get(task.id as Id<"tasks">))!;
+      await ctx.db.patch(row._id, { status: "open", ownerId: undefined });
+      return row.version;
+    });
+    const claimed = await callTool(t, alexBot.apiKey, "manage_task", { operation: "claim", task_id: task.id, expected_version: reopened });
+    expect(claimed.isError).toBeUndefined();
+    const rows = await activityRows(t, alexBot.connectionId);
+    expect(rows.map((r) => r.kind)).toEqual(["conflict", "task"]);
+    expect(rows[1]!.resolvesActivityId).toBeUndefined();
+  });
+
+  it("keeps an agent up to date when its own proposal applies immediately", async () => {
+    const { t, alex, sam, workspaceId } = await setup();
+    await alex.mutation(api.workspaces.setContextApproval, { workspaceId, mode: "automatic" });
+    const claude = await connect(sam, { workspaceId, client: "claude" });
+    const chatgpt = await connect(alex, { workspaceId, client: "chatgpt" });
+    await callTool(t, claude.apiKey, "sync_workspace");
+    await callTool(t, chatgpt.apiKey, "sync_workspace");
+    const r0 = (await alex.query(api.activity.getAgentNetwork, { workspaceId })).contextRevision;
+
+    const applied = await callTool(t, claude.apiKey, "propose_context_change", {
+      field: "decisions",
+      proposed_value: "Use Convex for realtime",
+      rationale: "Already in the stack",
+    });
+    expect(applied.structuredContent.proposal.status).toBe("applied");
+    const network = await alex.query(api.activity.getAgentNetwork, { workspaceId });
+    expect(network.contextRevision).toBe(r0 + 1);
+    const byId = (id: Id<"agent_connections">) => network.agents.find((a) => a.connectionId === id)!;
+    expect(byId(claude.connectionId)).toMatchObject({ syncedContextRevision: r0 + 1, contextVersionsBehind: 0 });
+    expect(byId(chatgpt.connectionId)).toMatchObject({ syncedContextRevision: r0, contextVersionsBehind: 1 });
   });
 });
 

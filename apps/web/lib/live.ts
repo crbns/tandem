@@ -2,7 +2,7 @@ import { folderHref } from "./folders";
 import type { ActivityKind, AgentNetwork, NetworkAgent, TimelineItem } from "./api/types";
 
 const MINUTE = 60_000;
-/** Under this since the last MCP action reads "Active now". */
+/** Under this since the last MCP action reads "Called a tool just now". */
 export const ACTIVE_NOW_MS = 2 * MINUTE;
 /** Under this reads "Recently active"; older is "Idle". */
 export const RECENTLY_ACTIVE_MS = 30 * MINUTE;
@@ -24,7 +24,7 @@ export function agentStatus(agent: Pick<NetworkAgent, "lastMcpActionAt" | "lastS
 }
 
 export const STATUS_LABEL: Record<AgentStatus, string> = {
-  active: "Active now",
+  active: "Called a tool just now",
   recent: "Recently active",
   idle: "Idle",
   none: "No activity yet",

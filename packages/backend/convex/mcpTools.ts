@@ -14,6 +14,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import {
   CONFLICT_CODES,
+  currentContextRevision,
   recordActivity,
   requireAgent,
   requireWriteScope,
@@ -800,7 +801,9 @@ export const syncWorkspace = internalMutation({
     cursorSeq: v.number(),
   }),
   handler: async (ctx, args) => {
-    const session = await agentCall(ctx, args.principal, { sync: true });
+    // Presence and syncedContextRevision are written together after the
+    // sync below, in one patch.
+    const session = await requireAgent(ctx, args.principal);
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
     if (
       args.cursorWorkspaceId !== undefined &&
@@ -844,7 +847,7 @@ export const syncWorkspace = internalMutation({
     // the connection has now received; reads never advance it.
     const contextRevision = result.context.revision;
     const previous = session.connection.syncedContextRevision;
-    await ctx.db.patch(session.connection._id, { syncedContextRevision: contextRevision });
+    await recordAgentAction(ctx, session, { sync: true, syncedContextRevision: contextRevision });
     await recordActivity(ctx, session, {
       tool: "sync_workspace",
       kind: "sync",
@@ -887,6 +890,7 @@ export const proposeContextChange = internalMutation({
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal, { write: true });
     const workspaceId = resolveAgentWorkspace(session, args.workspaceId);
+    const revisionBefore = await currentContextRevision(ctx, workspaceId);
     const proposal = await proposeContextChangeCore(ctx, {
       workspaceId,
       field: args.field,
@@ -901,6 +905,17 @@ export const proposeContextChange = internalMutation({
       ownerUserId: args.ownerUserId,
       actor: session.actor,
     });
+    // An applied change by an agent that already had the previous version
+    // leaves it holding the new one: it wrote the only difference. Pending
+    // proposals don't count; the agent receives the approval when it syncs.
+    if (
+      proposal.status === "applied" &&
+      session.connection.syncedContextRevision === revisionBefore
+    ) {
+      const revisionAfter = await currentContextRevision(ctx, workspaceId);
+      if (revisionAfter === revisionBefore + 1)
+        await ctx.db.patch(session.connection._id, { syncedContextRevision: revisionAfter });
+    }
     // Field and status only: never the proposed text or the rationale.
     const field = proposal.field.replaceAll("_", " ");
     await recordActivity(ctx, session, {

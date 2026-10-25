@@ -145,7 +145,8 @@ function Legend() {
       <p className="max-w-3xl">
         Assistants receive updates when they call sync_workspace. Tandem can&apos;t push to native chats. Each call
         is recorded when it finishes, so work in progress isn&apos;t visible, and status comes from the last call:
-        it doesn&apos;t say whether a chat is open.
+        it doesn&apos;t say whether a chat is open. An assistant whose proposal a person approves shows as behind
+        until its next sync, because it hasn&apos;t received the approved version yet.
       </p>
     </div>
   );

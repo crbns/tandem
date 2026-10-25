@@ -27,8 +27,13 @@ export function useAgentNetwork(workspaceId: string) {
   return { resource, retry };
 }
 
-/** The unfiltered head page the network listens to for pulses. */
-const ARRIVALS_PAGE = 20;
+const PAGE_SIZE = 50;
+
+/**
+ * The unfiltered head page the network listens to for pulses. Same args as the
+ * unfiltered timeline, so the Convex client shares one subscription for both.
+ */
+const ARRIVALS_PAGE = PAGE_SIZE;
 
 /**
  * Calls `onArrive` with each timeline item that shows up after the first
@@ -57,7 +62,6 @@ export function useActivityArrivals(workspaceId: string, onArrive: (items: Timel
   }, [api, workspaceId]);
 }
 
-const PAGE_SIZE = 50;
 /** Older pages fetched in one "Load more" while they keep coming back empty. */
 const MAX_EMPTY_PAGES = 5;
 

@@ -340,8 +340,6 @@ export interface NetworkAgent {
   /** The approved-context version its last sync_workspace returned; null if it never synced. */
   syncedContextRevision: number | null;
   contextVersionsBehind: number | null;
-  syncedSeq: number | null;
-  eventsBehind: number | null;
   lastTool: string | null;
   lastKind: ActivityKind | null;
   lastOutcome: ActivityOutcome | null;
@@ -351,7 +349,6 @@ export interface AgentNetwork {
   /** The approved-context version; 0 when nothing has been approved. */
   contextRevision: number;
   contextUpdatedAt: number | null;
-  headSeq: number;
   /** Most recent action first, at most 50. */
   agents: NetworkAgent[];
 }

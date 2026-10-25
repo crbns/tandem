@@ -24,8 +24,6 @@ function agent(overrides: Partial<NetworkAgent> = {}): NetworkAgent {
     lastSyncAt: null,
     syncedContextRevision: null,
     contextVersionsBehind: null,
-    syncedSeq: null,
-    eventsBehind: null,
     lastTool: null,
     lastKind: null,
     lastOutcome: null,
@@ -68,7 +66,7 @@ describe("Live helpers", () => {
   });
 
   it("says how many assistants have received the context", () => {
-    const network = (agents: NetworkAgent[]): AgentNetwork => ({ contextRevision: 3, contextUpdatedAt: 0, headSeq: 0, agents });
+    const network = (agents: NetworkAgent[]): AgentNetwork => ({ contextRevision: 3, contextUpdatedAt: 0, agents });
     expect(networkHeadline(network([]))).toMatch(/No assistants/);
     const current = agent({ syncedContextRevision: 3, contextVersionsBehind: 0 });
     const behind = agent({ connectionId: "c2", syncedContextRevision: 2, contextVersionsBehind: 1 });

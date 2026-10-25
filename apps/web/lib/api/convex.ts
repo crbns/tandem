@@ -187,7 +187,6 @@ export function toAgentNetwork(network: BackendNetwork): AgentNetwork {
   return {
     contextRevision: network.contextRevision,
     contextUpdatedAt: network.contextUpdatedAt,
-    headSeq: network.headSeq,
     agents: network.agents.map((agent) => ({
       connectionId: agent.connectionId,
       label: agent.label,
@@ -197,8 +196,6 @@ export function toAgentNetwork(network: BackendNetwork): AgentNetwork {
       lastSyncAt: agent.lastSyncAt,
       syncedContextRevision: agent.syncedContextRevision,
       contextVersionsBehind: agent.contextVersionsBehind,
-      syncedSeq: agent.syncedSeq,
-      eventsBehind: agent.eventsBehind,
       lastTool: agent.lastTool,
       lastKind: agent.lastKind as ActivityKind | null,
       lastOutcome: agent.lastOutcome as AgentNetwork["agents"][number]["lastOutcome"],

@@ -114,12 +114,15 @@ export function resolveAgentWorkspace(
 export async function touchConnection(
   ctx: MutationCtx,
   session: AgentSession,
-  options: { sync?: boolean } = {},
+  options: { sync?: boolean; syncedContextRevision?: number } = {},
 ): Promise<void> {
   const now = Date.now();
   await ctx.db.patch(session.connection._id, {
     lastMcpActionAt: now,
     ...(options.sync ? { lastSyncAt: now } : {}),
+    ...(options.syncedContextRevision !== undefined
+      ? { syncedContextRevision: options.syncedContextRevision }
+      : {}),
   });
 }
 
@@ -195,7 +198,10 @@ export async function recordActivity(
       if (row.resource?.type !== entry.resource.type || row.resource.id !== entry.resource.id)
         continue;
       if (row.kind === "read" || row.kind === "error") continue;
-      if (row.outcome === "conflict") resolvesActivityId = row._id;
+      // Only a stale write the agent then fixed counts; TASK_ALREADY_CLAIMED
+      // means someone else won, not that this write resolved it.
+      if (row.outcome === "conflict" && row.errorCode === "VERSION_CONFLICT")
+        resolvesActivityId = row._id;
       break;
     }
   }

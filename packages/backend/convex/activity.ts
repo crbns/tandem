@@ -152,15 +152,13 @@ function fromEvent(event: Doc<"workspace_events">, kind: TimelineKind): Timeline
 
 /**
  * Every live connection with its presence and propagation: how many approved
- * context versions and workspace events it has not yet received through
- * sync_workspace. Any member sees every assistant, like listAgentActivity.
+ * context versions it has not yet received through sync_workspace. Any member sees every assistant, like listAgentActivity.
  */
 export const getAgentNetwork = query({
   args: { workspaceId: v.id("workspaces") },
   returns: v.object({
     contextRevision: v.number(),
     contextUpdatedAt: v.union(v.number(), v.null()),
-    headSeq: v.number(),
     agents: v.array(
       v.object({
         connectionId: v.id("agent_connections"),
@@ -171,8 +169,6 @@ export const getAgentNetwork = query({
         lastSyncAt: v.union(v.number(), v.null()),
         syncedContextRevision: v.union(v.number(), v.null()),
         contextVersionsBehind: v.union(v.number(), v.null()),
-        syncedSeq: v.union(v.number(), v.null()),
-        eventsBehind: v.union(v.number(), v.null()),
         lastTool: v.union(v.string(), v.null()),
         lastKind: v.union(v.string(), v.null()),
         lastOutcome: v.union(v.string(), v.null()),
@@ -186,12 +182,6 @@ export const getAgentNetwork = query({
       .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
       .unique();
     const contextRevision = context?.revision ?? 0;
-    const newest = await ctx.db
-      .query("workspace_events")
-      .withIndex("by_workspace_and_seq", (q) => q.eq("workspaceId", workspaceId))
-      .order("desc")
-      .first();
-    const headSeq = newest?.seq ?? 0;
     const connections = await ctx.db
       .query("agent_connections")
       .withIndex("by_workspace_and_revoked_at", (q) =>
@@ -211,10 +201,6 @@ export const getAgentNetwork = query({
       const label = user
         ? agentActor(connection, user).label
         : (connection.displayName ?? `Workspace member's ${connection.client} assistant`);
-      const cursor = await ctx.db
-        .query("sync_cursors")
-        .withIndex("by_agent_connection", (q) => q.eq("agentConnectionId", connection._id))
-        .first();
       const last = await ctx.db
         .query("agent_activity")
         .withIndex("by_connection_and_created", (q) =>
@@ -223,7 +209,6 @@ export const getAgentNetwork = query({
         .order("desc")
         .first();
       const synced = connection.syncedContextRevision ?? null;
-      const syncedSeq = cursor?.cursor ?? null;
       agents.push({
         connectionId: connection._id,
         label,
@@ -233,8 +218,6 @@ export const getAgentNetwork = query({
         lastSyncAt: connection.lastSyncAt ?? null,
         syncedContextRevision: synced,
         contextVersionsBehind: synced === null ? null : Math.max(0, contextRevision - synced),
-        syncedSeq,
-        eventsBehind: syncedSeq === null ? null : Math.max(0, headSeq - syncedSeq),
         lastTool: last?.tool ?? null,
         lastKind: last ? activityKind(last) : null,
         lastOutcome: last?.outcome ?? null,
@@ -243,7 +226,6 @@ export const getAgentNetwork = query({
     return {
       contextRevision,
       contextUpdatedAt: context?.updatedAt ?? null,
-      headSeq,
       agents,
     };
   },
