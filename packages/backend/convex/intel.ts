@@ -28,6 +28,7 @@ import {
   DIGEST_RESPONSE_SCHEMA,
   DIGEST_SYSTEM_PROMPT,
   DOC_EVENT_TYPES,
+  MIN_PROPOSAL_CONFIDENCE,
   DOC_KEY_PREFIX,
   IntelParseError,
   LIVE_STATUSES,
@@ -481,6 +482,10 @@ export const claimBatch = internalMutation({
       startedAt: now,
     });
     if (events.length === 0) {
+      // Nothing new to read, but findings recorded before promotion existed
+      // (or that the model never proposed) still reach Approvals.
+      const promoted = await promoteFindings(ctx, workspaceId, []);
+      if (promoted > 0) await ctx.db.patch(runId, { proposals: promoted });
       await patchState(ctx, workspaceId, {
         status: "idle",
         scheduledFor: undefined,
@@ -735,6 +740,49 @@ async function raiseProposals(
   return proposals;
 }
 
+const PROMOTE_PER_RUN = 3;
+const PROMOTE_SCAN = 20;
+// Content that narrates the observation rather than stating the finding.
+const NARRATION = /^(observed|requested|claimed|document|the document|open question)\b/i;
+
+/**
+ * Goal and decision findings the model recorded only as observed entries
+ * (it often doesn't list them under proposals) are raised as proposals
+ * here, so they reach Approvals and, once a person approves, the project
+ * context. The entry becomes the proposal's companion; one already linked to
+ * a proposal (pending, decided or rejected) is never raised again.
+ */
+async function promoteFindings(ctx: MutationCtx, workspaceId: Id<"workspaces">, dropped: string[]) {
+  const candidates: Infer<typeof proposalOpValidator>[] = [];
+  for (const category of ["goal", "decision"] as const) {
+    const rows = await ctx.db
+      .query("context_entries")
+      .withIndex("by_workspace_and_category_and_updated_at", (q) =>
+        q.eq("workspaceId", workspaceId).eq("category", category),
+      )
+      .order("desc")
+      .take(PROMOTE_SCAN);
+    for (const e of rows) {
+      if (
+        e.proposalId !== undefined || e.status !== "active" ||
+        e.confidence < MIN_PROPOSAL_CONFIDENCE || e.updatedBy.type === "human"
+      )
+        continue;
+      const text = !NARRATION.test(e.content) && e.content.length <= 500 ? e.content : e.title;
+      candidates.push({
+        field: category,
+        text,
+        rationale: `Recorded by the context manager from workspace activity and documents.`,
+        confidence: e.confidence,
+        evidenceEventIds: e.evidenceEventIds.slice(0, 3),
+        fileIds: e.fileIds,
+        key: e.key,
+      });
+    }
+  }
+  return await raiseProposals(ctx, workspaceId, candidates.slice(0, PROMOTE_PER_RUN), dropped);
+}
+
 /** Schedules the next batch when events are still waiting; returns whether it did. */
 async function scheduleIfPending(ctx: MutationCtx, workspaceId: Id<"workspaces">) {
   if ((await pendingEvents(ctx, workspaceId, 1)).length === 0) return false;
@@ -794,7 +842,9 @@ export const applyResult = internalMutation({
       else if (outcome === "protected") dropped.push(`${op.key}: kept the person's version`);
     }
 
-    const proposals = await raiseProposals(ctx, workspaceId, args.proposals, dropped);
+    const proposals =
+      (await raiseProposals(ctx, workspaceId, args.proposals, dropped)) +
+      (await promoteFindings(ctx, workspaceId, dropped));
 
     // A deleted document's digest leaves observed context with it; nothing
     // else would ever retract it (only a digest call writes doc keys).

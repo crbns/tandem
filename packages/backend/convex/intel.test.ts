@@ -1147,15 +1147,67 @@ describe("context manager: section compaction", () => {
       },
     );
     await s.process();
-    const pending = await s.t.run((ctx) =>
-      ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect());
+    // The seeded observed decisions are promoted to proposals too (promoteFindings);
+    // this test is about the one that supersedes an approved decision.
+    const pending = (await s.t.run((ctx) =>
+      ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect()))
+      .filter((p) => p.supersedes !== undefined);
     expect(pending).toHaveLength(1);
     expect(pending[0]).toMatchObject({
       field: "decision", proposedValue: "Store sessions in Redis", supersedes: target,
       createdBy: { type: "system", label: "Tandem context manager" },
     });
     expect(pending[0]!.conflict!.items).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "replaces", targetId: target })]));
-    expect((await s.runs())[0]).toMatchObject({ proposals: 1 });
+    expect((await s.runs())[0]!.proposals).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("context manager: promoting findings to proposals", () => {
+  it("raises a goal the model recorded only as an entry, once, and links it", async () => {
+    const s = await setup();
+    await s.addEvent({ type: "mcp.tool_call", tool: "update_document", summary: "Updated plan", connection: s.claude });
+    stubModel((data) => ({
+      summary: "",
+      entries: [entryJson({
+        key: "goal:validate-ideas", category: "goal", title: "Validate ideas in 30 days",
+        content: "Within a one-month sprint, validate willingness to pay for one niche.",
+        confidence: 0.6, evidence_event_ids: [data.events.at(-1).id],
+      })],
+      proposals: [],
+    }));
+    await s.process();
+    const entry = await s.entry("goal:validate-ideas");
+    expect(entry!.proposalId).toBeDefined();
+    const proposal = await s.t.run((ctx) => ctx.db.get(entry!.proposalId!));
+    expect(proposal).toMatchObject({
+      field: "goal", status: "pending", proposedValue: "Within a one-month sprint, validate willingness to pay for one niche.",
+      createdBy: { type: "system", label: "Tandem context manager" },
+    });
+    // Never raised twice.
+    await s.addEvent({ type: "mcp.tool_call", tool: "publish_work", summary: "More", connection: s.claude });
+    stubModel(noActivity);
+    await s.process();
+    const pending = await s.t.run((ctx) =>
+      ctx.db.query("context_proposals").withIndex("by_workspace_and_status", (q) => q.eq("workspaceId", s.workspaceId).eq("status", "pending")).collect());
+    expect(pending.filter((p) => p.field === "goal")).toHaveLength(1);
+  });
+
+  it("Run now with nothing pending still promotes findings recorded earlier", async () => {
+    const s = await setup();
+    await s.t.run((ctx) =>
+      ctx.db.insert("context_entries", {
+        workspaceId: s.workspaceId, key: "decision:use-convex", category: "decision", title: "Use Convex for the backend",
+        content: "Observed: the plan says Convex.", status: "active", evidence: "observed", confidence: 0.8,
+        evidenceEventIds: [], agentConnectionIds: [], fileIds: [],
+        createdBy: INTEL_ACTOR, updatedBy: INTEL_ACTOR, revision: 1, createdAt: Date.now(), updatedAt: Date.now(),
+      }),
+    );
+    stubModel(noActivity);
+    await s.process();
+    const entry = await s.entry("decision:use-convex");
+    const proposal = await s.t.run((ctx) => ctx.db.get(entry!.proposalId!));
+    // Content that narrates the observation falls back to the title.
+    expect(proposal).toMatchObject({ field: "decision", proposedValue: "Use Convex for the backend", status: "pending" });
   });
 });
 
