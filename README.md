@@ -2,6 +2,16 @@
 
 Shared workspace files and project context for people and the assistants they use. The MVP has a Next.js dashboard and a Convex backend that also serves the remote MCP server.
 
+Live app: https://tandem-pink.vercel.app
+
+## How we use Convex
+
+- Every file save is a Convex mutation guarded by `expectedVersion`, so stale writes return `VERSION_CONFLICT` instead of overwriting.
+- The remote MCP server and its OAuth run inside Convex HTTP actions through the `@convex-dev/mcp` component.
+- The dashboard's file list, Overview, Live and Context screens update live from reactive Convex queries.
+- Scheduled functions and actions run the claude-haiku-5-5 context manager; file storage holds uploads.
+- Feature-by-feature evidence and the build log are in [hackathon.md](hackathon.md).
+
 ## Current integration status
 
 - `apps/web` authenticates with Convex Auth and uses Convex for workspace and document CRUD, optimistic revisions, and revision history.
