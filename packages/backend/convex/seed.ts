@@ -407,6 +407,7 @@ export const rebuildDemoWorkspace = internalMutation({
         rationale: "From the approved brief.",
         sourceFileIds: [brief._id],
         actor: owner,
+        skipConflictCheck: true,
       });
       await decideProposalCore(ctx, proposal, "approved", alex);
     }
@@ -513,7 +514,7 @@ async function seedStory(
   for (const change of approved) {
     const proposal = await proposeContextChangeCore(ctx, {
       workspaceId, ...change, sourceFileIds: [...change.sourceFileIds],
-      rationale: "Agreed in the kickoff.", actor: owner,
+      rationale: "Agreed in the kickoff.", actor: owner, skipConflictCheck: true,
     });
     if (proposal.status === "pending") await decideProposalCore(ctx, proposal, "approved", alex);
   }

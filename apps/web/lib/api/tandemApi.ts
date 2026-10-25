@@ -11,6 +11,8 @@ import type {
   ConsentRequest,
   ContextApproval,
   ContextProposal,
+  ConflictList,
+  DecideProposalOptions,
   NewAgentConnection,
   ProposalStatus,
   CreateFileInput,
@@ -95,13 +97,22 @@ export interface TandemApi {
   listProposals(workspaceId: string, status?: ProposalStatus): Promise<ContextProposal[]>;
   /**
    * Owner/admin humans only. Rejects with VERSION_CONFLICT when the field the
-   * proposal was based on changed since (the backend marks it stale), and with
-   * PROPOSAL_DECIDED when someone else decided it first.
+   * proposal was based on changed since (the backend marks it stale), with
+   * PROPOSAL_DECIDED when someone else decided it first, and with
+   * PROPOSAL_CHANGED when `expectedRevision` is behind (e.g. a verdict landed).
    */
   decideProposal(
     proposal: Pick<ContextProposal, "id" | "workspaceId">,
     decision: "approved" | "rejected",
+    options?: DecideProposalOptions,
   ): Promise<void>;
+  /**
+   * Proposals that hit a conflict: `pending` wait on a person, `resolved` were
+   * settled (newest first). Every member may read them.
+   */
+  listConflicts(workspaceId: string): Promise<ConflictList>;
+  /** Owner/admin: runs a conflict check again when it is stuck on "checking". */
+  recheckConflict(proposal: Pick<ContextProposal, "id" | "workspaceId">): Promise<void>;
   /** The MCP server URL people paste into their assistant. */
   getMcpServerUrl(): Promise<string>;
   /** Only the signed-in person's own API-key connection; the key is returned once. */

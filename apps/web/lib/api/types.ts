@@ -199,6 +199,44 @@ export type ProposalStatus = "pending" | "approved" | "rejected" | "stale" | "ap
 /** Whether context proposals wait in Approvals or apply as soon as they're made. */
 export type ContextApproval = "manual" | "automatic";
 
+export type ConflictStatus = "checking" | "clear" | "conflict" | "uncertain";
+/** structural: supersedes or a competing proposal; semantic: the AI check; heuristic: word overlap when the AI is off. */
+export type ConflictMethod = "structural" | "semantic" | "heuristic";
+
+/**
+ * One approved entry (or pending proposal) a proposal collides with. The text
+ * and author are a snapshot taken at detection (docs/conflict-resolution.md).
+ */
+export interface ConflictItem {
+  kind: "replaces" | "contradicts" | "competing";
+  /** The AI wasn't sure; a person has to look. */
+  uncertain?: boolean;
+  targetType: "decision" | "constraint" | "goal" | "scope" | "proposal";
+  /** A context entry id, "goal"/"scope", or a proposal id. */
+  targetId: string;
+  targetText: string;
+  targetBy: Actor;
+  targetAt: number;
+  /** The context revision the target was read at. */
+  contextVersion: number;
+  explanation: string;
+  /** 0 to 1, semantic checks only. */
+  confidence?: number;
+}
+
+export interface ProposalConflict {
+  status: ConflictStatus;
+  method: ConflictMethod;
+  checkedAt?: number;
+  model?: string;
+  /** Why the check fell back, e.g. "Semantic check unavailable: timeout". */
+  reason?: string;
+  items: ConflictItem[];
+}
+
+/** How a person settled a proposal: accepted and kept_both approve it; the other two change nothing. */
+export type ConflictResolution = "accepted" | "kept_both" | "retained_current" | "rejected";
+
 export interface ContextProposal {
   id: string;
   workspaceId: string;
@@ -214,6 +252,33 @@ export interface ContextProposal {
   createdAt: number;
   decidedBy: Actor | null;
   decidedAt: number | null;
+  /** null when no check ran (open questions, ownership, older proposals). */
+  conflict: ProposalConflict | null;
+  resolution: ConflictResolution | null;
+  /** The decider's note, if they left one. */
+  decisionNote: string | null;
+  /** Bumped whenever the proposal changes (a verdict lands, it's decided); sent back as expectedRevision. */
+  revision: number;
+}
+
+/** Options for deciding a proposal. Omitted fields take the backend defaults. */
+export interface DecideProposalOptions {
+  resolution?: ConflictResolution;
+  /** At most 2000 characters. */
+  note?: string;
+  /** The revision the person was shown; a newer one fails with PROPOSAL_CHANGED. */
+  expectedRevision?: number;
+  /**
+   * Accepted only: the conflict targets (decision or constraint ids) the
+   * proposal replaces. Defaults to those the check is sure about.
+   */
+  supersede?: string[];
+}
+
+/** Proposals that ever had a conflict: those waiting on a person, and those already settled. */
+export interface ConflictList {
+  pending: ContextProposal[];
+  resolved: ContextProposal[];
 }
 
 /** Context entries retain their canonical sources and the human decision's attribution. */

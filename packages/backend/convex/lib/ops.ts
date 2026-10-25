@@ -2,6 +2,7 @@
 // (MCP token) entry points. Callers authorize first and pass a verified actor
 // and workspace; nothing here reads identity from arguments.
 import { ConvexError } from "convex/values";
+import { internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { type Actor, recordWorkspaceEvent } from "./auth";
@@ -14,6 +15,13 @@ import {
   requireValidName,
   toFileMetadata,
 } from "./fs";
+import {
+  detectConflict,
+  findDuplicateProposal,
+  isActive,
+  markCompeting,
+  toResolvedConflict,
+} from "./conflicts";
 import { nameKey } from "./names";
 
 export { toFileMetadata };
@@ -388,8 +396,10 @@ export async function proposeContextChangeCore(
     entryId?: string;
     supersedes?: string;
     expectedVersion?: number;
+    /** Trusted callers only (the demo seed): record without a conflict check. */
+    skipConflictCheck?: boolean;
   },
-): Promise<Doc<"context_proposals">> {
+): Promise<Doc<"context_proposals"> & { deduplicated: boolean }> {
   const { workspaceId, actor, field } = args;
   const operation = args.operation ?? "add";
   const working = field === "constraint" || field === "open_question";
@@ -419,6 +429,16 @@ export async function proposeContextChangeCore(
   } else if (args.ownerUserId !== undefined) {
     throw new ConvexError({ code: "INVALID_INPUT", field: "ownerUserId" });
   }
+  // A retried or repeated request returns the proposal it already made.
+  const duplicate = await findDuplicateProposal(ctx, {
+    workspaceId, actor, field,
+    operation: operation === "add" ? undefined : operation,
+    proposedValue: operation === "add" ? proposedValue : undefined,
+    supersedes: args.supersedes,
+    entryId: args.entryId,
+    ownerUserId: owner?.ownerUserId,
+  });
+  if (duplicate) return { ...duplicate, deduplicated: true };
   const context = await ctx.db
     .query("structured_context")
     .withIndex("by_workspace", (q) => q.eq("workspaceId", workspaceId))
@@ -449,7 +469,14 @@ export async function proposeContextChangeCore(
   const sourceFileIds = await checkSourceFiles(
     ctx, workspaceId, args.sourceFileIds, existing?.sourceFileIds,
   );
-  const apply = await appliesImmediately(ctx, workspaceId);
+  const conflict = operation === "add" && !args.skipConflictCheck
+    ? await detectConflict(ctx, { workspaceId, field, proposedValue, supersedes: args.supersedes, context })
+    : undefined;
+  // Automatic workspaces apply only what no check holds for a person.
+  const apply =
+    (await appliesImmediately(ctx, workspaceId)) &&
+    (!conflict || conflict.status === "clear");
+  let appliedEntryId: string | undefined;
   const entryOperation =
     operation !== "add" ? { operation, entryId: args.entryId! } : undefined;
   if (entryOperation) {
@@ -462,7 +489,7 @@ export async function proposeContextChangeCore(
       );
     proposedValue = target.text;
   } else if (apply) {
-    await applyApprovedProposal(
+    appliedEntryId = await applyApprovedProposal(
       ctx,
       {
         workspaceId, field, proposedValue, sourceFileIds, ...owner,
@@ -490,6 +517,9 @@ export async function proposeContextChangeCore(
     ...(currentField !== undefined ? { baseValue: currentField } : {}),
     ...owner,
     ...entryOperation,
+    ...(conflict ? { conflict } : {}),
+    ...(conflict && conflict.items.length > 0 ? { hasConflict: true } : {}),
+    ...(appliedEntryId !== undefined ? { appliedEntryId } : {}),
     status: apply ? "applied" : "pending",
     createdBy: actor,
     createdAt: now,
@@ -507,9 +537,13 @@ export async function proposeContextChangeCore(
     summary: `${apply ? "Applied" : "Proposed"} ${operation} to ${field.replaceAll("_", " ")}`,
     actor,
   });
+  if (conflict?.status === "checking")
+    await ctx.scheduler.runAfter(0, internal.conflicts.checkProposal, { proposalId });
   const proposal = await ctx.db.get(proposalId);
   if (!proposal) throw new ConvexError({ code: "PROPOSAL_NOT_FOUND" });
-  return proposal;
+  for (const item of conflict?.items ?? [])
+    if (item.kind === "competing") await markCompeting(ctx, proposal, item, conflict!.method);
+  return { ...proposal, deduplicated: false };
 }
 
 export function toProposal(proposal: Doc<"context_proposals">) {
@@ -529,6 +563,10 @@ export function toProposal(proposal: Doc<"context_proposals">) {
     decidedAt: proposal.decidedAt ?? null,
     ownerUserId: proposal.ownerUserId ?? null,
     ownerArea: proposal.ownerArea ?? null,
+    conflict: proposal.conflict ?? null,
+    resolution: proposal.resolution ?? null,
+    decisionNote: proposal.decisionNote ?? null,
+    revision: proposal.revision,
   };
 }
 
@@ -1047,6 +1085,7 @@ export async function completeTaskCore(
 
 export const SYNC_LIMIT = 50;
 const SYNC_WORK_LIMIT = 20;
+const SYNC_RESOLVED_LIMIT = 5;
 
 export function toEvent(event: Doc<"workspace_events">) {
   return {
@@ -1200,9 +1239,28 @@ export async function syncCore(
     tasksTruncated = false;
   }
   const pending = await listProposals(ctx, workspaceId, "pending", SYNC_LIMIT);
+  // Newest resolutions first: the snapshot's latest few, or only those this
+  // event page acknowledges (like recentWork).
+  const resolutions = await ctx.db
+    .query("workspace_events")
+    .withIndex("by_workspace_and_kind_and_seq", (q) => {
+      const kind = q.eq("workspaceId", workspaceId).eq("kind", "context.conflict_resolved");
+      return sinceSeq === undefined ? kind : kind.gt("seq", sinceSeq).lte("seq", cursorSeq);
+    })
+    .order("desc")
+    .take(sinceSeq === undefined ? SYNC_RESOLVED_LIMIT : SYNC_LIMIT);
+  const resolved: Doc<"context_proposals">[] = [];
+  for (const event of resolutions) {
+    const id = ctx.db.normalizeId("context_proposals", event.entityId);
+    const row = id ? await ctx.db.get(id) : null;
+    if (row && row.workspaceId === workspaceId && row.decidedAt !== undefined)
+      resolved.push(row);
+  }
+  const context = await loadContext(ctx, workspaceId);
   return {
     workspace: { id: workspace._id, name: workspace.name },
-    context: await loadContext(ctx, workspaceId),
+    context,
+    resolvedConflicts: resolved.map((p) => toResolvedConflict(p, context)),
     pendingProposals: pending.map((p) => ({
       id: p._id,
       field: p.field,
@@ -1213,6 +1271,7 @@ export async function syncCore(
       status: "pending" as const,
       createdBy: p.createdBy,
       createdAt: p.createdAt,
+      conflict: p.conflict ?? null,
     })),
     changedFiles: changedFiles.map(toFileMetadata),
     filesTruncated,
@@ -1244,7 +1303,9 @@ export async function applyApprovedProposal(
   actor: Actor,
   now: number,
   entryIndex?: number,
-) {
+  /** Active decisions and constraints the new entry supersedes (a resolution). */
+  supersedeIds: readonly string[] = [],
+): Promise<string | undefined> {
   const stored = await ctx.db
     .query("structured_context")
     .withIndex("by_workspace", (q) => q.eq("workspaceId", proposal.workspaceId))
@@ -1264,7 +1325,7 @@ export async function applyApprovedProposal(
       actor,
       now,
     );
-    return;
+    return undefined;
   }
   const context = normalizeContext(stored);
   const value = {
@@ -1275,9 +1336,15 @@ export async function applyApprovedProposal(
     updatedBy: actor,
     updatedAt: now,
   };
+  const supersede = <T extends { id: string; status?: string }>(entries: T[]) =>
+    entries.map((e) =>
+      supersedeIds.includes(e.id) && isActive(e)
+        ? { ...e, status: "superseded" as const, supersededBy: value.id }
+        : e,
+    );
   const next = {
-    constraints: context.constraints,
-    decisions: context.decisions,
+    constraints: supersede(context.constraints),
+    decisions: supersede(context.decisions),
     ownership: context.ownership,
     openQuestions: context.openQuestions,
     revision: context.revision + 1,
@@ -1300,7 +1367,7 @@ export async function applyApprovedProposal(
     case "constraint":
       await ctx.db.patch(context._id, {
         ...next,
-        constraints: put(context.constraints, value),
+        constraints: put(next.constraints, value),
       });
       break;
     case "decision": {
@@ -1312,7 +1379,7 @@ export async function applyApprovedProposal(
         (!old || (old.status && old.status !== "active"))
       )
         throw new ConvexError({ code: "INVALID_INPUT", field: "supersedes" });
-      const decisions = context.decisions.map((e) =>
+      const decisions = next.decisions.map((e) =>
         e.id === proposal.supersedes
           ? { ...e, status: "superseded" as const, supersededBy: value.id }
           : e,
@@ -1365,4 +1432,5 @@ export async function applyApprovedProposal(
       });
       break;
   }
+  return entryIndex === undefined ? value.id : undefined;
 }

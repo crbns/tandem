@@ -33,7 +33,7 @@ export const MCP_INSTRUCTIONS =
  * contextEmpty (no goal, scope or active entries) asks the assistant to seed
  * the context from the files it reads or saves. A pending proposal doesn't
  * make the context non-empty, so the step says to skip what is already
- * pending; nothing on the server dedupes proposals.
+ * pending; the server dedupes only one assistant's identical repeat.
  */
 export function syncNextSteps({ contextEmpty }: { contextEmpty: boolean }): string[] {
   return [

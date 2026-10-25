@@ -62,6 +62,7 @@ import {
 import { matchesQuery, queryTerms } from "./lib/names";
 import {
   actorValidator,
+  conflictValidator,
   contextApprovalValidator,
   contextFieldValidator,
   contextValidator,
@@ -69,6 +70,7 @@ import {
   proposalStatusValidator,
   proposalValidator,
   publishedWorkValidator,
+  resolutionValidator,
   roleValidator,
   taskStatusValidator,
   taskValidator,
@@ -651,6 +653,21 @@ export const syncWorkspace = internalMutation({
         status: v.literal("pending"),
         createdBy: actorValidator,
         createdAt: v.number(),
+        conflict: v.union(conflictValidator, v.null()),
+      }),
+    ),
+    /** lib/ops.ts toResolvedConflict. */
+    resolvedConflicts: v.array(
+      v.object({
+        proposalId: v.id("context_proposals"),
+        field: contextFieldValidator,
+        proposedValue: v.string(),
+        outcome: resolutionValidator,
+        note: v.union(v.string(), v.null()),
+        resolvedBy: actorValidator,
+        resolvedAt: v.number(),
+        inEffect: v.array(v.object({ id: v.string(), text: v.string() })),
+        notInEffect: v.array(v.string()),
       }),
     ),
     changedFiles: v.array(fileRowValidator),
@@ -735,6 +752,8 @@ export const proposeContextChange = internalMutation({
   returns: v.object({
     proposal: proposalValidator,
     contextRevision: v.number(),
+    /** The same change was already pending or just applied; no new row. */
+    deduplicated: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const session = await agentCall(ctx, args.principal, { write: true });
@@ -753,9 +772,11 @@ export const proposeContextChange = internalMutation({
       ownerUserId: args.ownerUserId,
       actor: session.actor,
     });
+    const { deduplicated, ...row } = proposal;
     return {
-      proposal: toProposal(proposal),
+      proposal: toProposal(row),
       contextRevision: proposal.contextRevision ?? 0,
+      deduplicated,
     };
   },
 });
