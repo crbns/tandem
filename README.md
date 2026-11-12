@@ -1,6 +1,6 @@
 # Tandem
 
-Shared workspace files and project context for people and the assistants they use. The MVP has a Next.js dashboard and a Convex backend that also serves the remote MCP server.
+Tandem is a shared workspace that lets teams collaborate across different AI assistants by synchronizing files, project context, and activity.
 
 Live app: https://tandem-pink.vercel.app
 
